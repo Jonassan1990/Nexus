@@ -1,0 +1,933 @@
+import type {
+  RoleDefinition,
+  RoleKey,
+  SlaPolicy,
+  Ticket,
+  WorkflowRoleType,
+  WorkflowTemplate,
+  WorkflowTemplateStep
+} from "./types";
+import { roles, slaPolicies, ticketTypes, workflowTemplates } from "./nexus-data";
+
+export type TegelTagVariant = "success" | "warning" | "new" | "neutral" | "information" | "error";
+
+export type RoleDomain = "Business" | "IT" | "Admin";
+
+export interface AdminUser {
+  id: string;
+  displayName: string;
+  email: string;
+  primaryRole: RoleKey;
+  actionRoles: RoleKey[];
+  region: string;
+  site: string;
+  productIds: string[];
+  pruNames: string[];
+  active: boolean;
+}
+
+export interface RoleDomainConfig {
+  role: RoleKey;
+  domain: RoleDomain;
+  workflowType: WorkflowRoleType;
+}
+
+export interface RegionSiteConfig {
+  id: string;
+  label: string;
+  region: string;
+  site: string;
+  localProductOwnerId: string;
+  active: boolean;
+}
+
+export interface ProductRoleAssignment {
+  id: string;
+  role: RoleKey;
+  userIds: string[];
+  active: boolean;
+}
+
+export interface ProductModuleConfig {
+  id: string;
+  name: string;
+  jiraComponent?: string;
+  active: boolean;
+}
+
+export interface ProductPruConfig {
+  id: string;
+  name: string;
+  site: string;
+  localProductOwnerId: string;
+  modules: ProductModuleConfig[];
+  active: boolean;
+}
+
+export interface ProductConfig {
+  id: string;
+  productName: string;
+  productOwnerName: string;
+  jiraProjectKey: string;
+  roleAssignments: ProductRoleAssignment[];
+  prus: ProductPruConfig[];
+  active: boolean;
+}
+
+export interface ResponsibilityMappingConfig {
+  id: string;
+  productIds: string[];
+  regionSiteIds: string[];
+  pruNames: string[];
+  role: RoleKey;
+  roles?: RoleKey[];
+  userIds: string[];
+  actingRole?: boolean;
+  active: boolean;
+}
+
+export interface ConfigOption<TValue extends string = string> {
+  id: string;
+  label: TValue;
+  color: TegelTagVariant;
+  active: boolean;
+  sortOrder: number;
+}
+
+export interface StatusColorConfig {
+  status: string;
+  color: TegelTagVariant;
+}
+
+export interface SlaRule {
+  id: string;
+  priority: Ticket["priority"];
+  targetHours: number;
+  warningHours: number;
+}
+
+export type NotificationDeliveryMode = "inAppOnly" | "emailOnly" | "inAppAndEmail";
+export type NotificationSeverity = "info" | "warning" | "critical" | "success";
+
+export type NotificationEventType =
+  | "ticketSubmitted"
+  | "approvalRequested"
+  | "clarificationRequested"
+  | "clarificationAnswered"
+  | "decisionMade"
+  | "ticketApproved"
+  | "ticketRejected"
+  | "jiraCreated"
+  | "slaBreach"
+  | "escalationTriggered"
+  | "participantAdded";
+
+export interface NotificationTemplate {
+  id: string;
+  eventType: NotificationEventType;
+  subject: string;
+  body: string;
+  deliveryMode: NotificationDeliveryMode;
+  severity: NotificationSeverity;
+  active: boolean;
+  enabledRoles: RoleKey[];
+}
+
+export type FormFieldType =
+  | "shortText"
+  | "longText"
+  | "number"
+  | "date"
+  | "singleSelect"
+  | "multiSelect"
+  | "yesNo";
+
+export type FormComponentType =
+  | "textField"
+  | "textArea"
+  | "numberField"
+  | "datePicker"
+  | "dropdown"
+  | "radioGroup"
+  | "checkbox"
+  | "checkboxGroup";
+
+export interface FormTemplateField {
+  id: string;
+  label: string;
+  type: FormFieldType;
+  component: FormComponentType;
+  required: boolean;
+  helperText?: string;
+  options: string[];
+  sortOrder: number;
+}
+
+export interface ProductFormTemplate {
+  id: string;
+  productName: string;
+  requestTypeId: string;
+  title: string;
+  description: string;
+  fields: FormTemplateField[];
+  active: boolean;
+  updatedAt: string;
+}
+
+export interface TicketTypeWorkflowConfig {
+  id: string;
+  ticketTypeId: string;
+  workflowTemplateId: string;
+  escalationPolicyId?: string;
+  stepIds: string[];
+  jiraCreatorStepId: string;
+  stepOverrides?: Record<
+    string,
+    Partial<Pick<
+      WorkflowTemplateStep,
+      | "label"
+      | "ownerRole"
+      | "workflowType"
+      | "required"
+      | "parallelGroup"
+      | "slaHours"
+      | "allowDelegation"
+      | "allowClarification"
+    >>
+  >;
+  active: boolean;
+  updatedAt: string;
+}
+
+export type JiraApiVersion = "rest/api/2" | "rest/api/3";
+export type JiraAuthMode = "personalAccessToken" | "emailApiToken" | "oauth2ClientCredentials";
+
+export interface JiraIntegrationConfig {
+  enabled: boolean;
+  apiBaseUrl: string;
+  apiVersion: JiraApiVersion;
+  projectUrl: string;
+  defaultProjectKey: string;
+  defaultIssueType: string;
+  authMode: JiraAuthMode;
+  username: string;
+  tokenConfigured: boolean;
+  tokenLastFour?: string;
+  tokenUpdatedAt?: string;
+  metadataMode: "dynamic";
+  syncDirection: "bidirectional";
+  updatedAt: string;
+}
+
+export interface SmtpConfig {
+  enabled: boolean;
+  deliveryMode: NotificationDeliveryMode;
+  host: string;
+  port: number;
+  security: "none" | "starttls" | "sslTls";
+  fromName: string;
+  fromEmail: string;
+  updatedAt: string;
+}
+
+export interface AdminConfig {
+  users: AdminUser[];
+  customRoles?: RoleDefinition[];
+  roleDomains: RoleDomainConfig[];
+  deletedRoleKeys?: RoleKey[];
+  regionSites: RegionSiteConfig[];
+  products: ProductConfig[];
+  responsibilityMappings: ResponsibilityMappingConfig[];
+  requestTypes: ConfigOption[];
+  priorities: ConfigOption<Ticket["priority"]>[];
+  riskOptions: ConfigOption<Ticket["risk"]>[];
+  statusColors: StatusColorConfig[];
+  requestCategories: string[];
+  slaRules: SlaRule[];
+  escalationPolicies: SlaPolicy[];
+  notificationTemplates: NotificationTemplate[];
+  formTemplates: ProductFormTemplate[];
+  ticketTypeWorkflows: TicketTypeWorkflowConfig[];
+  integrations: {
+    jira: JiraIntegrationConfig;
+    smtp: SmtpConfig;
+  };
+}
+
+export function normalizeProductModuleConfig(module: ProductModuleConfig): ProductModuleConfig {
+  return {
+    ...module,
+    jiraComponent: module.jiraComponent?.trim() || undefined,
+    active: module.active ?? true
+  };
+}
+
+export function normalizeProductPruConfig(pru: ProductPruConfig): ProductPruConfig {
+  return {
+    ...pru,
+    modules: Array.isArray(pru.modules) ? pru.modules.map((module) => normalizeProductModuleConfig(module)) : [],
+    active: pru.active ?? true
+  };
+}
+
+export function normalizeProductConfig(product: ProductConfig): ProductConfig {
+  return {
+    ...product,
+    roleAssignments: Array.isArray(product.roleAssignments)
+      ? product.roleAssignments.map((assignment) => ({
+          ...assignment,
+          userIds: Array.isArray(assignment.userIds) ? assignment.userIds : [],
+          active: assignment.active ?? true
+        }))
+      : [],
+    prus: Array.isArray(product.prus) ? product.prus.map((pru) => normalizeProductPruConfig(pru)) : [],
+    active: product.active ?? true
+  };
+}
+
+const updatedAt = "2026-05-18T00:00:00.000Z";
+
+export const adminUsers: AdminUser[] = [
+  {
+    id: "user-maja-lind",
+    displayName: "Maja Lind",
+    email: "maja.lind@scania.com",
+    primaryRole: "local_product_owner",
+    actionRoles: [],
+    region: "Europe",
+    site: "Sodertalje",
+    productIds: ["product-calibration-hub", "product-production-analytics"],
+    pruNames: ["PRU E-Mobility", "PRU Powertrain"],
+    active: true
+  },
+  {
+    id: "user-sara-blom",
+    displayName: "Sara Blom",
+    email: "sara.blom@scania.com",
+    primaryRole: "global_product_owner",
+    actionRoles: ["business_architect"],
+    region: "Global",
+    site: "Global",
+    productIds: ["product-calibration-hub", "product-variant-manager"],
+    pruNames: ["PRU E-Mobility", "PRU Battery"],
+    active: true
+  },
+  {
+    id: "user-oskar-nordin",
+    displayName: "Oskar Nordin",
+    email: "oskar.nordin@scania.com",
+    primaryRole: "software_architect",
+    actionRoles: [],
+    region: "Global",
+    site: "Global",
+    productIds: ["product-calibration-hub", "product-variant-manager"],
+    pruNames: ["PRU E-Mobility", "PRU Battery"],
+    active: true
+  },
+  {
+    id: "user-erik-holm",
+    displayName: "Erik Holm",
+    email: "erik.holm@scania.com",
+    primaryRole: "release_manager",
+    actionRoles: [],
+    region: "Global",
+    site: "Global",
+    productIds: ["product-plant-portal", "product-production-analytics"],
+    pruNames: ["PRU Digital Core", "PRU Powertrain"],
+    active: true
+  },
+  {
+    id: "user-jonas-ny",
+    displayName: "Jonas Ny",
+    email: "jonas.ny@scania.com",
+    primaryRole: "developer",
+    actionRoles: [],
+    region: "Europe",
+    site: "Sodertalje",
+    productIds: ["product-calibration-hub", "product-variant-manager"],
+    pruNames: ["PRU E-Mobility", "PRU Battery"],
+    active: true
+  },
+  {
+    id: "user-karin-vik",
+    displayName: "Karin Vik",
+    email: "karin.vik@scania.com",
+    primaryRole: "it_reviewer",
+    actionRoles: [],
+    region: "Europe",
+    site: "Oskarshamn",
+    productIds: ["product-plant-portal"],
+    pruNames: ["PRU Digital Core"],
+    active: true
+  },
+  {
+    id: "user-nina-ek",
+    displayName: "Nina Ek",
+    email: "nina.ek@scania.com",
+    primaryRole: "security_reviewer",
+    actionRoles: [],
+    region: "Global",
+    site: "Global",
+    productIds: ["product-plant-portal", "product-variant-manager"],
+    pruNames: ["PRU Digital Core", "PRU Battery"],
+    active: true
+  },
+  {
+    id: "user-admin",
+    displayName: "NEXUS Admin",
+    email: "nexus.admin@scania.com",
+    primaryRole: "admin",
+    actionRoles: [],
+    region: "Global",
+    site: "Global",
+    productIds: [],
+    pruNames: [],
+    active: true
+  }
+];
+
+export const roleDomains: RoleDomainConfig[] = roles.map((role) => ({
+  role: role.key,
+  domain:
+    role.key === "admin"
+      ? "Admin"
+      : role.key === "developer" ||
+          role.key === "it_reviewer" ||
+          role.key === "security_reviewer" ||
+          role.key === "software_architect" ||
+          role.key === "release_manager"
+        ? "IT"
+        : "Business",
+  workflowType:
+    role.key === "local_product_owner" ||
+    role.key === "global_product_owner" ||
+    role.key === "release_manager"
+      ? "approval"
+      : role.key === "requester" || role.key === "admin"
+        ? "inform"
+        : "review"
+}));
+
+export const regionSites: RegionSiteConfig[] = [
+  {
+    id: "site-sodertalje",
+    label: "Europe - Sodertalje",
+    region: "Europe",
+    site: "Sodertalje",
+    localProductOwnerId: "user-maja-lind",
+    active: true
+  },
+  {
+    id: "site-oskarshamn",
+    label: "Europe - Oskarshamn",
+    region: "Europe",
+    site: "Oskarshamn",
+    localProductOwnerId: "user-maja-lind",
+    active: true
+  },
+  {
+    id: "site-lulea",
+    label: "Europe - Lulea",
+    region: "Europe",
+    site: "Lulea",
+    localProductOwnerId: "user-maja-lind",
+    active: true
+  },
+  {
+    id: "site-angers",
+    label: "Europe - Angers",
+    region: "Europe",
+    site: "Angers",
+    localProductOwnerId: "user-maja-lind",
+    active: true
+  }
+];
+
+export const productConfigs: ProductConfig[] = [
+  {
+    id: "product-calibration-hub",
+    productName: "Calibration Hub",
+    productOwnerName: "Maja Lind",
+    jiraProjectKey: "CAL",
+    roleAssignments: [
+      { id: "cal-local-po", role: "local_product_owner", userIds: ["user-maja-lind"], active: true },
+      { id: "cal-global-po", role: "global_product_owner", userIds: ["user-sara-blom"], active: true },
+      { id: "cal-architect", role: "software_architect", userIds: ["user-oskar-nordin"], active: true },
+      { id: "cal-developer", role: "developer", userIds: ["user-jonas-ny"], active: true }
+    ],
+    prus: [
+      {
+        id: "cal-pru-emobility",
+        name: "PRU E-Mobility",
+        site: "Sodertalje",
+        localProductOwnerId: "user-maja-lind",
+        active: true,
+        modules: [
+          { id: "cal-release-governance", name: "Release Governance", active: true },
+          { id: "cal-calibration-release", name: "Calibration Release", active: true },
+          { id: "cal-evidence-store", name: "Evidence Store", active: true }
+        ]
+      }
+    ],
+    active: true
+  },
+  {
+    id: "product-plant-portal",
+    productName: "Plant Portal",
+    productOwnerName: "Karin Vik",
+    jiraProjectKey: "PLANT",
+    roleAssignments: [
+      { id: "plant-it", role: "it_reviewer", userIds: ["user-karin-vik"], active: true },
+      { id: "plant-release", role: "release_manager", userIds: ["user-erik-holm"], active: true },
+      { id: "plant-security", role: "security_reviewer", userIds: ["user-nina-ek"], active: true }
+    ],
+    prus: [
+      {
+        id: "plant-pru-digital-core",
+        name: "PRU Digital Core",
+        site: "Oskarshamn",
+        localProductOwnerId: "user-maja-lind",
+        active: true,
+        modules: [
+          { id: "plant-identity", name: "Identity", active: true },
+          { id: "plant-gateway", name: "Gateway", active: true },
+          { id: "plant-perspective-support", name: "Perspective Support", active: true }
+        ]
+      }
+    ],
+    active: true
+  },
+  {
+    id: "product-variant-manager",
+    productName: "Variant Manager",
+    productOwnerName: "Sara Blom",
+    jiraProjectKey: "VAR",
+    roleAssignments: [
+      { id: "variant-global-po", role: "global_product_owner", userIds: ["user-sara-blom"], active: true },
+      { id: "variant-business", role: "business_architect", userIds: ["user-sara-blom"], active: true },
+      { id: "variant-architect", role: "software_architect", userIds: ["user-oskar-nordin"], active: true },
+      { id: "variant-security", role: "security_reviewer", userIds: ["user-nina-ek"], active: true },
+      { id: "variant-developer", role: "developer", userIds: ["user-jonas-ny"], active: true }
+    ],
+    prus: [
+      {
+        id: "variant-pru-battery",
+        name: "PRU Battery",
+        site: "Lulea",
+        localProductOwnerId: "user-maja-lind",
+        active: true,
+        modules: [
+          { id: "variant-workflow-templates", name: "Workflow Templates", active: true },
+          { id: "variant-battery-variants", name: "Battery Variants", active: true },
+          { id: "variant-export-controls", name: "Export Controls", active: true }
+        ]
+      }
+    ],
+    active: true
+  },
+  {
+    id: "product-production-analytics",
+    productName: "Production Analytics",
+    productOwnerName: "Maja Lind",
+    jiraProjectKey: "ANL",
+    roleAssignments: [
+      { id: "analytics-local-po", role: "local_product_owner", userIds: ["user-maja-lind"], active: true },
+      { id: "analytics-release", role: "release_manager", userIds: ["user-erik-holm"], active: true }
+    ],
+    prus: [
+      {
+        id: "analytics-pru-powertrain",
+        name: "PRU Powertrain",
+        site: "Angers",
+        localProductOwnerId: "user-maja-lind",
+        active: true,
+        modules: [
+          { id: "analytics-reports", name: "Reports", active: true },
+          { id: "analytics-permissions", name: "Permissions", active: true },
+          { id: "analytics-shop-floor-metrics", name: "Shop-floor Metrics", active: true }
+        ]
+      }
+    ],
+    active: true
+  }
+];
+
+export const responsibilityMappings: ResponsibilityMappingConfig[] = productConfigs.flatMap((product) =>
+  product.roleAssignments.map((assignment) => ({
+    id: `map-${assignment.id}`,
+    productIds: [product.id],
+    regionSiteIds: regionSites
+      .filter((site) => product.prus.some((pru) => pru.site === site.site))
+      .map((site) => site.id),
+    pruNames: product.prus.map((pru) => pru.name),
+    role: assignment.role,
+    roles: [assignment.role],
+    userIds: assignment.userIds,
+    actingRole: false,
+    active: assignment.active
+  }))
+);
+
+export const requestTypeOptions: ConfigOption[] = ticketTypes.map((ticketType, index) => ({
+  id: ticketType.id,
+  label: ticketType.label,
+  color:
+    ticketType.id === "incident"
+      ? "error"
+      : ticketType.id === "change_request"
+        ? "information"
+        : ticketType.id === "feature_request"
+          ? "new"
+          : ticketType.id === "bug"
+            ? "warning"
+            : ticketType.id === "task"
+              ? "success"
+              : "neutral",
+  active: ticketType.enabled,
+  sortOrder: index + 1
+}));
+
+export const priorityOptions: ConfigOption<Ticket["priority"]>[] = [
+  { id: "priority-low", label: "Low", color: "neutral", active: true, sortOrder: 1 },
+  { id: "priority-medium", label: "Medium", color: "information", active: true, sortOrder: 2 },
+  { id: "priority-high", label: "High", color: "warning", active: true, sortOrder: 3 },
+  { id: "priority-critical", label: "Critical", color: "error", active: true, sortOrder: 4 }
+];
+
+export const riskOptions: ConfigOption<Ticket["risk"]>[] = [
+  { id: "risk-low", label: "Low", color: "success", active: true, sortOrder: 1 },
+  { id: "risk-medium", label: "Medium", color: "information", active: true, sortOrder: 2 },
+  { id: "risk-high", label: "High", color: "warning", active: true, sortOrder: 3 },
+  { id: "risk-critical", label: "Critical", color: "error", active: true, sortOrder: 4 }
+];
+
+export const statusColorOptions: StatusColorConfig[] = [
+  { status: "Request", color: "neutral" },
+  { status: "New", color: "new" },
+  { status: "In progress", color: "information" },
+  { status: "Pending", color: "warning" },
+  { status: "Waiting", color: "warning" },
+  { status: "Review", color: "information" },
+  { status: "Ready to create", color: "new" },
+  { status: "Jira created", color: "success" },
+  { status: "IT test", color: "warning" },
+  { status: "Business test", color: "warning" },
+  { status: "Blocked", color: "error" },
+  { status: "Done", color: "success" },
+  { status: "Completed close", color: "success" },
+  { status: "Rejected close", color: "error" },
+  { status: "Rejected", color: "error" },
+  { status: "Intake", color: "neutral" },
+  { status: "Clarification", color: "warning" },
+  { status: "Approval", color: "information" },
+  { status: "Jira draft", color: "new" },
+  { status: "Jira synced", color: "success" },
+  { status: "Escalated", color: "error" },
+  { status: "Closed", color: "success" }
+];
+
+export const requestCategories = [
+  "Access and authorization",
+  "Data quality",
+  "Integration",
+  "Performance",
+  "Reporting",
+  "User experience"
+];
+
+export const slaRules: SlaRule[] = [
+  { id: "sla-low", priority: "Low", targetHours: 15 * 24, warningHours: 10 * 24 },
+  { id: "sla-medium", priority: "Medium", targetHours: 10 * 24, warningHours: 7 * 24 },
+  { id: "sla-high", priority: "High", targetHours: 5 * 24, warningHours: 3 * 24 },
+  { id: "sla-critical", priority: "Critical", targetHours: 2 * 24, warningHours: 24 }
+];
+
+export const notificationTemplates: NotificationTemplate[] = [
+  {
+    id: "tpl-approval-requested",
+    eventType: "approvalRequested",
+    subject: "Approval required for {{ticketKey}} - {{ticketTitle}}",
+    body: `Hello {{participantName}},
+
+A ticket is awaiting your approval.
+
+Ticket: {{ticketKey}}
+Title: {{ticketTitle}}
+
+Current stage: Approval Review
+
+Please review the request and approve or reject it in the Support Portal.
+
+Your response is required before the release process can continue.`,
+    deliveryMode: "inAppAndEmail",
+    severity: "warning",
+    active: true,
+    enabledRoles: ["local_product_owner", "global_product_owner", "business_architect", "software_architect"]
+  },
+  {
+    id: "tpl-clarification-requested",
+    eventType: "clarificationRequested",
+    subject: "Action required: Clarification needed for {{ticketKey}}",
+    body: `Hello {{participantName}},
+
+Additional information is required before the ticket can proceed.
+
+Ticket: {{ticketKey}}
+Title: {{ticketTitle}}
+
+Requested by: {{requestedByRole}}
+
+Please review the ticket and provide the requested clarification.
+
+This request may delay implementation or approval until updated information is provided.`,
+    deliveryMode: "inAppAndEmail",
+    severity: "warning",
+    active: true,
+    enabledRoles: ["requester", "developer", "business_architect", "software_architect"]
+  },
+  {
+    id: "tpl-jira-created",
+    eventType: "jiraCreated",
+    subject: "Jira ticket created for {{ticketKey}}",
+    body: `Hello {{participantName}},
+
+A Jira issue has been created successfully.
+
+Portal Ticket: {{ticketKey}}
+Jira Issue: {{jiraKey}}
+Title: {{ticketTitle}}
+
+The issue is now synchronized with Jira and progress updates will continue automatically.`,
+    deliveryMode: "inAppAndEmail",
+    severity: "success",
+    active: true,
+    enabledRoles: ["requester", "it_reviewer", "release_manager", "admin"]
+  },
+  {
+    id: "tpl-sla-breach",
+    eventType: "slaBreach",
+    subject: "SLA breach detected for {{ticketKey}}",
+    body: `Attention,
+
+The SLA target has been exceeded for the following ticket:
+
+Ticket: {{ticketKey}}
+Title: {{ticketTitle}}
+
+Please review the ticket immediately to avoid further escalation.
+
+Current status: {{ticketStatus}}
+Priority: {{priority}}`,
+    deliveryMode: "inAppAndEmail",
+    severity: "critical",
+    active: true,
+    enabledRoles: ["release_manager", "it_reviewer", "admin"]
+  },
+  {
+    id: "tpl-participant-added",
+    eventType: "participantAdded",
+    subject: "You were added to {{ticketKey}}",
+    body: `Hello {{participantName}},
+
+You have been added as a participant to the following ticket:
+
+Ticket: {{ticketKey}}
+Title: {{ticketTitle}}
+
+You now have visibility and collaboration access in the Support Portal.`,
+    deliveryMode: "inAppAndEmail",
+    severity: "info",
+    active: true,
+    enabledRoles: ["admin", "software_architect", "business_architect"]
+  }
+];
+
+export const formTemplates: ProductFormTemplate[] = [
+  {
+    id: "form-calibration-change",
+    productName: "Calibration Hub",
+    requestTypeId: "change_request",
+    title: "Calibration release governance intake",
+    description: "Captures evidence, release impact, and Jira handoff needs before execution.",
+    active: true,
+    updatedAt,
+    fields: [
+      {
+        id: "field-release-train",
+        label: "Target release train",
+        type: "shortText",
+        component: "textField",
+        required: true,
+        helperText: "Use the release train name agreed with release management.",
+        options: [],
+        sortOrder: 1
+      },
+      {
+        id: "field-evidence-ready",
+        label: "Release evidence ready",
+        type: "yesNo",
+        component: "dropdown",
+        required: true,
+        options: ["Yes", "No"],
+        sortOrder: 2
+      },
+      {
+        id: "field-affected-integrations",
+        label: "Affected integrations",
+        type: "multiSelect",
+        component: "checkboxGroup",
+        required: false,
+        options: ["Jira Software", "Release calendar", "Evidence store", "Calibration database"],
+        sortOrder: 3
+      }
+    ]
+  },
+  {
+    id: "form-incident-identity",
+    productName: "Plant Portal",
+    requestTypeId: "incident",
+    title: "Plant incident intake",
+    description: "Captures service impact, affected users, and security review needs.",
+    active: true,
+    updatedAt,
+    fields: [
+      {
+        id: "field-affected-users",
+        label: "Affected users",
+        type: "number",
+        component: "numberField",
+        required: true,
+        options: [],
+        sortOrder: 1
+      },
+      {
+        id: "field-service-dependency",
+        label: "Service dependency",
+        type: "multiSelect",
+        component: "checkboxGroup",
+        required: true,
+        options: ["Entra ID", "Gateway", "Ignition Perspective", "Network"],
+        sortOrder: 2
+      }
+    ]
+  }
+];
+
+export const ticketTypeWorkflows: TicketTypeWorkflowConfig[] = ticketTypes.map((ticketType) => {
+  const template =
+    workflowTemplates.find((workflow) => workflow.id === ticketType.defaultWorkflowTemplateId) ??
+    workflowTemplates[0];
+
+  return {
+    id: `workflow-${ticketType.id}`,
+    ticketTypeId: ticketType.id,
+    workflowTemplateId: template.id,
+    escalationPolicyId: template.escalationPolicyId,
+    stepIds: template.steps.map((step) => step.id),
+    jiraCreatorStepId: "release-gate",
+    stepOverrides: {},
+    active: ticketType.enabled,
+    updatedAt
+  };
+});
+
+export const jiraIntegration: JiraIntegrationConfig = {
+  enabled: true,
+  apiBaseUrl: "https://issues.scania.com",
+  apiVersion: "rest/api/2",
+  projectUrl: "https://issues.scania.com/projects/NEXUS",
+  defaultProjectKey: "NEXUS",
+  defaultIssueType: "Task",
+  authMode: "personalAccessToken",
+  username: "",
+  tokenConfigured: false,
+  metadataMode: "dynamic",
+  syncDirection: "bidirectional",
+  updatedAt
+};
+
+export const smtpConfig: SmtpConfig = {
+  enabled: false,
+  deliveryMode: "inAppAndEmail",
+  host: "",
+  port: 587,
+  security: "starttls",
+  fromName: "NEXUS Portal",
+  fromEmail: "noreply@scania.com",
+  updatedAt
+};
+
+export const adminConfig: AdminConfig = {
+  users: adminUsers,
+  customRoles: [],
+  roleDomains,
+  deletedRoleKeys: [],
+  regionSites,
+  products: productConfigs,
+  responsibilityMappings,
+  requestTypes: requestTypeOptions,
+  priorities: priorityOptions,
+  riskOptions,
+  statusColors: statusColorOptions,
+  requestCategories,
+  slaRules,
+  escalationPolicies: slaPolicies,
+  notificationTemplates,
+  formTemplates,
+  ticketTypeWorkflows,
+  integrations: {
+    jira: jiraIntegration,
+    smtp: smtpConfig
+  }
+};
+
+export function getAdminUserName(userId: string): string {
+  return adminUsers.find((user) => user.id === userId)?.displayName ?? "Unassigned";
+}
+
+export function getAdminRoleLabel(roleKey: RoleKey): string {
+  return (
+    roles.find((role) => role.key === roleKey)?.label ??
+    roleKey
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase())
+  );
+}
+
+export function getProductConfig(productName: string): ProductConfig | undefined {
+  return productConfigs.find((product) => product.productName === productName && product.active);
+}
+
+export function getPrusForProduct(productName: string): ProductPruConfig[] {
+  return getProductConfig(productName)?.prus.filter((pru) => pru.active) ?? [];
+}
+
+export function getModulesForProductPru(productName: string, pruName: string): ProductModuleConfig[] {
+  return (
+    getPrusForProduct(productName)
+      .find((pru) => pru.name === pruName)
+      ?.modules.filter((module) => module.active) ?? []
+  );
+}
+
+export function getDefaultProductConfig(): ProductConfig | undefined {
+  return productConfigs.find((product) => product.active);
+}
+
+export function getDefaultWorkflowTemplate(ticketTypeId: string): WorkflowTemplate | undefined {
+  const workflow = ticketTypeWorkflows.find(
+    (item) => item.ticketTypeId === ticketTypeId && item.active
+  );
+
+  return workflowTemplates.find((template) => template.id === workflow?.workflowTemplateId);
+}
+
+export function getSlaPolicyForTicketType(ticketTypeId: string): SlaPolicy | undefined {
+  const workflow = ticketTypeWorkflows.find(
+    (item) => item.ticketTypeId === ticketTypeId && item.active
+  );
+  const template = getDefaultWorkflowTemplate(ticketTypeId);
+  const escalationPolicyId = workflow?.escalationPolicyId ?? template?.escalationPolicyId;
+
+  return slaPolicies.find((policy) => policy.id === escalationPolicyId);
+}
