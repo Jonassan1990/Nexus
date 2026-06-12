@@ -2,7 +2,15 @@ import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
-import { jiraIntegration, normalizeProductConfig, smtpConfig, statusColorOptions } from "./admin-config";
+import {
+  getJiraPriorityOptions,
+  isLegacyDefaultPriorityConfig,
+  jiraIntegration,
+  migrateLegacyPriorityReferences,
+  normalizeProductConfig,
+  smtpConfig,
+  statusColorOptions
+} from "./admin-config";
 import type { AdminConfig, StatusColorConfig } from "./admin-config";
 import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actions";
 import type { Ticket } from "./types";
@@ -32,6 +40,20 @@ type ColumnInfoRow = {
   pk: number;
 };
 
+type NotificationDeliveryStatus = "pending" | "sent" | "failed";
+
+type NotificationDeliveryRow = {
+  idempotency_key: string;
+  status: NotificationDeliveryStatus;
+  recipient_count: number;
+  message_id: string | null;
+  accepted_count: number | null;
+  rejected_count: number | null;
+  response: string | null;
+  error: string | null;
+  updated_at: string;
+};
+
 export interface DatabaseColumnInfo {
   name: string;
   type: string;
@@ -54,6 +76,23 @@ export interface DatabaseQueryResult {
   elapsedMs: number;
   statementType: string;
 }
+
+export type NotificationDeliveryClaim =
+  | {
+      status: "claimed";
+      attempt: "new" | "retry";
+      idempotencyKey: string;
+    }
+  | {
+      status: "duplicate";
+      deliveryStatus: Exclude<NotificationDeliveryStatus, "failed">;
+      idempotencyKey: string;
+      messageId: string | null;
+      acceptedCount: number;
+      rejectedCount: number;
+      response: string | null;
+      updatedAt: string;
+    };
 
 const adminConfigKey = "admin";
 const defaultDatabasePath = path.join(process.cwd(), "db", "nexus-local.sqlite");
@@ -242,6 +281,9 @@ function assertReadOnlySql(sql: string): string {
 
 function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
   const roleDomains = Array.isArray(config.roleDomains) ? config.roleDomains : [];
+  const rawPriorities = Array.isArray(config.priorities) ? config.priorities : [];
+  const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
+  const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
 
   return {
     ...emptyAdminConfig,
@@ -254,12 +296,20 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
     products: Array.isArray(config.products) ? config.products.map((product) => normalizeProductConfig(product)) : [],
     responsibilityMappings: Array.isArray(config.responsibilityMappings) ? config.responsibilityMappings : [],
     requestTypes: Array.isArray(config.requestTypes) ? config.requestTypes : [],
-    priorities: Array.isArray(config.priorities) ? config.priorities : [],
+    priorities,
     riskOptions: Array.isArray(config.riskOptions) ? config.riskOptions : [],
     statusColors: mergeDefaultStatusColors(Array.isArray(config.statusColors) ? config.statusColors : []),
     requestCategories: Array.isArray(config.requestCategories) ? config.requestCategories : [],
-    slaRules: Array.isArray(config.slaRules) ? config.slaRules : [],
-    escalationPolicies: Array.isArray(config.escalationPolicies) ? config.escalationPolicies : [],
+    slaRules: shouldMigrateLegacyPriorities
+      ? migrateLegacyPriorityReferences(Array.isArray(config.slaRules) ? config.slaRules : [])
+      : Array.isArray(config.slaRules)
+        ? config.slaRules
+        : [],
+    escalationPolicies: shouldMigrateLegacyPriorities
+      ? migrateLegacyPriorityReferences(Array.isArray(config.escalationPolicies) ? config.escalationPolicies : [])
+      : Array.isArray(config.escalationPolicies)
+        ? config.escalationPolicies
+        : [],
     notificationTemplates: Array.isArray(config.notificationTemplates) ? config.notificationTemplates : [],
     formTemplates: Array.isArray(config.formTemplates) ? config.formTemplates : [],
     ticketTypeWorkflows: Array.isArray(config.ticketTypeWorkflows)
@@ -304,10 +354,25 @@ function migrate(db: DatabaseSync) {
       payload TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS notification_deliveries (
+      idempotency_key TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed')),
+      recipient_count INTEGER NOT NULL,
+      message_id TEXT,
+      accepted_count INTEGER NOT NULL DEFAULT 0,
+      rejected_count INTEGER NOT NULL DEFAULT 0,
+      response TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_local_tickets_state ON tickets(state);
     CREATE INDEX IF NOT EXISTS idx_local_tickets_priority ON tickets(priority);
     CREATE INDEX IF NOT EXISTS idx_local_tickets_product ON tickets(product);
     CREATE INDEX IF NOT EXISTS idx_local_tickets_updated_at ON tickets(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status ON notification_deliveries(status);
+    CREATE INDEX IF NOT EXISTS idx_notification_deliveries_updated_at ON notification_deliveries(updated_at);
   `);
 }
 
@@ -405,6 +470,26 @@ export function runReadOnlyDatabaseQuery(sql: string, maxRows = 200): DatabaseQu
   };
 }
 
+export function clearLocalTicketsForDevelopment(options: { allowProduction?: boolean } = {}): DatabaseTableSummary[] {
+  if (process.env.NODE_ENV === "production" && !options.allowProduction) {
+    throw new Error("Local ticket cleanup is disabled in production.");
+  }
+
+  const db = getDatabase();
+
+  db.exec("BEGIN IMMEDIATE");
+
+  try {
+    db.prepare("DELETE FROM tickets").run();
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+
+  return listDatabaseTables();
+}
+
 export function readAdminConfig(): AdminConfig {
   const row = getDatabase()
     .prepare("SELECT payload FROM app_config WHERE key = ?")
@@ -430,6 +515,138 @@ export function saveAdminConfig(config: AdminConfig): void {
       `
     )
     .run(adminConfigKey, serializeJson(config), nowIso());
+}
+
+function mapDuplicateNotificationDelivery(row: NotificationDeliveryRow): NotificationDeliveryClaim {
+  return {
+    status: "duplicate",
+    deliveryStatus: row.status === "sent" ? "sent" : "pending",
+    idempotencyKey: row.idempotency_key,
+    messageId: row.message_id,
+    acceptedCount: row.accepted_count ?? 0,
+    rejectedCount: row.rejected_count ?? 0,
+    response: row.response,
+    updatedAt: row.updated_at
+  };
+}
+
+export function claimNotificationDelivery(idempotencyKey: string, recipientCount: number): NotificationDeliveryClaim {
+  const db = getDatabase();
+  const timestamp = nowIso();
+  const insertResult = db
+    .prepare(
+      `
+        INSERT OR IGNORE INTO notification_deliveries (
+          idempotency_key,
+          status,
+          recipient_count,
+          created_at,
+          updated_at
+        )
+        VALUES (?, 'pending', ?, ?, ?)
+      `
+    )
+    .run(idempotencyKey, recipientCount, timestamp, timestamp);
+
+  if (Number(insertResult.changes) === 1) {
+    return {
+      status: "claimed",
+      attempt: "new",
+      idempotencyKey
+    };
+  }
+
+  const existingDelivery = db
+    .prepare("SELECT * FROM notification_deliveries WHERE idempotency_key = ?")
+    .get(idempotencyKey) as NotificationDeliveryRow | undefined;
+
+  if (!existingDelivery) {
+    throw new Error("Notification delivery claim could not be read after insert conflict.");
+  }
+
+  if (existingDelivery.status === "failed") {
+    const retryResult = db
+      .prepare(
+        `
+          UPDATE notification_deliveries
+          SET
+            status = 'pending',
+            recipient_count = ?,
+            message_id = NULL,
+            accepted_count = 0,
+            rejected_count = 0,
+            response = NULL,
+            error = NULL,
+            updated_at = ?
+          WHERE idempotency_key = ?
+            AND status = 'failed'
+        `
+      )
+      .run(recipientCount, timestamp, idempotencyKey);
+
+    if (Number(retryResult.changes) === 1) {
+      return {
+        status: "claimed",
+        attempt: "retry",
+        idempotencyKey
+      };
+    }
+  }
+
+  const currentDelivery = db
+    .prepare("SELECT * FROM notification_deliveries WHERE idempotency_key = ?")
+    .get(idempotencyKey) as NotificationDeliveryRow | undefined;
+
+  return mapDuplicateNotificationDelivery(currentDelivery ?? existingDelivery);
+}
+
+export function markNotificationDeliverySent(
+  idempotencyKey: string,
+  result: {
+    messageId?: string | false;
+    acceptedCount: number;
+    rejectedCount: number;
+    response?: string | false;
+  }
+): void {
+  getDatabase()
+    .prepare(
+      `
+        UPDATE notification_deliveries
+        SET
+          status = 'sent',
+          message_id = ?,
+          accepted_count = ?,
+          rejected_count = ?,
+          response = ?,
+          error = NULL,
+          updated_at = ?
+        WHERE idempotency_key = ?
+      `
+    )
+    .run(
+      result.messageId || null,
+      result.acceptedCount,
+      result.rejectedCount,
+      result.response || null,
+      nowIso(),
+      idempotencyKey
+    );
+}
+
+export function markNotificationDeliveryFailed(idempotencyKey: string, errorMessage: string): void {
+  getDatabase()
+    .prepare(
+      `
+        UPDATE notification_deliveries
+        SET
+          status = 'failed',
+          error = ?,
+          updated_at = ?
+        WHERE idempotency_key = ?
+      `
+    )
+    .run(errorMessage, nowIso(), idempotencyKey);
 }
 
 export function listTickets(): Ticket[] {

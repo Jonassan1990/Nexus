@@ -9,6 +9,10 @@ import {
   validateJiraActionConfig,
   type JiraActionConfig
 } from "@/lib/integration-actions";
+import {
+  uploadJiraIssueAttachments,
+  type JiraIssueAttachmentInput
+} from "@/lib/jira-attachments";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 
 export const runtime = "nodejs";
@@ -25,6 +29,7 @@ type UpdateJiraTaskPayload = {
     fixVersion?: string;
     priority?: string;
     estimateHours?: number;
+    attachments?: JiraIssueAttachmentInput[];
   };
 };
 
@@ -182,9 +187,25 @@ export async function POST(request: NextRequest) {
     );
 
     const issueStatusResult = await fetchJiraIssueStatus(config, jiraKey);
+    const attachmentResult = await uploadJiraIssueAttachments(config, jiraKey, payload.issue?.attachments ?? []);
     const warnings = issueStatusResult.ok
-      ? []
-      : [`Jira issue was updated, but status sync failed: ${issueStatusResult.details.join(" ")}`];
+      ? [...attachmentResult.warnings]
+      : [
+          `Jira issue was updated, but status sync failed: ${issueStatusResult.details.join(" ")}`,
+          ...attachmentResult.warnings
+        ];
+
+    if (attachmentResult.warnings.length > 0) {
+      console.warn(
+        JSON.stringify({
+          event: "jira_task_update_attachment_warnings",
+          jiraKey,
+          uploadedCount: attachmentResult.uploaded.length,
+          skippedCount: attachmentResult.skipped.length,
+          warningCount: attachmentResult.warnings.length
+        })
+      );
+    }
 
     return NextResponse.json({
       data: {
@@ -194,6 +215,10 @@ export async function POST(request: NextRequest) {
           ? issueStatusResult.data.jiraUrl
           : `${normalizeJiraBaseUrl(config.apiBaseUrl)}/browse/${jiraKey}`,
         jiraStatus: issueStatusResult.ok ? issueStatusResult.data.jiraStatus : undefined,
+        attachments: {
+          uploaded: attachmentResult.uploaded,
+          skipped: attachmentResult.skipped
+        },
         warnings
       }
     });

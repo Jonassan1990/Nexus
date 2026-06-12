@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
   );
 
   try {
-    const result = await fetchJiraIssueStatus(config, jiraKey);
+    const result = await fetchJiraIssueStatus(config, jiraKey, 10000, { includeComments: true });
 
     if (!result.ok) {
       console.error(
@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
         jiraKey: result.data.jiraKey,
         jiraStatus: result.data.jiraStatus.name,
         jiraStatusCategory: result.data.jiraStatus.categoryKey,
+        commentCount: result.data.comments?.length ?? 0,
         project: config.defaultProjectKey
       })
     );

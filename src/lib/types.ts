@@ -126,15 +126,21 @@ export interface ClarificationThread {
 }
 
 export interface JiraDraft {
+  summary?: string;
+  description?: string;
+  releaseNote?: string;
   project: string;
   board: string;
   backlog: string;
   sprint?: string;
   fixVersion?: string;
+  fixVersionStartDate?: string;
+  fixVersionReleaseDate?: string;
   components: string[];
   labels: string[];
   priority: string;
   estimateHours?: number;
+  remainingHours?: number;
   storyPoints?: number;
   assignee?: string;
   linkedEpic?: string;
@@ -167,6 +173,51 @@ export interface Escalation {
   decisionMaker: string;
   dueAt: string;
   status: "open" | "decision_pending" | "mitigating" | "resolved";
+  statusNote?: string;
+  statusUpdatedAt?: string;
+  actionPlan?: string;
+  meetingSeries?: string;
+  managerName?: string;
+  managerEmail?: string;
+  managerInviteStatus?: "not_sent" | "pending" | "sent" | "failed";
+  managerInvitedAt?: string;
+  managerInviteError?: string;
+  people?: EscalationPerson[];
+  actionItems?: EscalationActionItem[];
+  statusUpdates?: EscalationStatusUpdate[];
+}
+
+export interface EscalationPerson {
+  id: string;
+  name: string;
+  email?: string;
+  role?: string;
+}
+
+export interface EscalationActionItem {
+  id: string;
+  label: string;
+  done: boolean;
+}
+
+export interface EscalationStatusUpdate {
+  id: string;
+  author: string;
+  role: string;
+  status: Escalation["status"];
+  note: string;
+  actionPlan?: string;
+  actionItems?: EscalationActionItem[];
+  meetingSeries?: string;
+  people?: EscalationPerson[];
+  createdAt: string;
+  managerInvite?: {
+    name: string;
+    email: string;
+    status: "pending" | "sent" | "failed";
+    sentAt?: string;
+    error?: string;
+  };
 }
 
 export interface AuditEntry {

@@ -8,6 +8,10 @@ import {
   validateJiraActionConfig,
   type JiraActionConfig
 } from "@/lib/integration-actions";
+import {
+  uploadJiraIssueAttachments,
+  type JiraIssueAttachmentInput
+} from "@/lib/jira-attachments";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 
 export const runtime = "nodejs";
@@ -23,6 +27,7 @@ type CreateJiraTaskPayload = {
     fixVersion?: string;
     priority?: string;
     estimateHours?: number;
+    attachments?: JiraIssueAttachmentInput[];
   };
 };
 
@@ -165,11 +170,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const attachmentResult = await uploadJiraIssueAttachments(
+      config,
+      validationResult.data.jiraKey,
+      payload.issue?.attachments ?? []
+    );
+
+    if (attachmentResult.warnings.length > 0) {
+      console.warn(
+        JSON.stringify({
+          event: "jira_task_create_attachment_warnings",
+          jiraKey: validationResult.data.jiraKey,
+          uploadedCount: attachmentResult.uploaded.length,
+          skippedCount: attachmentResult.skipped.length,
+          warningCount: attachmentResult.warnings.length
+        })
+      );
+    }
+
     console.info(
       JSON.stringify({
         event: "jira_task_create_success",
         jiraKey: createdJiraKey,
-        project: config.defaultProjectKey
+        project: config.defaultProjectKey,
+        attachmentUploadCount: attachmentResult.uploaded.length
       })
     );
 
@@ -180,7 +204,12 @@ export async function POST(request: NextRequest) {
         jiraId: validationResult.data.jiraId ?? responseBody?.id ?? null,
         jiraUrl: validationResult.data.jiraUrl,
         self: validationResult.data.self ?? responseBody?.self ?? null,
-        jiraStatus: validationResult.data.jiraStatus
+        jiraStatus: validationResult.data.jiraStatus,
+        attachments: {
+          uploaded: attachmentResult.uploaded,
+          skipped: attachmentResult.skipped
+        },
+        warnings: attachmentResult.warnings
       }
     });
   } catch (error) {

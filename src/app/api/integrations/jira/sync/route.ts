@@ -17,11 +17,35 @@ type JiraProjectResponse = {
   key?: string;
   name?: string;
   components?: Array<{ id?: string; name?: string }>;
-  versions?: Array<{ id?: string; name?: string; released?: boolean }>;
+  versions?: Array<{
+    id?: string;
+    name?: string;
+    archived?: boolean;
+    overdue?: boolean;
+    released?: boolean;
+    startDate?: string;
+    userStartDate?: string;
+    releaseDate?: string;
+    userReleaseDate?: string;
+  }>;
 };
 
 type JiraIssueTypeResponse = Array<{ id?: string; name?: string; subtask?: boolean }>;
 type JiraPriorityResponse = Array<{ id?: string; name?: string; statusColor?: string }>;
+type JiraProjectStatusesResponse = Array<{
+  id?: string;
+  name?: string;
+  statuses?: JiraStatusResponse[];
+}>;
+type JiraStatusResponse = {
+  id?: string;
+  name?: string;
+  statusCategory?: {
+    key?: string;
+    name?: string;
+    colorName?: string;
+  };
+};
 type JiraAssignableUserResponse = Array<{
   accountId?: string;
   key?: string;
@@ -120,6 +144,59 @@ function optionalWarning(label: string, result: JiraFetchResult<unknown>): strin
   return result.ok ? null : `${label} could not be synced: ${result.details.join(" ")}`;
 }
 
+function buildJiraStatusMetadata(projectStatuses: JiraProjectStatusesResponse): Array<{
+  id: string;
+  name: string;
+  categoryKey: string;
+  categoryName: string;
+  colorName: string;
+  issueTypes: string[];
+}> {
+  const statusesByKey = new Map<string, {
+    id: string;
+    name: string;
+    categoryKey: string;
+    categoryName: string;
+    colorName: string;
+    issueTypes: string[];
+  }>();
+
+  for (const issueType of projectStatuses) {
+    const issueTypeName = issueType.name?.trim() || "Unnamed issue type";
+
+    for (const status of issueType.statuses ?? []) {
+      const name = status.name?.trim();
+
+      if (!name) {
+        continue;
+      }
+
+      const id = status.id?.trim() || name;
+      const statusKey = id.toLowerCase();
+      const existingStatus = statusesByKey.get(statusKey);
+
+      if (existingStatus) {
+        if (!existingStatus.issueTypes.includes(issueTypeName)) {
+          existingStatus.issueTypes.push(issueTypeName);
+        }
+
+        continue;
+      }
+
+      statusesByKey.set(statusKey, {
+        id,
+        name,
+        categoryKey: status.statusCategory?.key?.trim() ?? "",
+        categoryName: status.statusCategory?.name?.trim() ?? "",
+        colorName: status.statusCategory?.colorName?.trim() ?? "",
+        issueTypes: [issueTypeName]
+      });
+    }
+  }
+
+  return Array.from(statusesByKey.values());
+}
+
 export async function POST(request: NextRequest) {
   const payload = (await request.json().catch(() => null)) as JiraSyncPayload | null;
 
@@ -138,6 +215,10 @@ export async function POST(request: NextRequest) {
   const projectEndpoint = buildJiraEndpoint(config, `project/${encodeURIComponent(projectKey)}`);
   const issueTypesEndpoint = buildJiraEndpoint(config, "issuetype");
   const prioritiesEndpoint = buildJiraEndpoint(config, "priority");
+  const statusesEndpoint = buildJiraEndpoint(
+    config,
+    `project/${encodeURIComponent(projectKey)}/statuses`
+  );
   const assignableUsersEndpoint = buildJiraEndpoint(
     config,
     `user/assignable/search?project=${encodeURIComponent(projectKey)}&maxResults=50`
@@ -154,6 +235,7 @@ export async function POST(request: NextRequest) {
       projectEndpoint,
       issueTypesEndpoint,
       prioritiesEndpoint,
+      statusesEndpoint,
       boardsEndpoint
     })
   );
@@ -163,12 +245,14 @@ export async function POST(request: NextRequest) {
       projectResult,
       issueTypesResult,
       prioritiesResult,
+      statusesResult,
       assignableUsersResult,
       boardsResult
     ] = await Promise.all([
       fetchJira<JiraProjectResponse>(projectEndpoint, config),
       fetchOptionalJira<JiraIssueTypeResponse>(issueTypesEndpoint, config, "Issue types"),
       fetchOptionalJira<JiraPriorityResponse>(prioritiesEndpoint, config, "Priorities"),
+      fetchOptionalJira<JiraProjectStatusesResponse>(statusesEndpoint, config, "Statuses"),
       fetchOptionalJira<JiraAssignableUserResponse>(assignableUsersEndpoint, config, "Assignable users"),
       fetchOptionalJira<JiraPagedResponse<JiraBoardResponse>>(boardsEndpoint, config, "Boards")
     ]);
@@ -209,6 +293,7 @@ export async function POST(request: NextRequest) {
             type: board.type ?? "board"
           })) ?? []
         : [];
+    const statuses = statusesResult.ok ? buildJiraStatusMetadata(statusesResult.data) : [];
     const sprintResults = await Promise.all(
       boards
         .filter((board) => board.id)
@@ -231,6 +316,7 @@ export async function POST(request: NextRequest) {
     const warnings = [
       optionalWarning("Issue types", issueTypesResult),
       optionalWarning("Priorities", prioritiesResult),
+      optionalWarning("Statuses", statusesResult),
       optionalWarning("Assignable users", assignableUsersResult),
       optionalWarning("Boards", boardsResult),
       ...sprintWarnings
@@ -241,6 +327,7 @@ export async function POST(request: NextRequest) {
         event: "jira_metadata_sync_success",
         project: projectResult.data.key,
         issueTypes: issueTypes.length,
+        statuses: statuses.length,
         boards: boards.length
       })
     );
@@ -263,7 +350,13 @@ export async function POST(request: NextRequest) {
           projectResult.data.versions?.map((version) => ({
             id: version.id ?? "",
             name: version.name ?? "Unnamed version",
-            released: Boolean(version.released)
+            archived: Boolean(version.archived),
+            overdue: Boolean(version.overdue),
+            released: Boolean(version.released),
+            startDate: version.startDate ?? "",
+            userStartDate: version.userStartDate ?? "",
+            releaseDate: version.releaseDate ?? "",
+            userReleaseDate: version.userReleaseDate ?? ""
           })) ?? [],
         priorities:
           prioritiesResult.ok
@@ -273,6 +366,7 @@ export async function POST(request: NextRequest) {
                 statusColor: priority.statusColor ?? ""
               }))
             : [],
+        statuses,
         assignableUsers:
           assignableUsersResult.ok
             ? assignableUsersResult.data.map((user) => ({

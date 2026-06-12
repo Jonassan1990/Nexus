@@ -13,7 +13,7 @@
     "@scania/tegel": "^1.54.0",
     "@scania/tegel-react": "^1.54.0",
     "@types/nodemailer": "^8.0.0",
-    "next": "^16.2.6",
+    "next": "^16.2.7",
     "nodemailer": "^8.0.8",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

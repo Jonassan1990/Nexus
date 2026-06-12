@@ -301,7 +301,7 @@ export const slaPolicies: SlaPolicy[] = [
   {
     id: "default-sla",
     name: "Standard Request SLA",
-    priority: "Medium",
+    priority: "2 - Medium",
     responseHours: 24,
     resolutionHours: 120,
     escalationMatrixId: "standard"
@@ -309,7 +309,7 @@ export const slaPolicies: SlaPolicy[] = [
   {
     id: "architecture-sla",
     name: "Architecture Review SLA",
-    priority: "High",
+    priority: "1 - High",
     responseHours: 12,
     resolutionHours: 96,
     escalationMatrixId: "architecture"
@@ -317,7 +317,7 @@ export const slaPolicies: SlaPolicy[] = [
   {
     id: "incident-sla",
     name: "Incident Governance SLA",
-    priority: "Critical",
+    priority: "0 - Highest",
     responseHours: 2,
     resolutionHours: 24,
     escalationMatrixId: "incident"
@@ -325,7 +325,7 @@ export const slaPolicies: SlaPolicy[] = [
   {
     id: "portfolio-sla",
     name: "Portfolio Prioritization SLA",
-    priority: "Medium",
+    priority: "2 - Medium",
     responseHours: 36,
     resolutionHours: 168,
     escalationMatrixId: "portfolio"

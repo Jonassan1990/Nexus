@@ -3,12 +3,14 @@
 import type {
   ClipboardEvent,
   Dispatch,
+  FocusEvent as ReactFocusEvent,
   FormEvent,
   MouseEvent as ReactMouseEvent,
+  CSSProperties,
   SetStateAction,
   SyntheticEvent as ReactSyntheticEvent
 } from "react";
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   getTicketTypeLabel,
@@ -31,6 +33,9 @@ import {
 import {
   adminConfig,
   getAdminRoleLabel,
+  getJiraPriorityOptions,
+  isLegacyDefaultPriorityConfig,
+  migrateLegacyPriorityReferences,
   normalizeProductConfig,
   notificationTemplates as defaultNotificationTemplates,
   statusColorOptions
@@ -42,6 +47,7 @@ import type {
   FormComponentType,
   FormFieldType,
   FormTemplateField,
+  FormTemplateOptionSource,
   JiraApiVersion,
   JiraAuthMode,
   JiraIntegrationConfig,
@@ -65,6 +71,9 @@ import type {
 } from "@/lib/admin-config";
 import { canView, filterVisible } from "@/lib/rbac";
 import type {
+  CommentItem,
+  EscalationActionItem,
+  EscalationPerson,
   JiraFollowUpStatus,
   NotificationItem,
   RoleKey,
@@ -83,6 +92,7 @@ import {
   normalizeJiraBaseUrl,
   type JiraActionConfig
 } from "@/lib/integration-actions";
+import type { JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { nextActionLabel, summarizeWorkflowHealth } from "@/lib/workflow-engine";
 import { TegelIcon } from "./TegelIcon";
 import type { TegelIconName } from "./TegelIcon";
@@ -127,6 +137,13 @@ const governanceRoles = [
 ] as const satisfies readonly RoleKey[];
 
 const ticketReopenRoles = [
+  "local_product_owner",
+  "global_product_owner",
+  "software_architect",
+  "admin"
+] as const satisfies readonly RoleKey[];
+
+const ticketEditorRoles = [
   "local_product_owner",
   "global_product_owner",
   "software_architect",
@@ -317,6 +334,7 @@ function formatPersonaAuditActor(persona: RolePersonaOption): string {
 const navItems = [
   { key: "dashboard", label: "Dashboard", iconName: "dashboard", visibleTo: allRoles },
   { key: "tickets", label: "Ticket List", iconName: "folder", visibleTo: allRoles },
+  { key: "releasePlan", label: "Release Plan", iconName: "calendar", visibleTo: allRoles },
   { key: "approvals", label: "Approvals", iconName: "document_check", visibleTo: approverRoles },
   { key: "clarifications", label: "Clarifications", iconName: "message", visibleTo: allRoles },
   { key: "jira", label: "Jira Sync", iconName: "route", visibleTo: executionRoles },
@@ -396,6 +414,7 @@ interface NotificationEmailEnvelope {
   recipients: NotificationEmailRecipient[];
   subject: string;
   body: string;
+  htmlBody: string;
 }
 
 type TicketListRow = {
@@ -405,12 +424,107 @@ type TicketListRow = {
   submitter: string;
   typeLabel: string;
 };
+type AnalyticsReportFilters = {
+  region: string;
+  site: string;
+  product: string;
+  pru: string;
+  typeId: string;
+  state: string;
+  priority: string;
+  slaState: string;
+};
+type AnalyticsReportSnapshot = {
+  filters: AnalyticsReportFilters;
+  generatedAt: string;
+};
+type ReportOption = {
+  value: string;
+  label: string;
+};
+type ReportBucket = {
+  label: string;
+  value: number;
+  percentage: number;
+  color: string;
+};
+type ReleasePlanDateKey = "preprod" | "prod";
+type ReleasePlanVersionDate = {
+  name: string;
+  startDate: string;
+  releaseDate: string;
+};
+type ReleasePlanVersionDateLookup = Map<string, ReleasePlanVersionDate>;
+type ReleasePlanSprintMetadata = {
+  id: string;
+  name: string;
+  state: string;
+  boardId: string;
+  boardName: string;
+  startDate: string;
+  endDate: string;
+};
+type ReleasePlanJiraMetadata = {
+  versionDateLookup: ReleasePlanVersionDateLookup;
+  boards: JiraBoardMetadataOption[];
+  sprints: ReleasePlanSprintMetadata[];
+};
+type ReleasePlanTicket = {
+  ticket: Ticket;
+  releaseVersion: string;
+  preprodDate: string;
+  prodDate: string;
+  sprint: string;
+  sprintStatus: JiraFollowUpStatus;
+  sprintStatusLabel: string;
+  sprintStatusTone: "info" | "warning" | "critical" | "success";
+};
+type ReleasePlanGroup = {
+  id: string;
+  releaseVersion: string;
+  preprodDate: string;
+  prodDate: string;
+  sortDate: number;
+  tickets: ReleasePlanTicket[];
+  sprintNames: string[];
+  statusCounts: Array<{ label: string; value: number; tone: "info" | "warning" | "critical" | "success" }>;
+};
+type ReleasePlanTab = "releases" | "sprintPlanning";
+type SprintPlanLaneKey = "planning" | "current" | "business_test" | "feature";
+type SprintPlanLane = {
+  key: SprintPlanLaneKey;
+  label: string;
+  description: string;
+  tickets: ReleasePlanTicket[];
+  totalEstimateHours: number;
+  remainingHours: number;
+  resources: string[];
+};
+type SprintPlanGroup = {
+  id: string;
+  sprint: string;
+  boardNames: string[];
+  state: string;
+  startDate: string;
+  endDate: string;
+  releaseVersions: string[];
+  totalEstimateHours: number;
+  remainingHours: number;
+  taskCount: number;
+  resources: string[];
+  lanes: SprintPlanLane[];
+};
 type TicketLifecycleStepState = "complete" | "active" | "waiting" | "blocked" | "rejected";
 type TicketLifecycleStep = {
   label: string;
   detail: string;
   status: string;
   state: TicketLifecycleStepState;
+};
+type WorkflowCurrentPositionSummary = {
+  label: string;
+  detail: string;
+  tone: "active" | "critical" | "waiting" | "complete";
 };
 type SelectableJiraFollowUpStatus = Exclude<JiraFollowUpStatus, "not_created" | "testing">;
 
@@ -434,6 +548,137 @@ function canAccessModule(role: RoleKey, moduleKey: ModuleKey): boolean {
   const item = navItems.find((candidate) => candidate.key === moduleKey);
 
   return item ? roleCanAccessNavItem(role, item) : false;
+}
+
+function canOperateJira(role?: RoleKey): boolean {
+  return role ? canAccessModule(role, "jira") : false;
+}
+
+function workflowStepMatchesConfiguredStepId(step: Ticket["workflow"][number], configuredStepId: string): boolean {
+  return step.id === configuredStepId || step.id.startsWith(`${configuredStepId}-`);
+}
+
+function getDefaultRoleDomain(role: RoleKey): RoleDomain {
+  if (role === "admin") {
+    return "Admin";
+  }
+
+  if (
+    role === "developer" ||
+    role === "it_reviewer" ||
+    role === "security_reviewer" ||
+    role === "software_architect" ||
+    role === "release_manager"
+  ) {
+    return "IT";
+  }
+
+  return "Business";
+}
+
+function getConfiguredRoleDomain(config: AdminConfig, role: RoleKey): RoleDomain {
+  return config.roleDomains.find((roleDomain) => roleDomain.role === role)?.domain ?? getDefaultRoleDomain(role);
+}
+
+function roleCanCreateJira(config: AdminConfig, role: RoleKey): boolean {
+  return getConfiguredRoleDomain(config, role) === "IT";
+}
+
+function getJiraCreatorStepIds(
+  workflow?: Pick<TicketTypeWorkflowConfig, "jiraCreatorStepId" | "jiraCreatorStepIds" | "stepIds">
+): string[] {
+  if (!workflow) {
+    return [];
+  }
+
+  const configuredStepIds = Array.isArray(workflow.jiraCreatorStepIds) && workflow.jiraCreatorStepIds.length > 0
+    ? workflow.jiraCreatorStepIds
+    : workflow.jiraCreatorStepId
+      ? [workflow.jiraCreatorStepId]
+      : [];
+  const routeStepIds = new Set(workflow.stepIds ?? []);
+
+  return Array.from(new Set(configuredStepIds.filter((stepId) => routeStepIds.has(stepId))));
+}
+
+function getJiraCreatorRolesForTicket(config: AdminConfig, ticket: Ticket): RoleKey[] {
+  const route = getWorkflowRouteForConfig(config, ticket.typeId);
+  const configuredCreatorStepIds = getJiraCreatorStepIds(route);
+
+  if (!configuredCreatorStepIds.length) {
+    return [];
+  }
+
+  const configuredCreatorSteps = getConfiguredWorkflowStepsForRoute(route, config).filter((step) =>
+    configuredCreatorStepIds.includes(step.id)
+  );
+  const configuredCreatorRoles = configuredCreatorSteps
+    .map((step) => step.ownerRole)
+    .filter((role) => roleCanCreateJira(config, role));
+
+  if (configuredCreatorRoles.length > 0) {
+    return Array.from(new Set(configuredCreatorRoles));
+  }
+
+  return Array.from(
+    new Set(
+      ticket.workflow
+        .filter((step) => configuredCreatorStepIds.some((stepId) => workflowStepMatchesConfiguredStepId(step, stepId)))
+        .map((step) => step.ownerRole)
+        .filter((role) => roleCanCreateJira(config, role))
+    )
+  );
+}
+
+function canManageJiraForTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
+  if (!canOperateJira(persona.role)) {
+    return false;
+  }
+
+  if (persona.role === "admin") {
+    return true;
+  }
+
+  if (
+    canCreateJiraForTicket(ticket) &&
+    isJiraReadyToCreateNotificationRole(persona.role) &&
+    roleHasTicketAccess(ticket, persona.role, config)
+  ) {
+    return true;
+  }
+
+  const jiraCreatorRoles = getJiraCreatorRolesForTicket(config, ticket);
+
+  return Boolean(
+    jiraCreatorRoles.includes(persona.role) &&
+      personaCanActOnTicket(persona, ticket, config)
+  );
+}
+
+function canCommentOnJiraForTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
+  if (!getValidJiraIssueKey(ticket.relatedJiraKey)) {
+    return false;
+  }
+
+  return (
+    persona.role === "admin" ||
+    ticketWasSubmittedByPersona(ticket, persona) ||
+    personaCanActOnTicket(persona, ticket, config) ||
+    roleHasTicketAccess(ticket, persona.role, config)
+  );
+}
+
+function getTicketSearchText(ticket: Ticket, config: AdminConfig): string {
+  return [
+    ticket.key,
+    ticket.title,
+    ticket.product,
+    ticket.module,
+    ticket.site,
+    getConfigTicketTypeLabel(config, ticket.typeId)
+  ]
+    .join(" ")
+    .toLowerCase();
 }
 
 function firstAccessibleModule(role: RoleKey): ModuleKey {
@@ -609,6 +854,7 @@ const tabItems = [
   "Overview",
   "Workflow",
   "Clarifications",
+  "Comments",
   "Jira",
   "Escalations",
   "Audit",
@@ -616,6 +862,8 @@ const tabItems = [
 ] as const;
 
 type DetailTab = (typeof tabItems)[number];
+
+const hiddenTicketDynamicFieldLabels = new Set(["Startup Sync", "Connect"]);
 
 interface NewTicketFormState {
   title: string;
@@ -698,6 +946,20 @@ interface AttachmentLibrarySiteNode {
 type EscalationType = Ticket["escalations"][number]["type"];
 type EscalationSeverity = Ticket["escalations"][number]["severity"];
 type EscalationStatus = Ticket["escalations"][number]["status"];
+type EscalationManagerInviteStatus = NonNullable<Ticket["escalations"][number]["managerInviteStatus"]>;
+
+interface EscalationPersonInput {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+interface EscalationActionItemInput {
+  id: string;
+  label: string;
+  done: boolean;
+}
 
 interface NewEscalationInput {
   type: EscalationType;
@@ -707,20 +969,43 @@ interface NewEscalationInput {
   urgency: string;
   requestedAction: string;
   mitigationPlan: string;
+  actionPlan: string;
+  actionItems: EscalationActionItemInput[];
+  meetingSeries: string;
   decisionMaker: string;
+  managerName: string;
+  managerEmail: string;
+  people: EscalationPersonInput[];
+  sendManagerInvite: boolean;
   dueAt: string;
 }
 
+interface EscalationStatusUpdateDetails {
+  actionPlan?: string;
+  actionItems?: EscalationActionItemInput[];
+  meetingSeries?: string;
+  managerName?: string;
+  managerEmail?: string;
+  people?: EscalationPersonInput[];
+  sendManagerInvite?: boolean;
+}
+
 interface JiraDraftUpdateInput {
+  summary?: string;
+  description?: string;
+  releaseNote?: string;
   project: string;
   board: string;
   backlog: string;
   sprint?: string;
   fixVersion?: string;
+  fixVersionStartDate?: string;
+  fixVersionReleaseDate?: string;
   components: string[];
   labels: string[];
   priority: string;
   estimateHours?: number;
+  remainingHours?: number;
   storyPoints?: number;
   assignee?: string;
 }
@@ -729,10 +1014,61 @@ interface CreateJiraOptions {
   replaceExisting?: boolean;
 }
 
+type JiraSyncedCommentInput = {
+  id: string;
+  author: string;
+  role?: string;
+  body: string;
+  createdAt: string;
+  updatedAt?: string | null;
+};
+
+type JiraSyncedFixVersionInput = {
+  id?: string;
+  name?: string;
+  archived?: boolean;
+  overdue?: boolean;
+  released?: boolean;
+  startDate?: string;
+  userStartDate?: string;
+  releaseDate?: string;
+  userReleaseDate?: string;
+};
+
+type JiraSyncedIssueFieldsInput = {
+  fixVersions?: JiraSyncedFixVersionInput[];
+  estimateHours?: number;
+  remainingHours?: number;
+};
+
+type JiraActivitySyncResult = {
+  statusChanged: boolean;
+  jiraStatusChanged: boolean;
+  jiraFieldsChanged: boolean;
+  importedComments: number;
+  updatedComments: number;
+};
+
 interface WorkflowStatusUpdateInput {
   stepId: string;
   status: WorkflowStepStatus;
   reason: string;
+}
+
+interface TicketUpdateInput {
+  title: string;
+  state: TicketState;
+  priority: string;
+  risk: string;
+  description: string;
+  businessImpact: string;
+  requesterNote: string;
+}
+
+interface TicketUpdateChange {
+  field: string;
+  oldValue: string;
+  newValue: string;
 }
 
 type CreateJiraHandler = (
@@ -742,14 +1078,30 @@ type CreateJiraHandler = (
 ) => Promise<void>;
 type UpdateJiraIssueHandler = (ticketKey: string, draftUpdate?: JiraDraftUpdateInput) => Promise<void>;
 type UpdateJiraLinkHandler = (ticketKey: string, jiraKey: string) => Promise<void>;
+type PostJiraCommentHandler = (ticketKey: string, body: string) => Promise<void>;
+type UpdateJiraStatusHandler = (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+type SyncJiraActivityHandler = (
+  ticketKey: string,
+  status: JiraFollowUpStatus,
+  note: string,
+  comments: JiraSyncedCommentInput[],
+  jiraStatusName?: string,
+  issueFields?: JiraSyncedIssueFieldsInput
+) => JiraActivitySyncResult;
 type UpdateWorkflowStatusHandler = (ticketKey: string, input: WorkflowStatusUpdateInput) => void;
+type UpdateTicketHandler = (ticketKey: string, input: TicketUpdateInput) => void;
 
 interface JiraDraftFormState {
+  summary: string;
+  description: string;
+  releaseNote: string;
   project: string;
   board: string;
   backlog: string;
   sprint: string;
   fixVersion: string;
+  fixVersionStartDate: string;
+  fixVersionReleaseDate: string;
   components: string;
   labels: string;
   priority: string;
@@ -761,6 +1113,16 @@ interface JiraDraftFormState {
 interface JiraMetadataOption {
   id: string;
   name: string;
+}
+
+interface JiraVersionMetadataOption extends JiraMetadataOption {
+  archived?: boolean;
+  overdue?: boolean;
+  released?: boolean;
+  startDate?: string;
+  userStartDate?: string;
+  releaseDate?: string;
+  userReleaseDate?: string;
 }
 
 interface JiraProjectMetadataOption {
@@ -776,11 +1138,20 @@ interface JiraSprintMetadataOption extends JiraMetadataOption {
   state: string;
   boardId: string;
   boardName: string;
+  startDate?: string;
+  endDate?: string;
 }
 
 interface JiraAssignableUserMetadataOption extends JiraMetadataOption {
   email: string;
   active: boolean;
+}
+
+interface JiraStatusMetadataOption extends JiraMetadataOption {
+  categoryKey: string;
+  categoryName: string;
+  colorName: string;
+  issueTypes: string[];
 }
 
 interface JiraFieldMetadata {
@@ -789,8 +1160,9 @@ interface JiraFieldMetadata {
   warnings: string[];
   project?: JiraProjectMetadataOption;
   components: JiraMetadataOption[];
-  versions: JiraMetadataOption[];
+  versions: JiraVersionMetadataOption[];
   priorities: JiraMetadataOption[];
+  statuses: JiraStatusMetadataOption[];
   boards: JiraBoardMetadataOption[];
   sprints: JiraSprintMetadataOption[];
   assignableUsers: JiraAssignableUserMetadataOption[];
@@ -800,8 +1172,9 @@ type JiraSyncMetadataPayload = {
   data?: {
     project?: JiraProjectMetadataOption;
     components?: JiraMetadataOption[];
-    versions?: JiraMetadataOption[];
+    versions?: JiraVersionMetadataOption[];
     priorities?: JiraMetadataOption[];
+    statuses?: JiraStatusMetadataOption[];
     boards?: JiraBoardMetadataOption[];
     sprints?: JiraSprintMetadataOption[];
     assignableUsers?: JiraAssignableUserMetadataOption[];
@@ -817,6 +1190,162 @@ const notificationReadStorageKey = "nexus-notification-read-state-v1";
 const jiraCheckedStorageKey = "nexus-jira-checked-state-v1";
 const sentEmailNotificationStorageKey = "nexus-email-notification-sent-v1";
 const persistenceDebounceMs = 400;
+const ticketStateOptions = [
+  { value: "intake", label: "Intake" },
+  { value: "clarification", label: "Clarification" },
+  { value: "approval", label: "Approval" },
+  { value: "jira_draft", label: "Jira draft" },
+  { value: "jira_synced", label: "Jira synced" },
+  { value: "escalated", label: "Escalated" },
+  { value: "closed", label: "Closed" }
+] as const satisfies readonly { value: TicketState; label: string }[];
+const REPORT_ALL_VALUE = "all";
+const reportChartColors = [
+  "var(--accent-2)",
+  "var(--success)",
+  "var(--warning)",
+  "var(--danger)",
+  "var(--neutral)",
+  "#546a8a",
+  "#287d88",
+  "#7c5f17"
+];
+
+const emptyAnalyticsReportFilters: AnalyticsReportFilters = {
+  region: REPORT_ALL_VALUE,
+  site: REPORT_ALL_VALUE,
+  product: REPORT_ALL_VALUE,
+  pru: REPORT_ALL_VALUE,
+  typeId: REPORT_ALL_VALUE,
+  state: REPORT_ALL_VALUE,
+  priority: REPORT_ALL_VALUE,
+  slaState: REPORT_ALL_VALUE
+};
+const releasePlanUnplannedLabel = "Unplanned release";
+const releasePlanPreprodFieldLabels = [
+  "preprod release date",
+  "pre-prod release date",
+  "pre prod release date",
+  "preproduction release date",
+  "pre-production release date",
+  "preproduction date",
+  "pre-prod date",
+  "preprod date",
+  "release start date",
+  "start release date",
+  "start date"
+];
+const releasePlanProdFieldLabels = [
+  "prod release date",
+  "production release date",
+  "production date",
+  "release date",
+  "prod date"
+];
+const releasePlanVersionFieldLabels = [
+  "target release version",
+  "release version",
+  "fix version",
+  "target fix version"
+];
+
+function getTicketStateLabel(state: TicketState): string {
+  return ticketStateOptions.find((option) => option.value === state)?.label ?? state.replace("_", " ");
+}
+
+function getTicketUpdateOptionLabels(options: ConfigOption[], currentValue: string): string[] {
+  const labels = options
+    .filter((option) => option.active)
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((option) => option.label)
+    .filter(Boolean);
+  const uniqueLabels = Array.from(new Set(labels));
+
+  if (currentValue && !uniqueLabels.includes(currentValue)) {
+    uniqueLabels.push(currentValue);
+  }
+
+  return uniqueLabels;
+}
+
+function normalizeTicketUpdateOptionValue(value: string, currentValue: string, allowedValues: string[]): string {
+  const trimmedValue = value.trim();
+
+  return trimmedValue && allowedValues.includes(trimmedValue) ? trimmedValue : currentValue;
+}
+
+function canEditTicketForPersona(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
+  if (!(ticketEditorRoles as readonly RoleKey[]).includes(persona.role)) {
+    return false;
+  }
+
+  if (persona.role === "admin") {
+    return true;
+  }
+
+  return personaCanActOnTicket(persona, ticket, config) || roleHasTicketAccess(ticket, persona.role, config);
+}
+
+function buildTicketUpdateForm(ticket: Ticket): TicketUpdateInput {
+  return {
+    title: ticket.title,
+    state: ticket.state,
+    priority: ticket.priority,
+    risk: ticket.risk,
+    description: ticket.description,
+    businessImpact: getEditableTicketBusinessImpact(ticket),
+    requesterNote: ""
+  };
+}
+
+function getEditableTicketBusinessImpact(ticket: Ticket): string {
+  const value = ticket.dynamicFields["Business impact"] ?? "";
+
+  return richTextComparableValue(value) === "not provided" ? "" : value;
+}
+
+function summarizeTicketUpdateValue(value: string, maxLength = 90): string {
+  const plainText = htmlToPlainTextFallback(value).replace(/\s+/g, " ").trim();
+
+  if (plainText) {
+    return plainText.length <= maxLength ? plainText : `${plainText.slice(0, maxLength - 3).trim()}...`;
+  }
+
+  if (/<img\b/i.test(value)) {
+    return "Image content";
+  }
+
+  return "Blank";
+}
+
+function buildRequesterTicketUpdateComment(
+  changes: TicketUpdateChange[],
+  requesterNote: string,
+  actor: RolePersonaOption
+): string {
+  const changeMarkup =
+    changes.length > 0
+      ? `<ul>${changes
+          .map(
+            (change) =>
+              `<li><strong>${escapeHtml(change.field)}:</strong> ${escapeHtml(change.oldValue)} -&gt; ${escapeHtml(
+                change.newValue
+              )}</li>`
+          )
+          .join("")}</ul>`
+      : "<p>No ticket fields changed.</p>";
+  const noteMarkup = requesterNote
+    ? `<p><strong>Requester note</strong></p>${requesterNote}`
+    : "";
+
+  return normalizeRichTextForStorage(
+    `<p><strong>${escapeHtml(actor.displayName)}</strong> updated the ticket as ${escapeHtml(
+      actor.roleLabel
+    )}.</p>${changeMarkup}${noteMarkup}`,
+    "html"
+  );
+}
+
 const initialTickets: Ticket[] = [];
 const initialNotifications: NotificationItem[] = [];
 const pullInActionOptions = [
@@ -926,11 +1455,36 @@ const escalationSeverityOptions = [
   { value: "critical", label: "Critical" }
 ] as const satisfies readonly { value: EscalationSeverity; label: string }[];
 const escalationStatusOptions = [
-  { value: "open", label: "Open" },
-  { value: "decision_pending", label: "Decision pending" },
-  { value: "mitigating", label: "Mitigating" },
-  { value: "resolved", label: "Resolved" }
+  { value: "open", label: "New" },
+  { value: "decision_pending", label: "Ongoing - decision" },
+  { value: "mitigating", label: "Ongoing - fixing" },
+  { value: "resolved", label: "Closed" }
 ] as const satisfies readonly { value: EscalationStatus; label: string }[];
+const escalationBoardColumns = [
+  {
+    id: "new",
+    title: "New",
+    statuses: ["open"],
+    empty: "No new escalations"
+  },
+  {
+    id: "ongoing",
+    title: "Ongoing",
+    statuses: ["decision_pending", "mitigating"],
+    empty: "No escalation in progress"
+  },
+  {
+    id: "closed",
+    title: "Closed",
+    statuses: ["resolved"],
+    empty: "No closed escalations"
+  }
+] as const satisfies readonly {
+  id: string;
+  title: string;
+  statuses: readonly EscalationStatus[];
+  empty: string;
+}[];
 const jiraDraftStageOptions = [
   { value: "metadata_loaded", label: "Metadata loaded" },
   { value: "estimation_review", label: "Estimation review" },
@@ -939,14 +1493,26 @@ const jiraDraftStageOptions = [
   { value: "synced", label: "Jira created" }
 ] as const satisfies readonly { value: Ticket["jiraDraft"]["status"]; label: string }[];
 const jiraFollowUpStatusOptions = [
-  { value: "created", label: "Jira created", tone: "success" },
+  { value: "created", label: "Planning", tone: "info" },
   { value: "in_progress", label: "In progress", tone: "info" },
+  { value: "it_test", label: "IT Test", tone: "warning" },
+  { value: "business_test", label: "Business Test", tone: "warning" },
   { value: "blocked", label: "Blocked", tone: "critical" },
-  { value: "it_test", label: "IT test", tone: "warning" },
-  { value: "business_test", label: "Business test", tone: "warning" },
   { value: "done", label: "Done", tone: "success" },
   { value: "rejected", label: "Rejected", tone: "critical" }
 ] as const satisfies readonly { value: SelectableJiraFollowUpStatus; label: string; tone: "info" | "warning" | "critical" | "success" }[];
+const jiraPortalStatusTimelineOptions = [
+  { value: "not_created", label: "New", tone: "neutral" },
+  ...jiraFollowUpStatusOptions
+] as const satisfies readonly {
+  value: JiraFollowUpStatus;
+  label: string;
+  tone: "info" | "warning" | "critical" | "success" | "neutral";
+}[];
+const jiraReadyToCreateNotificationRoles = ["software_architect", "release_manager"] as const satisfies readonly RoleKey[];
+function isJiraReadyToCreateNotificationRole(role: RoleKey): boolean {
+  return jiraReadyToCreateNotificationRoles.some((candidate) => candidate === role);
+}
 const notificationEventOptions = [
   { value: "ticketSubmitted", label: "Ticket submitted" },
   { value: "approvalRequested", label: "Approval requested" },
@@ -955,6 +1521,7 @@ const notificationEventOptions = [
   { value: "decisionMade", label: "Decision made" },
   { value: "ticketApproved", label: "Ticket approved" },
   { value: "ticketRejected", label: "Ticket rejected" },
+  { value: "jiraReadyToCreate", label: "Jira ready to create" },
   { value: "jiraCreated", label: "Jira created" },
   { value: "slaBreach", label: "SLA breach" },
   { value: "escalationTriggered", label: "Escalation triggered" },
@@ -976,7 +1543,7 @@ const notificationTokenSamples = {
   ticketTitle: "Production deployment approval missing",
   jiraKey: "SCANIA-12345",
   participantName: "Yoones",
-  priority: "High",
+  priority: "1 - High",
   ticketStatus: "Waiting for clarification",
   createdBy: "Maja Lind",
   assignedTo: "Local Product Owner",
@@ -984,7 +1551,9 @@ const notificationTokenSamples = {
   dueDate: "2026-06-05 16:00",
   releaseVersion: "2026.06",
   requestedByRole: "Release Manager",
-  portalUrl: "https://support.scania.com/tickets/SUP-1042"
+  portalHomeUrl: "https://support.scania.com",
+  portalUrl: "https://support.scania.com/?ticket=SUP-1042",
+  ticketUrl: "https://support.scania.com/?ticket=SUP-1042"
 } as const satisfies Record<string, string>;
 const notificationTokenList = Object.keys(notificationTokenSamples);
 const legacyNotificationTemplateDefaults: Record<
@@ -1096,14 +1665,26 @@ function normalizeTicketTypeWorkflow(workflow: TicketTypeWorkflowConfig): Ticket
   const stepIds = workflow.stepIds?.length
     ? workflow.stepIds.filter((stepId) => templateStepIds.includes(stepId) || stepOverrideIds.has(stepId))
     : templateStepIds;
+  const jiraCreatorStepIds = getJiraCreatorStepIds({
+    stepIds,
+    jiraCreatorStepId: workflow.jiraCreatorStepId,
+    jiraCreatorStepIds: workflow.jiraCreatorStepIds
+  }).filter((stepId) => stepIds.includes(stepId));
+  const fallbackJiraCreatorStepId = stepIds.includes(workflow.jiraCreatorStepId)
+    ? workflow.jiraCreatorStepId
+    : stepIds[0] ?? "";
+  const normalizedJiraCreatorStepIds = jiraCreatorStepIds.length > 0
+    ? jiraCreatorStepIds
+    : fallbackJiraCreatorStepId
+      ? [fallbackJiraCreatorStepId]
+      : [];
 
   return {
     ...workflow,
     escalationPolicyId: workflow.escalationPolicyId ?? template?.escalationPolicyId ?? "",
     stepIds,
-    jiraCreatorStepId: stepIds.includes(workflow.jiraCreatorStepId)
-      ? workflow.jiraCreatorStepId
-      : stepIds[0] ?? "",
+    jiraCreatorStepId: normalizedJiraCreatorStepIds[0] ?? "",
+    jiraCreatorStepIds: normalizedJiraCreatorStepIds,
     stepOverrides: workflow.stepOverrides ?? {}
   };
 }
@@ -1136,7 +1717,7 @@ function getDefaultNotificationSeverity(eventType: NotificationEventType): Notif
     return "critical";
   }
 
-  if (eventType === "clarificationRequested" || eventType === "approvalRequested") {
+  if (eventType === "clarificationRequested" || eventType === "approvalRequested" || eventType === "jiraReadyToCreate") {
     return "warning";
   }
 
@@ -1224,6 +1805,9 @@ function normalizeProductConfigForSinglePruSites(
 function normalizeAdminConfig(config: AdminConfig): AdminConfig {
   const emptyConfig = createEmptyAdminConfig();
   const regionSites = Array.isArray(config.regionSites) ? config.regionSites : [];
+  const rawPriorities = Array.isArray(config.priorities) ? config.priorities : [];
+  const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
+  const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
   const roleDomains = Array.isArray(config.roleDomains)
     ? config.roleDomains.map((roleDomain) => normalizeRoleDomainConfig(roleDomain))
     : [];
@@ -1239,12 +1823,20 @@ function normalizeAdminConfig(config: AdminConfig): AdminConfig {
       ? config.products.map((product) => normalizeProductConfigForSinglePruSites(product, regionSites))
       : [],
     requestTypes: Array.isArray(config.requestTypes) ? config.requestTypes : [],
-    priorities: Array.isArray(config.priorities) ? config.priorities : [],
+    priorities,
     riskOptions: Array.isArray(config.riskOptions) ? config.riskOptions : [],
     statusColors: mergeDefaultStatusColors(Array.isArray(config.statusColors) ? config.statusColors : []),
     requestCategories: Array.isArray(config.requestCategories) ? config.requestCategories : [],
-    slaRules: Array.isArray(config.slaRules) ? config.slaRules : [],
-    escalationPolicies: Array.isArray(config.escalationPolicies) ? config.escalationPolicies : [],
+    slaRules: shouldMigrateLegacyPriorities
+      ? migrateLegacyPriorityReferences(Array.isArray(config.slaRules) ? config.slaRules : [])
+      : Array.isArray(config.slaRules)
+        ? config.slaRules
+        : [],
+    escalationPolicies: shouldMigrateLegacyPriorities
+      ? migrateLegacyPriorityReferences(Array.isArray(config.escalationPolicies) ? config.escalationPolicies : [])
+      : Array.isArray(config.escalationPolicies)
+        ? config.escalationPolicies
+        : [],
     notificationTemplates: normalizeNotificationTemplates(
       Array.isArray(config.notificationTemplates) ? config.notificationTemplates : []
     ),
@@ -1274,7 +1866,61 @@ function getVisibleVisibilityOptions(role: RoleKey) {
 }
 
 function formatLocalDateTime(date: Date): string {
-  return date.toISOString().slice(0, 16).replace("T", " ");
+  return formatLocalTimestamp(date);
+}
+
+function parseDateTimeValue(value: string): number {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return 0;
+  }
+
+  const normalizedValue = trimmedValue.includes("T")
+    ? trimmedValue
+    : /^\d{4}-\d{2}-\d{2}$/.test(trimmedValue)
+      ? `${trimmedValue}T00:00:00`
+      : trimmedValue.replace(" ", "T");
+  const parsed = Date.parse(normalizedValue);
+
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function formatDateTimeDisplay(value: string): string {
+  const parsed = parseDateTimeValue(value);
+
+  return parsed ? formatLocalTimestamp(new Date(parsed)) : value;
+}
+
+function formatReleaseDate(value?: string): string {
+  const trimmedValue = value?.trim() ?? "";
+
+  if (!trimmedValue) {
+    return "";
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmedValue)) {
+    return trimmedValue;
+  }
+
+  const parsedDate = Date.parse(trimmedValue);
+
+  return Number.isNaN(parsedDate) ? trimmedValue : new Date(parsedDate).toISOString().slice(0, 10);
+}
+
+function formatReleaseDateDisplay(value?: string): string {
+  const normalizedDate = formatReleaseDate(value);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
+    return normalizedDate;
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(new Date(`${normalizedDate}T00:00:00Z`));
 }
 
 function formatDateTimeLocalValue(date: Date): string {
@@ -1282,7 +1928,118 @@ function formatDateTimeLocalValue(date: Date): string {
 }
 
 function formatEscalationDueDate(value: string): string {
-  return value.replace("T", " ");
+  return formatDateTimeDisplay(value);
+}
+
+function createEscalationDraftId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createEmptyEscalationPersonInput(): EscalationPersonInput {
+  return {
+    id: createEscalationDraftId("person"),
+    name: "",
+    email: "",
+    role: "Manager"
+  };
+}
+
+function createEmptyEscalationActionItemInput(): EscalationActionItemInput {
+  return {
+    id: createEscalationDraftId("action"),
+    label: "",
+    done: false
+  };
+}
+
+function stripEscalationChecklistPrefix(value: string): string {
+  return value.replace(/^\s*\[(?:x|X| )\]\s*/, "").trim();
+}
+
+function parseEscalationActionPlanItems(value?: string): EscalationActionItem[] {
+  return htmlToPlainTextFallback(value ?? "")
+    .replace(/\r\n|\r/g, "\n")
+    .split("\n")
+    .map((line, index) => ({
+      id: `action-${index}`,
+      label: stripEscalationChecklistPrefix(line),
+      done: /^\s*\[(?:x|X)\]/.test(line)
+    }))
+    .filter((item) => item.label);
+}
+
+function normalizeEscalationActionItems(
+  actionItems?: EscalationActionItemInput[] | EscalationActionItem[],
+  fallbackPlan?: string
+): EscalationActionItem[] {
+  const normalizedItems = (actionItems ?? [])
+    .map((item, index) => ({
+      id: item.id || `action-${index}`,
+      label: stripEscalationChecklistPrefix(item.label),
+      done: Boolean(item.done)
+    }))
+    .filter((item) => item.label);
+
+  if (normalizedItems.length > 0) {
+    return normalizedItems;
+  }
+
+  return parseEscalationActionPlanItems(fallbackPlan);
+}
+
+function formatEscalationActionItemsForStorage(items: EscalationActionItem[]): string {
+  return items.map((item) => `${item.done ? "[x]" : "[ ]"} ${item.label}`).join("\n");
+}
+
+function getEscalationActionItems(escalation: Ticket["escalations"][number]): EscalationActionItem[] {
+  return normalizeEscalationActionItems(escalation.actionItems, escalation.actionPlan || escalation.mitigationPlan);
+}
+
+function normalizeEscalationPeople(
+  people?: EscalationPersonInput[] | EscalationPerson[],
+  managerName?: string,
+  managerEmail?: string
+): EscalationPerson[] {
+  const seenKeys = new Set<string>();
+  const normalizedPeople = [
+    ...(people ?? []),
+    managerName?.trim() || managerEmail?.trim()
+      ? {
+          id: "manager-primary",
+          name: managerName?.trim() ?? "",
+          email: managerEmail?.trim() ?? "",
+          role: "Manager"
+        }
+      : undefined
+  ]
+    .filter((person): person is EscalationPersonInput | EscalationPerson => Boolean(person))
+    .map((person, index) => ({
+      id: person.id || `person-${index}`,
+      name: person.name.trim(),
+      email: person.email?.trim() ?? "",
+      role: person.role?.trim() ?? ""
+    }))
+    .filter((person) => person.name || person.email)
+    .filter((person) => {
+      const key = (person.email || person.name).toLowerCase();
+
+      if (seenKeys.has(key)) {
+        return false;
+      }
+
+      seenKeys.add(key);
+      return true;
+    });
+
+  return normalizedPeople;
+}
+
+function getEscalationPeople(escalation: Ticket["escalations"][number]): EscalationPerson[] {
+  return normalizeEscalationPeople(escalation.people, escalation.managerName, escalation.managerEmail);
+}
+
+function getPrimaryEscalationPerson(people: EscalationPerson[]): EscalationPerson | undefined {
+  return people.find((person) => person.email) ?? people[0];
 }
 
 function createDefaultEscalationInput(): NewEscalationInput {
@@ -1294,9 +2051,42 @@ function createDefaultEscalationInput(): NewEscalationInput {
     urgency: "",
     requestedAction: "",
     mitigationPlan: "",
+    actionPlan: "",
+    actionItems: [createEmptyEscalationActionItemInput()],
+    meetingSeries: "",
     decisionMaker: "",
+    managerName: "",
+    managerEmail: "",
+    people: [createEmptyEscalationPersonInput()],
+    sendManagerInvite: false,
     dueAt: formatDateTimeLocalValue(new Date(Date.now() + 24 * 60 * 60 * 1000))
   };
+}
+
+function getEscalationStatusLabel(status: EscalationStatus): string {
+  return escalationStatusOptions.find((option) => option.value === status)?.label ?? status.replace("_", " ");
+}
+
+function getEscalationStatusLane(status: EscalationStatus): (typeof escalationBoardColumns)[number]["id"] {
+  const column = escalationBoardColumns.find((candidate) =>
+    (candidate.statuses as readonly EscalationStatus[]).includes(status)
+  );
+
+  return column?.id ?? "new";
+}
+
+function getEscalationStatusTimestampLabel(value?: string): string {
+  if (!value) {
+    return "";
+  }
+
+  const parsed = parseDateTimeValue(value);
+
+  if (!parsed) {
+    return "";
+  }
+
+  return formatLocalTimestamp(new Date(parsed));
 }
 
 function normalizeId(value: string, prefix: string): string {
@@ -1474,6 +2264,507 @@ function getRegionForSite(config: AdminConfig, siteName: string): string {
   return config.regionSites.find((site) => site.site === siteName && site.active)?.region ?? "";
 }
 
+function getReportRegionForTicket(config: AdminConfig, ticket: Ticket): string {
+  return getRegionForSite(config, ticket.site) || "Unassigned region";
+}
+
+function getReportTicketTypeLabel(config: AdminConfig, ticket: Ticket): string {
+  return getConfigTicketTypeLabel(config, ticket.typeId) || "Unassigned type";
+}
+
+function getReportValue(value: string, fallback: string): string {
+  return value.trim() || fallback;
+}
+
+function uniqueSortedReportValues(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((left, right) =>
+    left.localeCompare(right)
+  );
+}
+
+function buildReportOptions(values: string[], allLabel: string): ReportOption[] {
+  return [
+    { value: REPORT_ALL_VALUE, label: allLabel },
+    ...uniqueSortedReportValues(values).map((value) => ({ value, label: value }))
+  ];
+}
+
+function buildReportBuckets(tickets: Ticket[], getLabel: (ticket: Ticket) => string): ReportBucket[] {
+  const counts = new Map<string, number>();
+
+  for (const ticket of tickets) {
+    const label = getReportValue(getLabel(ticket), "Unassigned");
+
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+
+  const total = Math.max(tickets.length, 1);
+
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([label, value], index) => ({
+      label,
+      value,
+      percentage: (value / total) * 100,
+      color: reportChartColors[index % reportChartColors.length]
+    }));
+}
+
+function filterAnalyticsReportTickets(
+  tickets: Ticket[],
+  config: AdminConfig,
+  filters: AnalyticsReportFilters
+): Ticket[] {
+  return tickets.filter((ticket) => {
+    if (filters.region !== REPORT_ALL_VALUE && getReportRegionForTicket(config, ticket) !== filters.region) {
+      return false;
+    }
+
+    if (filters.site !== REPORT_ALL_VALUE && ticket.site !== filters.site) {
+      return false;
+    }
+
+    if (filters.product !== REPORT_ALL_VALUE && ticket.product !== filters.product) {
+      return false;
+    }
+
+    if (filters.pru !== REPORT_ALL_VALUE && ticket.pru !== filters.pru) {
+      return false;
+    }
+
+    if (filters.typeId !== REPORT_ALL_VALUE && ticket.typeId !== filters.typeId) {
+      return false;
+    }
+
+    if (filters.state !== REPORT_ALL_VALUE && ticket.state !== filters.state) {
+      return false;
+    }
+
+    if (filters.priority !== REPORT_ALL_VALUE && ticket.priority !== filters.priority) {
+      return false;
+    }
+
+    if (filters.slaState !== REPORT_ALL_VALUE && ticket.slaState !== filters.slaState) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function analyticsReportFiltersMatch(left: AnalyticsReportFilters, right: AnalyticsReportFilters): boolean {
+  return (
+    left.region === right.region &&
+    left.site === right.site &&
+    left.product === right.product &&
+    left.pru === right.pru &&
+    left.typeId === right.typeId &&
+    left.state === right.state &&
+    left.priority === right.priority &&
+    left.slaState === right.slaState
+  );
+}
+
+function isBugReportTicket(config: AdminConfig, ticket: Ticket): boolean {
+  return ticket.typeId === "bug" || getReportTicketTypeLabel(config, ticket).trim().toLowerCase() === "bug";
+}
+
+function getReportFilterLabel(options: ReportOption[], value: string): string {
+  return options.find((option) => option.value === value)?.label ?? value;
+}
+
+function getReportPieGradient(buckets: ReportBucket[]): string {
+  const total = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+
+  if (total === 0) {
+    return "var(--surface-muted)";
+  }
+
+  let position = 0;
+  const slices = buckets.map((bucket) => {
+    const start = position;
+    position += (bucket.value / total) * 100;
+
+    return `${bucket.color} ${start.toFixed(2)}% ${position.toFixed(2)}%`;
+  });
+
+  return `conic-gradient(${slices.join(", ")})`;
+}
+
+function normalizeReleasePlanFieldLabel(value: string): string {
+  return value
+    .replace(/\s*\(template\)\s*$/i, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function isMissingReleasePlanValue(value?: string): boolean {
+  const normalizedValue = value?.trim().toLowerCase() ?? "";
+
+  return (
+    !normalizedValue ||
+    normalizedValue === "not provided" ||
+    normalizedValue === "not selected" ||
+    normalizedValue === "none" ||
+    normalizedValue === "n/a"
+  );
+}
+
+function getTicketDynamicFieldByLabels(ticket: Ticket, labels: string[]): string {
+  const normalizedLabels = new Set(labels.map((label) => normalizeReleasePlanFieldLabel(label)));
+  const matchedEntry = Object.entries(ticket.dynamicFields).find(([label, value]) => {
+    return normalizedLabels.has(normalizeReleasePlanFieldLabel(label)) && !isMissingReleasePlanValue(value);
+  });
+
+  return matchedEntry?.[1]?.trim() ?? "";
+}
+
+function getReleasePlanVersion(ticket: Ticket): string {
+  const fixVersion = ticket.jiraDraft.fixVersion?.trim() ?? "";
+
+  if (fixVersion) {
+    return fixVersion;
+  }
+
+  return getTicketDynamicFieldByLabels(ticket, releasePlanVersionFieldLabels) || releasePlanUnplannedLabel;
+}
+
+function getReleasePlanVersionDateLookupKey(projectKey: string, versionName: string): string {
+  return `${projectKey.trim().toUpperCase()}::${normalizeMetadataName(versionName)}`;
+}
+
+function getReleasePlanVersionDate(
+  ticket: Ticket,
+  versionDateLookup?: ReleasePlanVersionDateLookup,
+  config?: AdminConfig
+): ReleasePlanVersionDate | undefined {
+  const versionName = getReleasePlanVersion(ticket);
+
+  if (!versionDateLookup || versionName === releasePlanUnplannedLabel) {
+    return undefined;
+  }
+
+  const projectKey =
+    getValidJiraProjectKey(ticket.jiraDraft.project) ||
+    getValidJiraProjectKey(config?.integrations.jira.defaultProjectKey);
+
+  if (projectKey) {
+    const projectVersionDate = versionDateLookup.get(getReleasePlanVersionDateLookupKey(projectKey, versionName));
+
+    if (projectVersionDate) {
+      return projectVersionDate;
+    }
+  }
+
+  return versionDateLookup.get(getReleasePlanVersionDateLookupKey("*", versionName));
+}
+
+function getReleasePlanDateValue(
+  ticket: Ticket,
+  dateKey: ReleasePlanDateKey,
+  versionDateLookup?: ReleasePlanVersionDateLookup,
+  config?: AdminConfig
+): string {
+  const versionDate = getReleasePlanVersionDate(ticket, versionDateLookup, config);
+
+  if (dateKey === "preprod") {
+    const dynamicPreprodDate = getTicketDynamicFieldByLabels(ticket, releasePlanPreprodFieldLabels);
+
+    return dynamicPreprodDate || ticket.jiraDraft.fixVersionStartDate?.trim() || versionDate?.startDate || "";
+  }
+
+  const dynamicProdDate = getTicketDynamicFieldByLabels(ticket, releasePlanProdFieldLabels);
+
+  return dynamicProdDate || ticket.jiraDraft.fixVersionReleaseDate?.trim() || versionDate?.releaseDate || "";
+}
+
+function formatReleasePlanDate(value: string): string {
+  return isMissingReleasePlanValue(value) ? "Not planned" : formatReleaseDateDisplay(value);
+}
+
+function getReleasePlanSortDate(value: string): number {
+  if (isMissingReleasePlanValue(value)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  const normalizedDate = formatReleaseDate(value);
+  const parsedDate = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate) ? `${normalizedDate}T00:00:00Z` : normalizedDate);
+
+  return Number.isNaN(parsedDate) ? Number.MAX_SAFE_INTEGER : parsedDate;
+}
+
+function selectEarliestReleasePlanDate(values: string[]): string {
+  const validValues = values.filter((value) => !isMissingReleasePlanValue(value));
+
+  if (!validValues.length) {
+    return "";
+  }
+
+  return [...validValues].sort((left, right) => getReleasePlanSortDate(left) - getReleasePlanSortDate(right))[0];
+}
+
+function getReleasePlanTicket(
+  ticket: Ticket,
+  versionDateLookup?: ReleasePlanVersionDateLookup,
+  config?: AdminConfig
+): ReleasePlanTicket {
+  const sprintStatus = getTicketJiraFollowUpStatus(ticket);
+
+  return {
+    ticket,
+    releaseVersion: getReleasePlanVersion(ticket),
+    preprodDate: getReleasePlanDateValue(ticket, "preprod", versionDateLookup, config),
+    prodDate: getReleasePlanDateValue(ticket, "prod", versionDateLookup, config),
+    sprint: ticket.jiraDraft.sprint?.trim() || "No sprint",
+    sprintStatus,
+    sprintStatusLabel: getJiraFollowUpStatusLabel(sprintStatus),
+    sprintStatusTone: getJiraFollowUpStatusTone(sprintStatus)
+  };
+}
+
+function getTicketEstimateHours(ticket: Ticket): number {
+  const estimateHours = ticket.jiraDraft.estimateHours;
+
+  if (typeof estimateHours === "number" && Number.isFinite(estimateHours) && estimateHours > 0) {
+    return estimateHours;
+  }
+
+  const storyPoints = ticket.jiraDraft.storyPoints;
+
+  if (typeof storyPoints === "number" && Number.isFinite(storyPoints) && storyPoints > 0) {
+    return storyPoints * 6;
+  }
+
+  return 0;
+}
+
+function getTicketRemainingHours(ticket: Ticket): number {
+  const syncedRemainingHours = ticket.jiraDraft.remainingHours;
+
+  if (typeof syncedRemainingHours === "number" && Number.isFinite(syncedRemainingHours) && syncedRemainingHours >= 0) {
+    return syncedRemainingHours;
+  }
+
+  const estimateHours = getTicketEstimateHours(ticket);
+  const status = getTicketJiraFollowUpStatus(ticket);
+
+  if (estimateHours <= 0 || status === "done" || status === "rejected") {
+    return 0;
+  }
+
+  if (status === "business_test") {
+    return Math.ceil(estimateHours * 0.2);
+  }
+
+  if (status === "in_progress" || status === "it_test") {
+    return Math.ceil(estimateHours * 0.5);
+  }
+
+  return estimateHours;
+}
+
+function getTicketResourceName(ticket: Ticket): string {
+  const assignee = ticket.jiraDraft.assignee?.trim();
+
+  if (assignee) {
+    return assignee;
+  }
+
+  const activeStep = ticket.workflow.find((step) => step.status === "active" || step.status === "delegated");
+
+  return activeStep?.ownerName?.trim() || "Unassigned";
+}
+
+function getSprintPlanLaneKey(item: ReleasePlanTicket): SprintPlanLaneKey {
+  if (item.ticket.typeId === "feature_request") {
+    return "feature";
+  }
+
+  if (item.sprintStatus === "business_test") {
+    return "business_test";
+  }
+
+  if (item.sprintStatus === "in_progress" || item.sprintStatus === "it_test") {
+    return "current";
+  }
+
+  return "planning";
+}
+
+function buildSprintPlanLane(key: SprintPlanLaneKey, tickets: ReleasePlanTicket[]): SprintPlanLane {
+  const labels: Record<SprintPlanLaneKey, { label: string; description: string }> = {
+    planning: {
+      label: "Planning",
+      description: "Backlog, ready, or waiting for work to start."
+    },
+    current: {
+      label: "Current",
+      description: "Implementation or IT validation is active."
+    },
+    business_test: {
+      label: "Business test",
+      description: "Business validation and acceptance are active."
+    },
+    feature: {
+      label: "Feature sprint",
+      description: "Feature requests planned for sprint delivery."
+    }
+  };
+
+  return {
+    key,
+    label: labels[key].label,
+    description: labels[key].description,
+    tickets,
+    totalEstimateHours: tickets.reduce((sum, item) => sum + getTicketEstimateHours(item.ticket), 0),
+    remainingHours: tickets.reduce((sum, item) => sum + getTicketRemainingHours(item.ticket), 0),
+    resources: uniqueSortedReportValues(tickets.map((item) => getTicketResourceName(item.ticket)))
+  };
+}
+
+function buildSprintPlanGroups(
+  tickets: Ticket[],
+  versionDateLookup?: ReleasePlanVersionDateLookup,
+  config?: AdminConfig,
+  metadataSprints: ReleasePlanSprintMetadata[] = []
+): SprintPlanGroup[] {
+  const releaseTickets = tickets.map((ticket) => getReleasePlanTicket(ticket, versionDateLookup, config));
+  const groups = new Map<string, { sprint: string; boardName: string; metadata?: ReleasePlanSprintMetadata; items: ReleasePlanTicket[] }>();
+
+  for (const sprint of metadataSprints) {
+    const boardName = sprint.boardName || "No product board";
+    const groupKey = `${boardName}::${sprint.name}`;
+
+    groups.set(groupKey, {
+      sprint: sprint.name,
+      boardName,
+      metadata: sprint,
+      items: groups.get(groupKey)?.items ?? []
+    });
+  }
+
+  for (const item of releaseTickets) {
+    const boardName = item.ticket.jiraDraft.board?.trim() || "No product board";
+    const groupKey = `${boardName}::${item.sprint}`;
+    const current = groups.get(groupKey) ?? {
+      sprint: item.sprint,
+      boardName,
+      items: []
+    };
+
+    groups.set(groupKey, {
+      ...current,
+      items: [...current.items, item]
+    });
+  }
+
+  return Array.from(groups.values())
+    .map(({ sprint, boardName, metadata, items }) => {
+      const laneKeys: SprintPlanLaneKey[] = ["planning", "current", "business_test", "feature"];
+      const lanes = laneKeys.map((laneKey) =>
+        buildSprintPlanLane(
+          laneKey,
+          items.filter((item) => getSprintPlanLaneKey(item) === laneKey)
+        )
+      );
+
+      return {
+        id: normalizeId(`${boardName}-${sprint}`, "sprint"),
+        sprint,
+        boardNames: uniqueSortedReportValues([boardName]),
+        state: metadata?.state ?? "",
+        startDate: metadata?.startDate ? formatDateTimeDisplay(metadata.startDate) : "",
+        endDate: metadata?.endDate ? formatDateTimeDisplay(metadata.endDate) : "",
+        releaseVersions: uniqueSortedReportValues(items.map((item) => item.releaseVersion)),
+        totalEstimateHours: items.reduce((sum, item) => sum + getTicketEstimateHours(item.ticket), 0),
+        remainingHours: items.reduce((sum, item) => sum + getTicketRemainingHours(item.ticket), 0),
+        taskCount: items.length,
+        resources: uniqueSortedReportValues(items.map((item) => getTicketResourceName(item.ticket))),
+        lanes
+      };
+    })
+    .sort((left, right) => {
+      if (left.sprint === "No sprint") {
+        return 1;
+      }
+
+      if (right.sprint === "No sprint") {
+        return -1;
+      }
+
+      const boardCompare = left.boardNames.join(", ").localeCompare(right.boardNames.join(", "), undefined, { numeric: true });
+      return boardCompare || left.sprint.localeCompare(right.sprint, undefined, { numeric: true });
+    });
+}
+
+function buildReleasePlanGroups(
+  tickets: Ticket[],
+  versionDateLookup?: ReleasePlanVersionDateLookup,
+  config?: AdminConfig
+): ReleasePlanGroup[] {
+  const groups = new Map<string, ReleasePlanTicket[]>();
+
+  for (const ticket of tickets) {
+    const releaseTicket = getReleasePlanTicket(ticket, versionDateLookup, config);
+    const groupKey = releaseTicket.releaseVersion;
+
+    groups.set(groupKey, [...(groups.get(groupKey) ?? []), releaseTicket]);
+  }
+
+  return Array.from(groups.entries())
+    .map(([releaseVersion, releaseTickets]) => {
+      const preprodDate = selectEarliestReleasePlanDate(releaseTickets.map((item) => item.preprodDate));
+      const prodDate = selectEarliestReleasePlanDate(releaseTickets.map((item) => item.prodDate));
+      const statusCounts = Array.from(
+        releaseTickets.reduce((counts, item) => {
+          const current = counts.get(item.sprintStatusLabel) ?? {
+            label: item.sprintStatusLabel,
+            value: 0,
+            tone: item.sprintStatusTone
+          };
+
+          counts.set(item.sprintStatusLabel, { ...current, value: current.value + 1 });
+
+          return counts;
+        }, new Map<string, { label: string; value: number; tone: "info" | "warning" | "critical" | "success" }>())
+      )
+        .map(([, value]) => value)
+        .sort((left, right) => right.value - left.value || left.label.localeCompare(right.label));
+
+      return {
+        id: normalizeId(releaseVersion, "release"),
+        releaseVersion,
+        preprodDate,
+        prodDate,
+        sortDate: Math.min(getReleasePlanSortDate(preprodDate), getReleasePlanSortDate(prodDate)),
+        tickets: [...releaseTickets].sort((left, right) => {
+          const statusCompare = left.sprintStatusLabel.localeCompare(right.sprintStatusLabel);
+
+          return statusCompare || right.ticket.key.localeCompare(left.ticket.key, undefined, { numeric: true });
+        }),
+        sprintNames: uniqueSortedReportValues(releaseTickets.map((item) => item.sprint)),
+        statusCounts
+      };
+    })
+    .sort((left, right) => {
+      if (left.sortDate !== right.sortDate) {
+        return left.sortDate - right.sortDate;
+      }
+
+      if (left.releaseVersion === releasePlanUnplannedLabel) {
+        return 1;
+      }
+
+      if (right.releaseVersion === releasePlanUnplannedLabel) {
+        return -1;
+      }
+
+      return left.releaseVersion.localeCompare(right.releaseVersion, undefined, { numeric: true });
+    });
+}
+
 function getFormTemplateForTicket(
   config: AdminConfig,
   productName: string,
@@ -1540,23 +2831,15 @@ function getSlaLabel(state: SlaState): string {
 }
 
 function parseTicketTimestamp(value: string): number {
-  const parsed = Date.parse(value.includes("T") ? value : value.replace(" ", "T"));
-
-  return Number.isNaN(parsed) ? 0 : parsed;
+  return parseDateTimeValue(value);
 }
 
 function formatTicketListDate(value: string): string {
-  const parsed = parseTicketTimestamp(value);
+  return formatDateTimeDisplay(value);
+}
 
-  if (!parsed) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric"
-  }).format(new Date(parsed));
+function formatTicketCommentTimestamp(value: string): string {
+  return formatDateTimeDisplay(value);
 }
 
 function getTicketSubmitter(ticket: Ticket): string {
@@ -1568,6 +2851,36 @@ function getTicketSubmitter(ticket: Ticket): string {
     ticket.dynamicFields["User role"] ??
     "Unknown"
   );
+}
+
+function personaTextMatchesCandidate(persona: RolePersonaOption, candidate?: string): boolean {
+  const normalizedCandidate = candidate?.trim().toLowerCase() ?? "";
+
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  return [persona.displayName, persona.email, persona.initials]
+    .filter(Boolean)
+    .some((value) => {
+      const normalizedValue = value.trim().toLowerCase();
+
+      return (
+        normalizedCandidate === normalizedValue ||
+        normalizedCandidate.startsWith(`${normalizedValue} (`)
+      );
+    });
+}
+
+function ticketWasSubmittedByPersona(ticket: Ticket, persona: RolePersonaOption): boolean {
+  const createdComment = ticket.comments.find((comment) => comment.source === "portal");
+  const createdAudit = ticket.audit.find((entry) => entry.eventType === "Ticket created");
+
+  return [
+    getTicketSubmitter(ticket),
+    createdComment?.author,
+    createdAudit?.actor
+  ].some((candidate) => personaTextMatchesCandidate(persona, candidate));
 }
 
 function normalizeRoleText(value: string): string {
@@ -1821,6 +3134,7 @@ function roleHasTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig)
       (thread) => roleMatchesClarificationAssignee(role, thread.assignedTo) || roleMatchesClarificationRequester(role, thread)
     ) ||
     ticket.escalations.some((escalation) => roleTextMatches(roleLabel, escalation.decisionMaker)) ||
+    (canCreateJiraForTicket(ticket) && isJiraReadyToCreateNotificationRole(role)) ||
     roleHasParticipantAccess(ticket, roleLabel) ||
     roleHasConfiguredTicketScope(ticket, role, config)
   );
@@ -1891,6 +3205,19 @@ function getClarificationThreadUpdatedAt(thread: ClarificationThreadRecord): num
   return parseTicketTimestamp(lastMessage?.createdAt ?? thread.dueAt);
 }
 
+function compareClarificationTimelineEntriesNewestFirst(
+  left: ClarificationTimelineEntry,
+  right: ClarificationTimelineEntry
+): number {
+  const createdAtDifference = right.createdAtMs - left.createdAtMs;
+
+  if (createdAtDifference !== 0) {
+    return createdAtDifference;
+  }
+
+  return right.message.id.localeCompare(left.message.id);
+}
+
 function getClarificationGroupStatus(threads: ClarificationThreadRecord[]): ClarificationThreadRecord["status"] {
   if (threads.some((thread) => thread.status === "reopened")) {
     return "reopened";
@@ -1933,8 +3260,11 @@ function buildClarificationThreadGroups(ticket: Ticket): ClarificationThreadGrou
             createdAtMs: parseTicketTimestamp(message.createdAt)
           }))
         )
-        .sort((left, right) => left.createdAtMs - right.createdAtMs);
-      const latestTimelineEntry = timeline[timeline.length - 1];
+        .sort(compareClarificationTimelineEntriesNewestFirst);
+      const visibleTimeline = timeline.filter(
+        (entry) => !isDuplicateInitialClarificationMessage(entry.thread, entry.message)
+      );
+      const latestTimelineEntry = visibleTimeline[0] ?? timeline[0];
 
       return {
         id: `${ticket.key}-${groupId}`,
@@ -2023,11 +3353,38 @@ function isDuplicateInitialClarificationMessage(
 function getClarificationReplyTargetLabel(thread: ClarificationThreadRecord, index: number): string {
   const question = getPlainTextSnippet(getClarificationDisplayBody(thread, thread.question));
   const latestMessage = getLastClarificationMessage(thread);
-  const timestamp = latestMessage ? formatClarificationTimestamp(latestMessage.createdAt) : thread.dueAt;
+  const timestamp = latestMessage ? formatClarificationTimestamp(latestMessage.createdAt) : formatDateTimeDisplay(thread.dueAt);
   const requesterRole = getClarificationRequesterRole(thread);
   const latestRole = latestMessage?.role ?? requesterRole;
 
   return `${index + 1}. ${thread.status} · asked by ${requesterRole} · latest ${latestRole} · ${question || thread.level} · ${timestamp}`;
+}
+
+function getClarificationAssigneeLabels(assignedTo: string): string[] {
+  const labels = assignedTo
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean);
+
+  return labels.length > 0 ? labels : assignedTo.trim() ? [assignedTo.trim()] : [];
+}
+
+function getUniqueClarificationAssigneeLabels(labels: string[]): string[] {
+  const seenLabels = new Set<string>();
+  const uniqueLabels: string[] = [];
+
+  for (const label of labels) {
+    const normalizedLabel = normalizeClarificationRoleText(label);
+
+    if (!normalizedLabel || seenLabels.has(normalizedLabel)) {
+      continue;
+    }
+
+    seenLabels.add(normalizedLabel);
+    uniqueLabels.push(label);
+  }
+
+  return uniqueLabels;
 }
 
 function roleMatchesClarificationAssignee(role: RoleKey, assignedTo: string): boolean {
@@ -2035,14 +3392,33 @@ function roleMatchesClarificationAssignee(role: RoleKey, assignedTo: string): bo
     return true;
   }
 
-  const roleLabel = normalizeRoleText(getAdminRoleLabel(role));
-  const assignee = normalizeRoleText(assignedTo);
+  const roleLabel = normalizeClarificationRoleText(getAdminRoleLabel(role));
 
-  if (role === "requester" && (assignee === "requester" || assignee === "user")) {
-    return true;
-  }
+  return getClarificationAssigneeLabels(assignedTo).some(
+    (assignee) => normalizeClarificationRoleText(assignee) === roleLabel
+  );
+}
 
-  return assignee === roleLabel;
+function clarificationRoleHasAnswered(thread: Ticket["clarifications"][number], role: RoleKey): boolean {
+  const roleLabel = normalizeClarificationRoleText(getAdminRoleLabel(role));
+
+  return thread.messages
+    .slice(1)
+    .some((message) => normalizeClarificationRoleText(message.role) === roleLabel);
+}
+
+function allClarificationAssigneesAnswered(
+  thread: Ticket["clarifications"][number],
+  replyingRole: RoleKey
+): boolean {
+  const answeredRoles = new Set(
+    thread.messages.slice(1).map((message) => normalizeClarificationRoleText(message.role))
+  );
+  answeredRoles.add(normalizeClarificationRoleText(getAdminRoleLabel(replyingRole)));
+
+  return getClarificationAssigneeLabels(thread.assignedTo).every((assignee) =>
+    answeredRoles.has(normalizeClarificationRoleText(assignee))
+  );
 }
 
 function roleMatchesClarificationRequester(role: RoleKey, thread: Ticket["clarifications"][number]): boolean {
@@ -2058,7 +3434,7 @@ function clarificationNeedsRoleAttention(thread: Ticket["clarifications"][number
     return false;
   }
 
-  return roleMatchesClarificationAssignee(role, thread.assignedTo);
+  return roleMatchesClarificationAssignee(role, thread.assignedTo) && !clarificationRoleHasAnswered(thread, role);
 }
 
 function getClarificationAttentionCount(tickets: Ticket[], role: RoleKey): number {
@@ -2085,11 +3461,13 @@ function clarificationNotificationTargetsRole(
   const requesterRole = normalizeClarificationRoleText(getClarificationRequesterRole(thread));
   const latestMessageIsFromRequester = latestRole === requesterRole;
 
-  if (latestMessageIsFromRequester) {
-    return roleMatchesClarificationAssignee(role, thread.assignedTo);
+  if (thread.status !== "answered" && roleMatchesClarificationAssignee(role, thread.assignedTo)) {
+    return !clarificationRoleHasAnswered(thread, role);
   }
 
-  return roleMatchesClarificationRequester(role, thread);
+  return latestMessageIsFromRequester
+    ? roleMatchesClarificationAssignee(role, thread.assignedTo)
+    : roleMatchesClarificationRequester(role, thread);
 }
 
 function personaCanReceiveClarificationNotification(
@@ -2162,12 +3540,139 @@ function buildClarificationNotifications(
     .sort((left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt));
 }
 
+function personaCanReceiveJiraReadyNotification(
+  config: AdminConfig,
+  persona: RolePersonaOption,
+  ticket: Ticket
+): boolean {
+  return (
+    isJiraReadyToCreateNotificationRole(persona.role) &&
+    roleHasTicketAccess(ticket, persona.role, config)
+  );
+}
+
+function buildJiraReadyToCreateNotifications(
+  tickets: Ticket[],
+  selectedPersona: RolePersonaOption,
+  config: AdminConfig
+): NotificationItem[] {
+  return tickets
+    .filter((ticket) => canCreateJiraForTicket(ticket))
+    .filter((ticket) => personaCanReceiveJiraReadyNotification(config, selectedPersona, ticket))
+    .map((ticket) => ({
+      id: `notification-${ticket.key}-jira-ready-to-create`,
+      title: "Jira creation ready",
+      body: `${ticket.key} is approved and ready for Jira creation.`,
+      ticketKey: ticket.key,
+      actionLabel: "Create Jira",
+      visibility: "architecture_only" as VisibilityLevel,
+      createdAt: ticket.updatedAt,
+      unread: true
+    }))
+    .sort((left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt));
+}
+
 function notificationDeliveryModeSendsEmail(deliveryMode: NotificationDeliveryMode): boolean {
   return deliveryMode === "emailOnly" || deliveryMode === "inAppAndEmail";
 }
 
 function renderNotificationTemplateWithContext(value: string, context: Record<string, string>): string {
   return value.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, token: string) => context[token] ?? match);
+}
+
+function escapeNotificationHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getSafeNotificationLinkUrl(value?: string): string {
+  const trimmedValue = value?.trim() ?? "";
+
+  if (!trimmedValue) {
+    return "";
+  }
+
+  try {
+    const url = new URL(trimmedValue);
+
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function linkNotificationText(value: string, links: Array<{ text: string; url: string }>): string {
+  const validLinks = links
+    .map((link) => ({
+      text: link.text.trim(),
+      url: getSafeNotificationLinkUrl(link.url)
+    }))
+    .filter((link) => link.text && link.url)
+    .sort((left, right) => right.text.length - left.text.length);
+
+  if (!validLinks.length) {
+    return escapeNotificationHtml(value);
+  }
+
+  const linkPattern = new RegExp(validLinks.map((link) => escapeRegExp(link.text)).join("|"), "gi");
+  let html = "";
+  let previousIndex = 0;
+
+  for (const match of value.matchAll(linkPattern)) {
+    const matchedText = match[0];
+    const matchIndex = match.index ?? 0;
+    const link = validLinks.find((candidate) => candidate.text.toLowerCase() === matchedText.toLowerCase());
+
+    if (!link) {
+      continue;
+    }
+
+    html += escapeNotificationHtml(value.slice(previousIndex, matchIndex));
+    html += `<a href="${escapeNotificationHtml(link.url)}">${escapeNotificationHtml(matchedText)}</a>`;
+    previousIndex = matchIndex + matchedText.length;
+  }
+
+  html += escapeNotificationHtml(value.slice(previousIndex));
+
+  return html;
+}
+
+function renderNotificationEmailHtmlBody(
+  body: string,
+  context: Record<string, string>
+): string {
+  const ticketUrl = getSafeNotificationLinkUrl(context.ticketUrl || context.portalUrl);
+  const portalHomeUrl = getSafeNotificationLinkUrl(context.portalHomeUrl);
+  const links = [
+    { text: context.ticketKey, url: ticketUrl },
+    { text: "Support Portal", url: portalHomeUrl },
+    { text: context.ticketUrl, url: ticketUrl },
+    { text: context.portalUrl, url: ticketUrl },
+    { text: context.portalHomeUrl, url: portalHomeUrl }
+  ];
+  const bodyHtml = body
+    .split(/\r?\n/)
+    .map((line) =>
+      line.trim()
+        ? `<p style="margin:0 0 14px 0;">${linkNotificationText(line, links)}</p>`
+        : `<div style="height:8px;line-height:8px;">&nbsp;</div>`
+    )
+    .join("\n");
+
+  return `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1f2933;">
+    ${bodyHtml}
+  </body>
+</html>`;
 }
 
 function getWorkflowStepEmailRecipients(
@@ -2227,6 +3732,53 @@ function getWorkflowStepEmailRecipients(
   return Array.from(fallbackRecipients.values());
 }
 
+function getJiraReadyToCreateEmailRecipients(
+  config: AdminConfig,
+  ticket: Ticket,
+  enabledRoles: RoleKey[]
+): NotificationEmailRecipient[] {
+  const allowedRoles = Array.from(
+    new Set(enabledRoles.filter((role) => isJiraReadyToCreateNotificationRole(role)))
+  );
+  const recipients = new Map<string, NotificationEmailRecipient>();
+
+  function addUser(user: AdminUser) {
+    const email = user.email.trim();
+
+    if (!user.active || !email || !isValidEmailAddress(email)) {
+      return;
+    }
+
+    recipients.set(email.toLowerCase(), {
+      name: user.displayName,
+      email
+    });
+  }
+
+  allowedRoles.forEach((role) => {
+    const roleUsers = config.users
+      .filter((user) => user.active && adminUserHasRole(user, role))
+      .sort((left, right) => {
+        const scoreDifference =
+          getAdminUserScopeScore(right, ticket, config, role) -
+          getAdminUserScopeScore(left, ticket, config, role);
+
+        if (scoreDifference !== 0) {
+          return scoreDifference;
+        }
+
+        return left.displayName.localeCompare(right.displayName);
+      });
+    const scopedRoleUsers = roleUsers.filter((user) => adminUserScopeMatchesTicket(user, ticket, config));
+
+    (scopedRoleUsers.length > 0 ? scopedRoleUsers : roleUsers).forEach((user) => {
+      addUser(user);
+    });
+  });
+
+  return Array.from(recipients.values());
+}
+
 function buildNotificationTemplateContext({
   config,
   participantName,
@@ -2237,14 +3789,22 @@ function buildNotificationTemplateContext({
   config: AdminConfig;
   participantName: string;
   portalOrigin: string;
-  step: Ticket["workflow"][number];
+  step?: Ticket["workflow"][number];
   ticket: Ticket;
 }): Record<string, string> {
-  const dueDate = step.dueAt ? new Date(step.dueAt) : undefined;
+  const dueDate = step?.dueAt ? new Date(step.dueAt) : undefined;
   const dueDateLabel =
     dueDate && Number.isFinite(dueDate.getTime())
       ? formatLocalDateTime(dueDate)
-      : step.dueAt || "Not scheduled";
+      : step?.dueAt || "Not scheduled";
+  const portalHomeUrl = portalOrigin || "";
+  const ticketUrl = portalHomeUrl ? `${portalHomeUrl}/?ticket=${encodeURIComponent(ticket.key)}` : "";
+  const assignedTo = step?.ownerName && step.ownerName !== "Unassigned"
+    ? step.ownerName
+    : step
+      ? getConfigRoleLabel(config, step.ownerRole)
+      : "Software Architect / Release Manager";
+  const requestedByRole = step ? getConfigRoleLabel(config, step.ownerRole) : "Jira creator";
 
   return {
     ticketKey: ticket.key,
@@ -2254,13 +3814,39 @@ function buildNotificationTemplateContext({
     priority: ticket.priority,
     ticketStatus: getTicketCurrentStatusLabel(ticket),
     createdBy: getTicketSubmitter(ticket),
-    assignedTo: step.ownerName && step.ownerName !== "Unassigned" ? step.ownerName : getConfigRoleLabel(config, step.ownerRole),
+    assignedTo,
     environment: ticket.dynamicFields.Environment ?? ticket.dynamicFields.environment ?? "Production",
     dueDate: dueDateLabel,
     releaseVersion: ticket.jiraDraft.fixVersion ?? "Not selected",
-    requestedByRole: getConfigRoleLabel(config, step.ownerRole),
-    portalUrl: portalOrigin ? `${portalOrigin}/?ticket=${encodeURIComponent(ticket.key)}` : ticket.key
+    requestedByRole,
+    portalHomeUrl,
+    portalUrl: ticketUrl,
+    ticketUrl
   };
+}
+
+function getNotificationEmailDeliveryFingerprint(parts: string[]): string {
+  const source = parts.map((part) => part.trim().replace(/\s+/g, " ")).join("\u001f");
+  let hash = 2166136261;
+
+  for (let index = 0; index < source.length; index += 1) {
+    hash = Math.imul(hash ^ source.charCodeAt(index), 16777619);
+  }
+
+  return (hash >>> 0).toString(36);
+}
+
+function dedupeNotificationEmailEnvelopes(envelopes: NotificationEmailEnvelope[]): NotificationEmailEnvelope[] {
+  const seenEnvelopeIds = new Set<string>();
+
+  return envelopes.filter((envelope) => {
+    if (seenEnvelopeIds.has(envelope.id)) {
+      return false;
+    }
+
+    seenEnvelopeIds.add(envelope.id);
+    return true;
+  });
 }
 
 function buildApprovalRequestedEmailEnvelopes(
@@ -2285,7 +3871,7 @@ function buildApprovalRequestedEmailEnvelopes(
     return [];
   }
 
-  return tickets
+  const envelopes = tickets
     .filter((ticket) => ticket.state !== "closed")
     .flatMap((ticket) =>
       ticket.workflow.flatMap((step) => {
@@ -2318,27 +3904,115 @@ function buildApprovalRequestedEmailEnvelopes(
             step,
             ticket
           });
+          const subject = renderNotificationTemplateWithContext(template.subject, context);
+          const body = renderNotificationTemplateWithContext(template.body, context);
+          const htmlBody = renderNotificationEmailHtmlBody(body, context);
+          const deliveryFingerprint = getNotificationEmailDeliveryFingerprint([
+            "approvalRequested",
+            ticket.key,
+            template.id,
+            recipient.email.toLowerCase(),
+            subject,
+            body
+          ]);
 
           return {
             id: [
               "email",
               "approvalRequested",
               ticket.key,
-              step.id,
-              step.status,
-              step.dueAt,
               template.id,
-              recipient.email.toLowerCase()
+              recipient.email.toLowerCase(),
+              deliveryFingerprint
             ].join(":"),
             eventType: "approvalRequested" as NotificationEventType,
             ticketKey: ticket.key,
             recipients: [recipient],
-            subject: renderNotificationTemplateWithContext(template.subject, context),
-            body: renderNotificationTemplateWithContext(template.body, context)
+            subject,
+            body,
+            htmlBody
           };
         });
       })
     );
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
+}
+
+function buildJiraReadyToCreateEmailEnvelopes(
+  config: AdminConfig,
+  tickets: Ticket[],
+  portalOrigin: string
+): NotificationEmailEnvelope[] {
+  const smtp = config.integrations.smtp;
+
+  if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+    return [];
+  }
+
+  const template = config.notificationTemplates.find(
+    (candidate) =>
+      candidate.active &&
+      candidate.eventType === "jiraReadyToCreate" &&
+      notificationDeliveryModeSendsEmail(candidate.deliveryMode)
+  );
+
+  if (!template) {
+    return [];
+  }
+
+  const envelopes = tickets
+    .filter((ticket) => canCreateJiraForTicket(ticket))
+    .flatMap((ticket) => {
+      const recipients = getJiraReadyToCreateEmailRecipients(config, ticket, template.enabledRoles);
+
+      if (!recipients.length) {
+        console.warn("No email recipients found for ready Jira creation.", {
+          ticketKey: ticket.key,
+          enabledRoles: template.enabledRoles
+        });
+        return [];
+      }
+
+      return recipients.map((recipient) => {
+        const context = buildNotificationTemplateContext({
+          config,
+          participantName: recipient.name,
+          portalOrigin,
+          ticket
+        });
+        const subject = renderNotificationTemplateWithContext(template.subject, context);
+        const body = renderNotificationTemplateWithContext(template.body, context);
+        const htmlBody = renderNotificationEmailHtmlBody(body, context);
+        const deliveryFingerprint = getNotificationEmailDeliveryFingerprint([
+          "jiraReadyToCreate",
+          ticket.key,
+          template.id,
+          recipient.email.toLowerCase(),
+          subject,
+          body
+        ]);
+
+        return {
+          id: [
+            "email",
+            "jiraReadyToCreate",
+            ticket.key,
+            template.id,
+            recipient.email.toLowerCase(),
+            deliveryFingerprint
+          ].join(":"),
+          eventType: "jiraReadyToCreate" as NotificationEventType,
+          ticketKey: ticket.key,
+          recipients: [recipient],
+          subject,
+          body,
+          htmlBody
+        };
+      });
+    });
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
 }
 
 function getNextClarificationReplyStatus(
@@ -2353,6 +4027,10 @@ function getNextClarificationReplyStatus(
 
   if (isRequesterReplying) {
     return thread.status;
+  }
+
+  if (getClarificationAssigneeLabels(thread.assignedTo).length > 1) {
+    return allClarificationAssigneesAnswered(thread, role) ? "answered" : "open";
   }
 
   return "answered";
@@ -2468,24 +4146,65 @@ function normalizeAnsweredClarificationWorkflow(ticket: Ticket, config: AdminCon
 
 function normalizeApprovalClarificationAssignees(ticket: Ticket): Ticket {
   let changed = false;
-  const clarifications = ticket.clarifications.map((thread) => {
-    const isApprovalClarification =
-      normalizeRoleText(thread.level) === normalizeRoleText("Approval clarification");
-    const isAssignedToRequester =
-      normalizeClarificationRoleText(thread.assignedTo) === "requester" ||
-      normalizeClarificationRoleText(thread.assignedTo) === "user";
+  const clarifications: Ticket["clarifications"] = [];
+  const mergedClarificationIndexByKey = new Map<string, number>();
 
-    if (thread.status === "answered" || !isApprovalClarification || isAssignedToRequester) {
-      return thread;
+  for (const thread of ticket.clarifications) {
+    const isApprovalClarification = normalizeRoleText(thread.level) === normalizeRoleText("Approval clarification");
+    const mergeKey = isApprovalClarification
+      ? [
+          normalizeRoleText(thread.level),
+          normalizeClarificationRoleText(getClarificationRequesterRole(thread)),
+          richTextComparableValue(getClarificationDisplayBody(thread, thread.question)),
+          thread.dueAt
+        ].join("|")
+      : "";
+    const existingIndex = mergeKey ? mergedClarificationIndexByKey.get(mergeKey) : undefined;
+
+    if (!mergeKey || existingIndex === undefined) {
+      if (mergeKey) {
+        mergedClarificationIndexByKey.set(mergeKey, clarifications.length);
+      }
+
+      clarifications.push(thread);
+      continue;
     }
 
-    changed = true;
+    const existingThread = clarifications[existingIndex];
+    const mergedMessages = [...existingThread.messages, ...thread.messages]
+      .filter(
+        (message, index, messages) =>
+          messages.findIndex(
+            (candidate) =>
+              normalizeClarificationRoleText(candidate.role) === normalizeClarificationRoleText(message.role) &&
+              richTextComparableValue(candidate.body) === richTextComparableValue(message.body) &&
+              candidate.createdAt === message.createdAt
+          ) === index
+      )
+      .sort((left, right) => {
+        const createdAtDifference = parseTicketTimestamp(left.createdAt) - parseTicketTimestamp(right.createdAt);
 
-    return {
-      ...thread,
-      assignedTo: "Requester"
+        return createdAtDifference || left.id.localeCompare(right.id);
+      });
+    const statuses = [existingThread.status, thread.status];
+    const mergedStatus = statuses.includes("reopened")
+      ? "reopened"
+      : statuses.includes("open")
+        ? "open"
+        : "answered";
+    const mergedAssignees = getUniqueClarificationAssigneeLabels([
+      ...getClarificationAssigneeLabels(existingThread.assignedTo),
+      ...getClarificationAssigneeLabels(thread.assignedTo)
+    ]);
+
+    clarifications[existingIndex] = {
+      ...existingThread,
+      status: mergedStatus,
+      assignedTo: mergedAssignees.join(", ") || existingThread.assignedTo || thread.assignedTo,
+      messages: mergedMessages
     };
-  });
+    changed = true;
+  }
 
   return changed ? { ...ticket, clarifications } : ticket;
 }
@@ -2578,8 +4297,14 @@ function getStatusColorVariant(config: AdminConfig, statusLabel: string): TegelT
   return configuredStatus?.color ?? defaultStatus?.color ?? "neutral";
 }
 
+function ticketHasOpenClarification(ticket: Ticket): boolean {
+  return ticket.clarifications.some((thread) => thread.status !== "answered");
+}
+
 function ticketHasBlockingSignal(ticket: Ticket): boolean {
   return (
+    ticket.state === "clarification" ||
+    ticketHasOpenClarification(ticket) ||
     ticket.workflow.some((step) => step.status === "blocked") ||
     ticket.slaState === "breach" ||
     ticket.escalations.some((escalation) => escalation.status !== "resolved") ||
@@ -2608,16 +4333,16 @@ function getTicketCurrentStatusLabel(ticket: Ticket): string {
     return getTicketCloseStatusLabel(ticket);
   }
 
-  if (ticketHasBlockingSignal(ticket) || ticket.state === "escalated") {
+  if (followUpStatus === "blocked" || ticket.state === "escalated") {
     return "Blocked";
   }
 
   if (followUpStatus === "business_test") {
-    return "Business test";
+    return "Business Test";
   }
 
   if (followUpStatus === "it_test") {
-    return "IT test";
+    return "IT Test";
   }
 
   if (followUpStatus === "in_progress") {
@@ -2625,15 +4350,19 @@ function getTicketCurrentStatusLabel(ticket: Ticket): string {
   }
 
   if (followUpStatus === "created" || ticket.relatedJiraKey) {
-    return "Jira created";
+    return "Planning";
+  }
+
+  if (ticketHasBlockingSignal(ticket)) {
+    return "Blocked";
   }
 
   if (ticket.state === "jira_draft") {
-    return ticket.jiraDraft.status === "ready_to_create" ? "Ready to create" : "Jira draft";
+    return ticket.jiraDraft.status === "ready_to_create" ? "Planning" : "Jira draft";
   }
 
   if (ticket.state === "clarification") {
-    return "Waiting";
+    return "Blocked";
   }
 
   if (ticket.state === "approval") {
@@ -2644,7 +4373,125 @@ function getTicketCurrentStatusLabel(ticket: Ticket): string {
     return "New";
   }
 
-  return "In progress";
+  return "Planning";
+}
+
+function getTicketCurrentLocationLabel(ticket: Ticket): string {
+  const lifecycleSteps = getTicketLifecycleSteps(ticket);
+  const currentStep =
+    lifecycleSteps.find((step) => step.state === "active" || step.state === "blocked" || step.state === "rejected") ??
+    lifecycleSteps.find((step) => step.state === "waiting") ??
+    lifecycleSteps[lifecycleSteps.length - 1];
+
+  if (!currentStep) {
+    return getWorkflowActionSummary(ticket).label;
+  }
+
+  return `${currentStep.label} · ${getLifecycleStepStatusLabel(currentStep.state)}`;
+}
+
+function getLifecycleStepStatusLabel(state: TicketLifecycleStepState): string {
+  switch (state) {
+    case "complete":
+      return "Done";
+    case "active":
+      return "Current";
+    case "blocked":
+      return "Blocked";
+    case "rejected":
+      return "Rejected";
+    case "waiting":
+    default:
+      return "Waiting";
+  }
+}
+
+function getWorkflowStepProgressLabel(status: WorkflowStepStatus): string {
+  switch (status) {
+    case "complete":
+      return "Done";
+    case "active":
+    case "delegated":
+      return "Current";
+    case "blocked":
+      return "Blocked";
+    case "optional":
+      return "Not required";
+    case "waiting":
+    default:
+      return "Waiting";
+  }
+}
+
+function getWorkflowCurrentPositionSummary(ticket: Ticket, configuredTicket: Ticket): WorkflowCurrentPositionSummary {
+  const blockedSteps = configuredTicket.workflow.filter((step) => step.status === "blocked");
+  const activeSteps = configuredTicket.workflow.filter((step) => step.status === "active" || step.status === "delegated");
+  const waitingStep = configuredTicket.workflow.find((step) => step.status === "waiting");
+  const workflowComplete = hasCompletedRequiredWorkflow(configuredTicket.workflow);
+  const currentStatus = getTicketCurrentStatusLabel(ticket);
+  const followUpStatus = getTicketJiraFollowUpStatus(ticket);
+
+  if (blockedSteps.length > 0) {
+    return {
+      label: `Blocked at ${blockedSteps.map((step) => step.label).join(" + ")}`,
+      detail: blockedSteps.map((step) => step.ownerName).join(" + "),
+      tone: "critical"
+    };
+  }
+
+  if (activeSteps.length > 0) {
+    return {
+      label: `Current gate: ${activeSteps.map((step) => step.label).join(" + ")}`,
+      detail: activeSteps.map((step) => `${step.ownerName} · ${getWorkflowStepProgressLabel(step.status)}`).join(" · "),
+      tone: "active"
+    };
+  }
+
+  if (workflowComplete && !ticket.relatedJiraKey && ticket.state === "jira_draft") {
+    return {
+      label: "Current stage: Planning",
+      detail: "Workflow gates are done; create the Jira issue before work starts.",
+      tone: "active"
+    };
+  }
+
+  if (ticket.relatedJiraKey && followUpStatus === "created") {
+    return {
+      label: "Current stage: Planning",
+      detail: `Linked to ${ticket.relatedJiraKey}; waiting for sprint planning.`,
+      tone: "waiting"
+    };
+  }
+
+  if (ticket.relatedJiraKey && followUpStatus !== "done" && followUpStatus !== "rejected") {
+    return {
+      label: `Current stage: ${currentStatus}`,
+      detail: `Linked to ${ticket.relatedJiraKey}.`,
+      tone: followUpStatus === "blocked" ? "critical" : "active"
+    };
+  }
+
+  if (ticket.state === "closed" || followUpStatus === "done" || followUpStatus === "rejected") {
+    return {
+      label: `Current stage: ${currentStatus}`,
+      detail: followUpStatus === "rejected" ? "Jira follow-up is rejected." : "Ticket workflow is complete.",
+      tone: followUpStatus === "rejected" ? "critical" : "complete"
+    };
+  }
+
+  if (waitingStep) {
+    return {
+      label: `Next gate: ${waitingStep.label}`,
+      detail: "Waiting for earlier gates to finish.",
+      tone: "waiting"
+    };
+  }
+
+  return {
+    label: `Current stage: ${currentStatus}`,
+    detail: `State ${ticket.state.replace("_", " ")}.`,
+    tone: "waiting"
+  };
 }
 
 function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
@@ -2655,6 +4502,9 @@ function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
   const terminalFollowUp = followUpStatus === "done" || followUpStatus === "rejected";
   const isClosed = ticket.state === "closed" || terminalFollowUp;
   const isBlocked = ticketHasBlockingSignal(ticket) || ticket.state === "escalated";
+  const jiraWorkStarted = followUpStatus === "in_progress";
+  const jiraWorkPastProgress = followUpStatus === "it_test" || followUpStatus === "business_test" || followUpStatus === "done";
+  const planningComplete = jiraWorkStarted || jiraWorkPastProgress || isClosed;
   const reviewState: TicketLifecycleStepState = isBlocked && !workflowComplete
     ? "blocked"
     : workflowComplete || hasJira || isClosed
@@ -2662,17 +4512,24 @@ function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
       : ticket.state === "approval" || ticket.state === "clarification"
         ? "active"
         : "waiting";
+  const planningState: TicketLifecycleStepState = followUpStatus === "rejected"
+    ? "rejected"
+    : followUpStatus === "blocked"
+      ? "blocked"
+      : planningComplete
+        ? "complete"
+        : workflowComplete || hasJira
+          ? "active"
+          : "waiting";
   const progressState: TicketLifecycleStepState = followUpStatus === "rejected"
     ? "rejected"
     : followUpStatus === "blocked"
       ? "blocked"
-      : followUpStatus === "created" || followUpStatus === "in_progress"
+      : jiraWorkStarted
         ? "active"
-        : followUpStatus === "it_test" || followUpStatus === "business_test" || followUpStatus === "done" || isClosed
+        : jiraWorkPastProgress || isClosed
           ? "complete"
-          : hasJira
-            ? "active"
-            : "waiting";
+          : "waiting";
   const itTestState: TicketLifecycleStepState = followUpStatus === "rejected"
     ? "rejected"
     : followUpStatus === "blocked"
@@ -2694,58 +4551,75 @@ function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
     : followUpStatus === "done" || isClosed
       ? "complete"
       : "waiting";
-  const progressDetail = !hasJira
-    ? "Waiting for Jira"
+  const plannedReleaseState: TicketLifecycleStepState = followUpStatus === "rejected"
+    ? "rejected"
+    : closeState === "complete"
+      ? "active"
+      : "waiting";
+  const planningDetail = !hasJira
+    ? workflowComplete && ticket.state === "jira_draft"
+      ? "Ready to create Jira issue"
+      : "Waiting for review"
     : followUpStatus === "created"
-      ? "Jira created"
+      ? "Waiting for sprint planning"
+      : planningState === "complete"
+        ? "Planning complete"
+        : getJiraFollowUpStatusLabel(followUpStatus);
+  const progressDetail = followUpStatus === "in_progress"
+    ? "Work started"
+    : progressState === "complete"
+      ? "Work complete"
       : getJiraFollowUpStatusLabel(followUpStatus);
-  const reviewStatus = isBlocked && !workflowComplete
-    ? "Blocked"
-    : ticket.state === "clarification"
-      ? "Waiting"
-      : "Review";
-  const closeStatus = closeState === "waiting" ? "Pending" : getTicketCloseStatusLabel(ticket);
-
+  const sprintDetail = ticket.jiraDraft.sprint?.trim()
+    ? `Sprint ${ticket.jiraDraft.sprint.trim()}`
+    : "";
+  const withSprintDetail = (detail: string) => sprintDetail ? `${detail} · ${sprintDetail}` : detail;
+  const itTestDetail = followUpStatus === "it_test"
+    ? "IT validation active"
+    : itTestState === "complete"
+      ? "IT validation complete"
+      : "Waiting";
+  const releasePlanDetail = getReleasePlanDetail(ticket, plannedReleaseState);
   return [
     {
-      label: "Request",
-      detail: getTicketSubmitter(ticket),
-      status: "Request",
-      state: "complete"
-    },
-    {
-      label: "New",
-      detail: getTicketTypeLabel(ticket.typeId),
-      status: "New",
+      label: "New request",
+      detail: `${getTicketTypeLabel(ticket.typeId)} · ${getTicketSubmitter(ticket)}`,
+      status: getLifecycleStepStatusLabel(ticket.state === "intake" && !isClosed ? "active" : "complete"),
       state: ticket.state === "intake" && !isClosed ? "active" : "complete"
     },
     {
       label: "Review",
       detail: `${health.completed}/${health.total} gates complete`,
-      status: reviewStatus,
+      status: getLifecycleStepStatusLabel(reviewState),
       state: reviewState
     },
     {
+      label: "Planning",
+      detail: planningDetail,
+      status: getLifecycleStepStatusLabel(planningState),
+      state: planningState
+    },
+    {
       label: "In progress",
-      detail: progressDetail,
-      status: followUpStatus === "blocked" ? "Blocked" : hasJira ? getTicketCurrentStatusLabel(ticket) : "Pending",
+      detail: withSprintDetail(progressState === "waiting" ? "Waiting to start work" : progressDetail),
+      status: getLifecycleStepStatusLabel(progressState),
       state: progressState
     },
     {
-      label: "IT test",
-      detail: followUpStatus === "it_test" ? "IT validation active" : itTestState === "complete" ? "IT validation complete" : "Waiting",
-      status: itTestState === "blocked" ? "Blocked" : "IT test",
+      label: "IT Test",
+      detail: withSprintDetail(itTestDetail),
+      status: getLifecycleStepStatusLabel(itTestState),
       state: itTestState
     },
     {
-      label: "Business test",
+      label: "Business Test",
       detail:
         followUpStatus === "business_test"
           ? "Business validation active"
           : businessTestState === "complete"
             ? "Business validation complete"
             : "Waiting",
-      status: "Business test",
+      status: getLifecycleStepStatusLabel(businessTestState),
       state: businessTestState
     },
     {
@@ -2756,26 +4630,86 @@ function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
           : followUpStatus === "not_created"
             ? getTicketCloseStatusLabel(ticket)
             : getJiraFollowUpStatusLabel(followUpStatus),
-      status: closeStatus,
+      status: getLifecycleStepStatusLabel(closeState),
       state: closeState
+    },
+    {
+      label: "Planned release",
+      detail: releasePlanDetail,
+      status: getLifecycleStepStatusLabel(plannedReleaseState),
+      state: plannedReleaseState
     }
   ];
 }
 
+function getPriorityNumber(priority: Ticket["priority"]): number | undefined {
+  const numericMatch = priority.trim().match(/^([0-4])(?:\s|$|[-:])/);
+
+  return numericMatch ? Number(numericMatch[1]) : undefined;
+}
+
+function normalizePriorityLabel(priority: Ticket["priority"]): string {
+  return priority.trim().replace(/^\d+\s*[-:]\s*/, "").toLowerCase();
+}
+
 function getPriorityWeight(priority: Ticket["priority"]): number {
-  if (priority === "Critical") {
+  const priorityNumber = getPriorityNumber(priority);
+
+  if (priorityNumber !== undefined) {
+    return 5 - priorityNumber;
+  }
+
+  const normalizedPriority = normalizePriorityLabel(priority);
+
+  if (["critical", "urgent", "blocker", "highest"].includes(normalizedPriority)) {
+    return 5;
+  }
+
+  if (normalizedPriority === "high") {
     return 4;
   }
 
-  if (priority === "High") {
+  if (normalizedPriority === "medium") {
     return 3;
   }
 
-  if (priority === "Medium") {
+  if (normalizedPriority === "low") {
     return 2;
   }
 
   return 1;
+}
+
+function getPriorityToneClassName(priority: Ticket["priority"]): string {
+  const priorityNumber = getPriorityNumber(priority);
+
+  if (priorityNumber === 0) {
+    return "critical";
+  }
+
+  if (priorityNumber === 1) {
+    return "high";
+  }
+
+  if (priorityNumber === 2) {
+    return "medium";
+  }
+
+  const normalizedPriority = normalizePriorityLabel(priority);
+
+  if (["critical", "urgent", "blocker", "highest"].includes(normalizedPriority)) {
+    return "critical";
+  }
+
+  if (normalizedPriority === "high") {
+    return "high";
+  }
+
+  if (normalizedPriority === "medium") {
+    return "medium";
+  }
+
+  return "low";
 }
 
 function getTicketWorkflowTemplateName(ticket: Ticket): string {
@@ -2935,6 +4869,62 @@ function hasCompletedRequiredWorkflow(workflow: Ticket["workflow"]): boolean {
   return workflow.every((step) => step.status === "complete" || step.status === "optional");
 }
 
+function getJiraFollowUpActionSummary(
+  followUpStatus: JiraFollowUpStatus,
+  jiraKey: string
+): {
+  label: string;
+  detail: string;
+  tone: "active" | "critical" | "waiting" | "complete";
+} {
+  switch (followUpStatus) {
+    case "blocked":
+      return {
+        label: "Resolve Jira blocker",
+        detail: `Linked to ${jiraKey}; Jira is blocked before work can continue.`,
+        tone: "critical"
+      };
+    case "in_progress":
+      return {
+        label: "Complete implementation",
+        detail: `Linked to ${jiraKey}; work is in progress.`,
+        tone: "active"
+      };
+    case "it_test":
+      return {
+        label: "Complete IT Testing",
+        detail: `Linked to ${jiraKey}; Jira Review means IT validation in the portal.`,
+        tone: "active"
+      };
+    case "business_test":
+      return {
+        label: "Complete Business Testing",
+        detail: `Linked to ${jiraKey}; Jira Test or Approved means Business validation in the portal.`,
+        tone: "active"
+      };
+    case "done":
+      return {
+        label: "Close portal ticket",
+        detail: `Linked to ${jiraKey}; Jira is done.`,
+        tone: "complete"
+      };
+    case "created":
+      return {
+        label: "Wait for sprint planning",
+        detail: `Linked to ${jiraKey}; waiting for sprint planning before implementation starts.`,
+        tone: "waiting"
+      };
+    case "not_created":
+    case "testing":
+    default:
+      return {
+        label: "Start Jira work",
+        detail: `Linked to ${jiraKey}; move Jira into progress when implementation starts.`,
+        tone: "active"
+      };
+  }
+}
+
 function getWorkflowActionSummary(ticket: Ticket): {
   label: string;
   detail: string;
@@ -2948,8 +4938,30 @@ function getWorkflowActionSummary(ticket: Ticket): {
   if (actionSteps.length > 0) {
     return {
       label: actionSteps.map((step) => step.label).join(" + "),
-      detail: actionSteps.map((step) => `${step.ownerName} due ${step.dueAt}`).join(" · "),
+      detail: actionSteps.map((step) => `${step.ownerName} due ${formatDateTimeDisplay(step.dueAt)}`).join(" · "),
       tone: blockedSteps.length > 0 || ticket.slaState === "breach" ? "critical" : "active"
+    };
+  }
+
+  if (hasCompletedRequiredWorkflow(ticket.workflow)) {
+    const followUpStatus = getTicketJiraFollowUpStatus(ticket);
+
+    if (!ticket.relatedJiraKey && ticket.state === "jira_draft") {
+      return {
+        label: "Create Jira ticket",
+        detail: "Workflow gates are done; Jira issue is ready to be created.",
+        tone: "active"
+      };
+    }
+
+    if (ticket.relatedJiraKey && followUpStatus !== "done" && followUpStatus !== "rejected") {
+      return getJiraFollowUpActionSummary(followUpStatus, ticket.relatedJiraKey);
+    }
+
+    return {
+      label: "Workflow complete",
+      detail: "All required gates are done.",
+      tone: "complete"
     };
   }
 
@@ -3061,11 +5073,11 @@ function createDefaultApprovalClarificationDraft(
 
 function getJiraFollowUpStatusLabel(status: JiraFollowUpStatus): string {
   if (status === "not_created") {
-    return "Not created";
+    return "New";
   }
 
   if (status === "testing") {
-    return "IT test";
+    return "IT Test";
   }
 
   return jiraFollowUpStatusOptions.find((option) => option.value === status)?.label ?? status.replaceAll("_", " ");
@@ -3103,6 +5115,10 @@ function jiraStatusTokenIncludes(token: string, values: string[]): boolean {
   return values.some((value) => token.includes(value));
 }
 
+function jiraStatusTokenEquals(token: string, values: string[]): boolean {
+  return values.some((value) => token === value);
+}
+
 function getJiraFollowUpStatusFromIssueStatus(
   status: JiraIssueStatusDetails | undefined,
   fallbackStatus: JiraFollowUpStatus
@@ -3121,6 +5137,10 @@ function getJiraFollowUpStatusFromIssueStatus(
     return "rejected";
   }
 
+  if (jiraStatusTokenEquals(statusName, ["approved"])) {
+    return "business_test";
+  }
+
   if (
     categoryKey === "done" ||
     Boolean(resolutionName) ||
@@ -3133,11 +5153,17 @@ function getJiraFollowUpStatusFromIssueStatus(
     return "blocked";
   }
 
-  if (jiraStatusTokenIncludes(combinedStatus, ["business test", "uat", "user acceptance"])) {
+  if (
+    jiraStatusTokenIncludes(combinedStatus, ["business test", "uat", "user acceptance"]) ||
+    jiraStatusTokenEquals(statusName, ["test"])
+  ) {
     return "business_test";
   }
 
-  if (jiraStatusTokenIncludes(combinedStatus, ["it test", "test", "qa", "verification", "validation"])) {
+  if (
+    jiraStatusTokenIncludes(combinedStatus, ["it test", "qa", "verification", "validation"]) ||
+    jiraStatusTokenEquals(statusName, ["review", "in review"])
+  ) {
     return "it_test";
   }
 
@@ -3173,12 +5199,51 @@ function getJiraIssueStatusSummary(status?: JiraIssueStatusDetails): string {
   return category ? `${status.name} (${category}${resolution})` : `${status.name}${resolution}`;
 }
 
+function getJiraStatusDisplayName(ticket: Ticket, followUpStatus: JiraFollowUpStatus): string {
+  return ticket.jiraDraft.syncedStatus?.trim() || getJiraFollowUpStatusLabel(followUpStatus);
+}
+
+function getJiraStatusTimelineSteps(
+  _statuses: JiraStatusMetadataOption[],
+  _currentStatusName: string,
+  followUpStatus: JiraFollowUpStatus
+): Array<{
+  key: string;
+  label: string;
+  tone: "info" | "warning" | "critical" | "success" | "neutral";
+  title: string;
+  isCurrent: boolean;
+}> {
+  const normalizedFollowUpStatus = followUpStatus === "testing" ? "it_test" : followUpStatus;
+
+  return jiraPortalStatusTimelineOptions.map((option) => ({
+    key: option.value,
+    label: option.label,
+    tone: option.tone,
+    title: "Portal Jira status. Jira raw statuses are mapped into this ticket lifecycle.",
+    isCurrent: normalizedFollowUpStatus === option.value
+  }));
+}
+
 function getTicketJiraFollowUpStatus(ticket: Ticket): JiraFollowUpStatus {
   if (!ticket.relatedJiraKey) {
     return "not_created";
   }
 
   const followUpStatus = ticket.jiraDraft.followUpStatus;
+  const syncedStatus = ticket.jiraDraft.syncedStatus?.trim();
+
+  if (syncedStatus) {
+    return getJiraFollowUpStatusFromIssueStatus(
+      {
+        name: syncedStatus,
+        categoryKey: "",
+        categoryName: "",
+        resolutionName: null
+      },
+      followUpStatus ?? "created"
+    );
+  }
 
   if (
     followUpStatus &&
@@ -3201,6 +5266,83 @@ function getTicketJiraFollowUpStatus(ticket: Ticket): JiraFollowUpStatus {
   }
 
   return "created";
+}
+
+function getImportedJiraCommentId(ticketKey: string, jiraCommentId: string): string {
+  return `comment-${ticketKey}-jira-import-${jiraCommentId}`;
+}
+
+function buildImportedJiraComment(ticketKey: string, comment: JiraSyncedCommentInput): CommentItem {
+  return {
+    id: getImportedJiraCommentId(ticketKey, comment.id),
+    author: comment.author || "Jira user",
+    role: comment.role || "Jira",
+    body: comment.body,
+    createdAt: comment.createdAt,
+    visibility: "public",
+    source: "jira"
+  };
+}
+
+function isPortalAuthoredImportedJiraComment(comment: CommentItem): boolean {
+  return comment.source === "jira" && comment.id.includes("-jira-import-") && comment.role !== "Jira";
+}
+
+function formatPortalAuthoredJiraComment(actor: RolePersonaOption, body: string): string {
+  return `${actor.displayName} via NEXUS Portal:\n\n${body}`;
+}
+
+function mergeImportedJiraComments(
+  ticket: Ticket,
+  jiraComments: JiraSyncedCommentInput[]
+): {
+  comments: Ticket["comments"];
+  importedComments: number;
+  updatedComments: number;
+} {
+  const incomingComments = jiraComments.map((comment) => buildImportedJiraComment(ticket.key, comment));
+  const incomingById = new Map(incomingComments.map((comment) => [comment.id, comment]));
+  let updatedComments = 0;
+  const mergedComments = ticket.comments.map((comment) => {
+    const incomingComment = incomingById.get(comment.id);
+
+    if (!incomingComment) {
+      return comment;
+    }
+
+    const shouldPreservePortalAuthor = isPortalAuthoredImportedJiraComment(comment);
+    const nextAuthor = shouldPreservePortalAuthor ? comment.author : incomingComment.author;
+    const nextRole = shouldPreservePortalAuthor ? comment.role : incomingComment.role;
+    const nextBody = shouldPreservePortalAuthor ? comment.body : incomingComment.body;
+
+    if (
+      comment.author === nextAuthor &&
+      comment.role === nextRole &&
+      comment.body === nextBody &&
+      comment.createdAt === incomingComment.createdAt
+    ) {
+      return comment;
+    }
+
+    updatedComments += 1;
+    return {
+      ...comment,
+      author: nextAuthor,
+      body: nextBody,
+      createdAt: incomingComment.createdAt,
+      role: nextRole,
+      source: incomingComment.source,
+      visibility: incomingComment.visibility
+    };
+  });
+  const existingIds = new Set(mergedComments.map((comment) => comment.id));
+  const newComments = incomingComments.filter((comment) => !existingIds.has(comment.id));
+
+  return {
+    comments: [...mergedComments, ...newComments],
+    importedComments: newComments.length,
+    updatedComments
+  };
 }
 
 function canCreateJiraForTicket(ticket: Ticket): boolean {
@@ -3277,6 +5419,7 @@ const emptyJiraFieldMetadata: JiraFieldMetadata = {
   components: [],
   versions: [],
   priorities: [],
+  statuses: [],
   boards: [],
   sprints: [],
   assignableUsers: []
@@ -3306,6 +5449,273 @@ function getJiraMetadataNames(options: JiraMetadataOption[]): string[] {
   return getUniqueOptionValues(options.map((option) => option.name));
 }
 
+function getTemplateOptionSourceLabel(source?: FormTemplateOptionSource): string {
+  const optionSource = source ?? "manual";
+
+  return templateFieldOptionSourceOptions.find((option) => option.value === optionSource)?.label ?? "Manual options";
+}
+
+function isChoiceTemplateField(field: Pick<FormTemplateField, "type" | "component">): boolean {
+  return (
+    field.type === "singleSelect" ||
+    field.type === "multiSelect" ||
+    field.type === "yesNo" ||
+    field.component === "dropdown" ||
+    field.component === "radioGroup" ||
+    field.component === "checkboxGroup"
+  );
+}
+
+function isJiraTemplateOptionSource(source?: FormTemplateOptionSource): boolean {
+  return Boolean(source && jiraTemplateOptionSources.has(source));
+}
+
+function templateHasJiraOptionSource(fields: FormTemplateField[]): boolean {
+  return fields.some((field) => isJiraTemplateOptionSource(field.optionSource));
+}
+
+function getPortalModuleOptionValues(config: AdminConfig, form?: NewTicketFormState): string[] {
+  if (form?.product) {
+    const product = getConfigProduct(config, form.product);
+    const prus = product?.prus.filter((pru) => pru.active && (!form.pru || pru.name === form.pru)) ?? [];
+    const modules = prus.flatMap((pru) => pru.modules.filter((module) => module.active).map((module) => module.name));
+
+    return uniqueSortedValues(modules);
+  }
+
+  return uniqueSortedValues(getAllConfigModules(config).filter((module) => module.active).map((module) => module.name));
+}
+
+function getPortalPruOptionValues(config: AdminConfig, form?: NewTicketFormState): string[] {
+  if (form?.product) {
+    const product = getConfigProduct(config, form.product);
+
+    return uniqueSortedValues((product?.prus ?? []).filter((pru) => pru.active).map((pru) => pru.name));
+  }
+
+  return uniqueSortedValues(getAllConfigPrus(config).filter((pru) => pru.active).map((pru) => pru.name));
+}
+
+function getTemplateFieldOptions(
+  field: FormTemplateField,
+  config: AdminConfig,
+  context: {
+    form?: NewTicketFormState;
+    jiraFieldMetadata?: JiraFieldMetadata;
+  } = {}
+): string[] {
+  const manualOptions = field.options.length > 0 ? field.options : defaultOptionsByFieldType[field.type] ?? [];
+  const optionSource = field.optionSource ?? "manual";
+  const jiraFieldMetadata = context.jiraFieldMetadata ?? emptyJiraFieldMetadata;
+  const sourceOptions =
+    optionSource === "portalProducts"
+      ? uniqueSortedValues(config.products.filter((product) => product.active).map((product) => product.productName))
+      : optionSource === "portalPrus"
+        ? getPortalPruOptionValues(config, context.form)
+        : optionSource === "portalModules"
+          ? getPortalModuleOptionValues(config, context.form)
+          : optionSource === "jiraUnreleasedVersions"
+            ? getJiraMetadataNames(jiraFieldMetadata.versions.filter((version) => version.released !== true))
+            : optionSource === "jiraVersions"
+              ? getJiraMetadataNames(jiraFieldMetadata.versions)
+              : optionSource === "jiraSprints"
+                ? getUniqueOptionValues(jiraFieldMetadata.sprints.map((sprint) => sprint.name))
+                : optionSource === "jiraComponents"
+                  ? getJiraMetadataNames(jiraFieldMetadata.components)
+                  : optionSource === "jiraBoards"
+                    ? getUniqueOptionValues(jiraFieldMetadata.boards.map((board) => board.name))
+                    : optionSource === "jiraPriorities"
+                      ? getJiraMetadataNames(jiraFieldMetadata.priorities)
+                      : manualOptions;
+
+  return sourceOptions.length > 0 ? sourceOptions : manualOptions;
+}
+
+function useJiraTemplateFieldMetadata(
+  config: AdminConfig,
+  enabled: boolean,
+  projectKey?: string
+): JiraFieldMetadata {
+  const [metadata, setMetadata] = useState<JiraFieldMetadata>(emptyJiraFieldMetadata);
+  const integration = config.integrations.jira;
+  const metadataProjectKey = getValidJiraProjectKey(projectKey) || getValidJiraProjectKey(integration.defaultProjectKey);
+
+  useEffect(() => {
+    if (!enabled) {
+      setMetadata(emptyJiraFieldMetadata);
+      return;
+    }
+
+    if (!integration.enabled) {
+      setMetadata({
+        ...emptyJiraFieldMetadata,
+        status: "unavailable",
+        message: "Jira integration is disabled."
+      });
+      return;
+    }
+
+    if (!metadataProjectKey) {
+      setMetadata({
+        ...emptyJiraFieldMetadata,
+        status: "unavailable",
+        message: "Select a Jira project key to load dynamic Jira options."
+      });
+      return;
+    }
+
+    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+
+    if (!localToken) {
+      setMetadata({
+        ...emptyJiraFieldMetadata,
+        status: "unavailable",
+        message: integration.tokenConfigured
+          ? "Jira metadata needs the token available in this browser."
+          : "Configure a Jira token in Admin > Integrations to load Jira options."
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    setMetadata({
+      ...emptyJiraFieldMetadata,
+      status: "loading",
+      message: `Loading Jira options for ${metadataProjectKey}...`
+    });
+
+    async function loadMetadata() {
+      try {
+        const response = await fetch("/api/integrations/jira/sync", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            config: {
+              enabled: integration.enabled,
+              apiBaseUrl: integration.apiBaseUrl,
+              apiVersion: integration.apiVersion,
+              authMode: integration.authMode,
+              username: integration.username,
+              token: localToken,
+              defaultProjectKey: metadataProjectKey,
+              defaultIssueType: integration.defaultIssueType
+            }
+          }),
+          signal: controller.signal
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | IntegrationApiErrorPayload
+          | JiraSyncMetadataPayload
+          | null;
+
+        if (cancelled) {
+          return;
+        }
+
+        if (!response.ok) {
+          setMetadata({
+            ...emptyJiraFieldMetadata,
+            status: "error",
+            message: formatIntegrationApiError(
+              payload as IntegrationApiErrorPayload | null,
+              "Could not load Jira dynamic options."
+            )
+          });
+          return;
+        }
+
+        const data = (payload as JiraSyncMetadataPayload | null)?.data;
+
+        setMetadata({
+          status: "ready",
+          message: `Loaded Jira options for ${data?.project?.key ?? metadataProjectKey}.`,
+          warnings: data?.warnings ?? [],
+          project: data?.project,
+          components: data?.components ?? [],
+          versions: data?.versions ?? [],
+          priorities: data?.priorities ?? [],
+          statuses: data?.statuses ?? [],
+          boards: data?.boards ?? [],
+          sprints: data?.sprints ?? [],
+          assignableUsers: data?.assignableUsers ?? []
+        });
+      } catch (error) {
+        if (cancelled || (error instanceof DOMException && error.name === "AbortError")) {
+          return;
+        }
+
+        setMetadata({
+          ...emptyJiraFieldMetadata,
+          status: "error",
+          message: error instanceof Error ? error.message : "Unknown Jira metadata load failure."
+        });
+      }
+    }
+
+    void loadMetadata();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    enabled,
+    integration.apiBaseUrl,
+    integration.apiVersion,
+    integration.authMode,
+    integration.defaultIssueType,
+    integration.defaultProjectKey,
+    integration.enabled,
+    integration.tokenConfigured,
+    integration.username,
+    metadataProjectKey
+  ]);
+
+  return metadata;
+}
+
+function normalizeJiraPriorityLabel(value: string): string {
+  return normalizePriorityLabel(value);
+}
+
+function getJiraPriorityAliases(value: string): string[] {
+  const normalizedValue = normalizeJiraPriorityLabel(value);
+  const aliasesByPortalPriority: Record<string, string[]> = {
+    critical: ["critical", "urgent", "blocker", "highest"],
+    highest: ["highest", "critical", "urgent", "blocker"],
+    high: ["high"],
+    medium: ["medium"],
+    low: ["low"],
+    lowest: ["lowest", "very low"],
+    "very low": ["very low", "lowest"]
+  };
+
+  return aliasesByPortalPriority[normalizedValue] ?? [normalizedValue];
+}
+
+function getJiraPriorityName(value: string, options?: JiraMetadataOption[]): string {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue || !options?.length) {
+    return trimmedValue;
+  }
+
+  const exactMatch = options.find((option) => option.name.trim().toLowerCase() === trimmedValue.toLowerCase());
+
+  if (exactMatch) {
+    return exactMatch.name;
+  }
+
+  const aliases = new Set(getJiraPriorityAliases(trimmedValue));
+  const aliasMatch = options.find((option) => aliases.has(normalizeJiraPriorityLabel(option.name)));
+
+  return aliasMatch?.name ?? trimmedValue;
+}
+
 function getJiraBacklogOptions(board: string, backlog: string): string[] {
   return getUniqueOptionValues([
     backlog,
@@ -3315,7 +5725,7 @@ function getJiraBacklogOptions(board: string, backlog: string): string[] {
   ]);
 }
 
-function getTicketJiraDescription(ticket: Ticket): string {
+function getGeneratedTicketJiraDescription(ticket: Ticket): string {
   const userRequest = htmlToPlainTextFallback(ticket.description).trim() || "Not provided";
   const businessImpact = htmlToPlainTextFallback(ticket.dynamicFields["Business impact"] ?? "").trim();
   const lines = [
@@ -3334,13 +5744,40 @@ function getTicketJiraDescription(ticket: Ticket): string {
   return lines.join("\n");
 }
 
-function getJiraDraftFormState(draft: Ticket["jiraDraft"]): JiraDraftFormState {
+function getTicketJiraSummary(ticket: Ticket): string {
+  return ticket.jiraDraft.summary?.trim() || ticket.title.trim() || ticket.key;
+}
+
+function composeJiraDescription(description: string, releaseNote?: string): string {
+  const baseDescription = description.trim();
+  const releaseNoteText = releaseNote?.trim();
+
+  if (!releaseNoteText) {
+    return baseDescription;
+  }
+
+  return [baseDescription, "", "Release note:", releaseNoteText].join("\n");
+}
+
+function getTicketJiraDescription(ticket: Ticket): string {
+  const baseDescription = ticket.jiraDraft.description?.trim() || getGeneratedTicketJiraDescription(ticket);
+  return composeJiraDescription(baseDescription, ticket.jiraDraft.releaseNote);
+}
+
+function getJiraDraftFormState(ticket: Ticket): JiraDraftFormState {
+  const draft = ticket.jiraDraft;
+
   return {
+    summary: getTicketJiraSummary(ticket),
+    description: draft.description?.trim() || getGeneratedTicketJiraDescription(ticket),
+    releaseNote: draft.releaseNote ?? "",
     project: getValidJiraProjectKey(draft.project),
     board: draft.board,
     backlog: draft.backlog,
     sprint: draft.sprint ?? "",
     fixVersion: draft.fixVersion ?? "",
+    fixVersionStartDate: formatReleaseDate(draft.fixVersionStartDate),
+    fixVersionReleaseDate: formatReleaseDate(draft.fixVersionReleaseDate),
     components: draft.components.join(", "),
     labels: draft.labels.join(", "),
     priority: draft.priority,
@@ -3372,24 +5809,143 @@ function getInvalidJiraMetadataSelections(values: string[], options: JiraMetadat
   return values.filter((value) => !validOptionNames.has(normalizeMetadataName(value)));
 }
 
+function getJiraVersionMetadataByName(
+  versions: JiraVersionMetadataOption[],
+  versionName: string
+): JiraVersionMetadataOption | undefined {
+  const normalizedVersionName = normalizeMetadataName(versionName);
+
+  if (!normalizedVersionName) {
+    return undefined;
+  }
+
+  return versions.find((version) => normalizeMetadataName(version.name) === normalizedVersionName);
+}
+
+function getReleasePlanDetail(ticket: Ticket, plannedReleaseState: TicketLifecycleStepState): string {
+  const fixVersion = ticket.jiraDraft.fixVersion?.trim() ?? "";
+  const releaseDate = formatReleaseDateDisplay(ticket.jiraDraft.fixVersionReleaseDate);
+  const sprint = ticket.jiraDraft.sprint?.trim() ?? "";
+
+  if (fixVersion && releaseDate) {
+    return `${fixVersion} · ${releaseDate}`;
+  }
+
+  if (fixVersion) {
+    return fixVersion;
+  }
+
+  if (sprint) {
+    return `Sprint ${sprint}`;
+  }
+
+  return plannedReleaseState === "waiting" ? "After close" : "Release not selected";
+}
+
+function getSyncedJiraDraftFieldUpdate(
+  issueFields?: JiraSyncedIssueFieldsInput
+): Pick<Ticket["jiraDraft"], "fixVersion" | "fixVersionStartDate" | "fixVersionReleaseDate" | "estimateHours" | "remainingHours"> | undefined {
+  if (!issueFields) {
+    return undefined;
+  }
+
+  const primaryFixVersion = issueFields.fixVersions?.find((version) => version.name?.trim());
+  const startDate = formatReleaseDate(primaryFixVersion?.startDate || primaryFixVersion?.userStartDate);
+  const releaseDate = formatReleaseDate(primaryFixVersion?.releaseDate || primaryFixVersion?.userReleaseDate);
+  const estimateHours =
+    typeof issueFields.estimateHours === "number" && Number.isFinite(issueFields.estimateHours) && issueFields.estimateHours >= 0
+      ? issueFields.estimateHours
+      : undefined;
+  const remainingHours =
+    typeof issueFields.remainingHours === "number" && Number.isFinite(issueFields.remainingHours) && issueFields.remainingHours >= 0
+      ? issueFields.remainingHours
+      : undefined;
+
+  if (!primaryFixVersion && estimateHours === undefined && remainingHours === undefined) {
+    return undefined;
+  }
+
+  return {
+    fixVersion: primaryFixVersion?.name?.trim() || undefined,
+    fixVersionStartDate: startDate || undefined,
+    fixVersionReleaseDate: releaseDate || undefined,
+    estimateHours,
+    remainingHours
+  };
+}
+
+function jiraDraftFieldsChanged(
+  draft: Ticket["jiraDraft"],
+  update?: Pick<Ticket["jiraDraft"], "fixVersion" | "fixVersionStartDate" | "fixVersionReleaseDate" | "estimateHours" | "remainingHours">
+): boolean {
+  if (!update) {
+    return false;
+  }
+
+  return (
+    (draft.fixVersion ?? "") !== (update.fixVersion ?? "") ||
+    (formatReleaseDate(draft.fixVersionStartDate) || "") !== (formatReleaseDate(update.fixVersionStartDate) || "") ||
+    (formatReleaseDate(draft.fixVersionReleaseDate) || "") !== (formatReleaseDate(update.fixVersionReleaseDate) || "") ||
+    (draft.estimateHours ?? undefined) !== (update.estimateHours ?? undefined) ||
+    (draft.remainingHours ?? undefined) !== (update.remainingHours ?? undefined)
+  );
+}
+
+function formatSyncedJiraFieldSummary(
+  update?: Pick<Ticket["jiraDraft"], "fixVersion" | "fixVersionStartDate" | "fixVersionReleaseDate" | "estimateHours" | "remainingHours">
+): string {
+  if (!update) {
+    return "";
+  }
+
+  const startDate = formatReleaseDateDisplay(update.fixVersionStartDate);
+  const releaseDate = formatReleaseDateDisplay(update.fixVersionReleaseDate);
+  const dateSummary = [
+    startDate ? `start ${startDate}` : "",
+    releaseDate ? `release ${releaseDate}` : ""
+  ].filter(Boolean).join(", ");
+
+  const releaseSummary = update.fixVersion
+    ? dateSummary
+      ? `Jira fix version synced: ${update.fixVersion} (${dateSummary}).`
+      : `Jira fix version synced: ${update.fixVersion}.`
+    : "";
+  const timeSummary = [
+    typeof update.estimateHours === "number" ? `estimate ${formatCount(update.estimateHours)}h` : "",
+    typeof update.remainingHours === "number" ? `remaining ${formatCount(update.remainingHours)}h` : ""
+  ].filter(Boolean).join(", ");
+
+  return [
+    releaseSummary,
+    timeSummary ? `Jira time synced: ${timeSummary}.` : ""
+  ].filter(Boolean).join(" ");
+}
+
 function getJiraDraftUpdateInput(
   form: JiraDraftFormState,
-  validComponentOptions?: JiraMetadataOption[]
+  validComponentOptions?: JiraMetadataOption[],
+  validPriorityOptions?: JiraMetadataOption[]
 ): JiraDraftUpdateInput {
   const parsedComponents = parseCommaSeparatedValues(form.components);
 
   return {
+    summary: optionalText(form.summary),
+    description: optionalText(form.description),
+    releaseNote: optionalText(form.releaseNote),
     project: getValidJiraProjectKey(form.project),
     board: form.board.trim(),
     backlog: form.backlog.trim(),
     sprint: optionalText(form.sprint),
     fixVersion: optionalText(form.fixVersion),
+    fixVersionStartDate: optionalText(form.fixVersionStartDate),
+    fixVersionReleaseDate: optionalText(form.fixVersionReleaseDate),
     components: validComponentOptions
       ? getValidJiraMetadataSelections(parsedComponents, validComponentOptions)
       : parsedComponents,
     labels: parseCommaSeparatedValues(form.labels),
-    priority: form.priority.trim(),
+    priority: getJiraPriorityName(form.priority, validPriorityOptions),
     estimateHours: optionalPositiveNumber(form.estimateHours),
+    remainingHours: undefined,
     storyPoints: optionalPositiveNumber(form.storyPoints),
     assignee: optionalText(form.assignee)
   };
@@ -3405,19 +5961,105 @@ function applyJiraDraftUpdate(
 
   return {
     ...draft,
+    summary: update.summary,
+    description: update.description,
+    releaseNote: update.releaseNote,
     project: update.project || getValidJiraProjectKey(draft.project) || draft.project,
     board: update.board || draft.board,
     backlog: update.backlog || draft.backlog,
     sprint: update.sprint,
     fixVersion: update.fixVersion,
+    fixVersionStartDate: update.fixVersionStartDate,
+    fixVersionReleaseDate: update.fixVersionReleaseDate,
     components: update.components,
     labels: update.labels,
     priority: update.priority || draft.priority,
     estimateHours: update.estimateHours,
+    remainingHours: update.remainingHours ?? draft.remainingHours,
     storyPoints: update.storyPoints,
     assignee: update.assignee,
     linkedEpic: undefined
   };
+}
+
+function createJiraDraftAuditChanges(ticket: Ticket, nextDraft: Ticket["jiraDraft"]): TicketUpdateChange[] {
+  const previousDraft = ticket.jiraDraft;
+  const nextTicket = {
+    ...ticket,
+    jiraDraft: nextDraft
+  };
+  const generatedDescription = getGeneratedTicketJiraDescription(ticket);
+  const fields: Array<{
+    field: string;
+    previousValue: string;
+    nextValue: string;
+    summarize?: boolean;
+  }> = [
+    {
+      field: "Jira title",
+      previousValue: getTicketJiraSummary(ticket),
+      nextValue: getTicketJiraSummary(nextTicket),
+      summarize: true
+    },
+    {
+      field: "Jira description",
+      previousValue: previousDraft.description?.trim() || generatedDescription,
+      nextValue: nextDraft.description?.trim() || generatedDescription,
+      summarize: true
+    },
+    {
+      field: "Release note",
+      previousValue: previousDraft.releaseNote ?? "",
+      nextValue: nextDraft.releaseNote ?? "",
+      summarize: true
+    },
+    { field: "Project", previousValue: previousDraft.project, nextValue: nextDraft.project },
+    { field: "Board", previousValue: previousDraft.board, nextValue: nextDraft.board },
+    { field: "Backlog", previousValue: previousDraft.backlog, nextValue: nextDraft.backlog },
+    { field: "Sprint", previousValue: previousDraft.sprint ?? "", nextValue: nextDraft.sprint ?? "" },
+    { field: "Fix version", previousValue: previousDraft.fixVersion ?? "", nextValue: nextDraft.fixVersion ?? "" },
+    {
+      field: "Fix version start date",
+      previousValue: previousDraft.fixVersionStartDate ?? "",
+      nextValue: nextDraft.fixVersionStartDate ?? ""
+    },
+    {
+      field: "Fix version release date",
+      previousValue: previousDraft.fixVersionReleaseDate ?? "",
+      nextValue: nextDraft.fixVersionReleaseDate ?? ""
+    },
+    {
+      field: "Components",
+      previousValue: previousDraft.components.join(", "),
+      nextValue: nextDraft.components.join(", ")
+    },
+    { field: "Labels", previousValue: previousDraft.labels.join(", "), nextValue: nextDraft.labels.join(", ") },
+    { field: "Priority", previousValue: previousDraft.priority, nextValue: nextDraft.priority },
+    {
+      field: "Estimate hours",
+      previousValue: previousDraft.estimateHours ? String(previousDraft.estimateHours) : "",
+      nextValue: nextDraft.estimateHours ? String(nextDraft.estimateHours) : ""
+    },
+    {
+      field: "Remaining hours",
+      previousValue: typeof previousDraft.remainingHours === "number" ? String(previousDraft.remainingHours) : "",
+      nextValue: typeof nextDraft.remainingHours === "number" ? String(nextDraft.remainingHours) : ""
+    },
+    {
+      field: "Story points",
+      previousValue: previousDraft.storyPoints ? String(previousDraft.storyPoints) : "",
+      nextValue: nextDraft.storyPoints ? String(nextDraft.storyPoints) : ""
+    },
+    { field: "Assignee", previousValue: previousDraft.assignee ?? "", nextValue: nextDraft.assignee ?? "" }
+  ];
+
+  return fields
+    .filter(({ previousValue, nextValue }) => previousValue !== nextValue)
+    .map(({ field, previousValue, nextValue, summarize }) => ({
+      field,
+      oldValue: summarize ? summarizeTicketUpdateValue(previousValue) : previousValue || "Blank",
+      newValue: summarize ? summarizeTicketUpdateValue(nextValue) : nextValue || "Blank"
+    }));
 }
 
 function getValidJiraProjectKey(value?: string): string {
@@ -3453,16 +6095,27 @@ function buildTicketJiraActionConfig(
   };
 }
 
+function buildTicketJiraAttachmentPayloads(ticket: Ticket): JiraIssueAttachmentInput[] {
+  return ticket.attachments.map((attachment) => ({
+    id: attachment.id,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    byteSize: attachment.byteSize,
+    contentDataUrl: attachment.contentDataUrl
+  }));
+}
+
 function buildTicketJiraIssuePayload(ticket: Ticket) {
   return {
-    summary: ticket.title,
+    summary: getTicketJiraSummary(ticket),
     description: getTicketJiraDescription(ticket),
     sourceTicketKey: ticket.key,
     labels: getJiraLabelsWithModule(ticket.jiraDraft.labels, ticket.module),
     components: ticket.jiraDraft.components,
     fixVersion: ticket.jiraDraft.fixVersion,
     priority: ticket.jiraDraft.priority || ticket.priority,
-    estimateHours: ticket.jiraDraft.estimateHours
+    estimateHours: ticket.jiraDraft.estimateHours,
+    attachments: buildTicketJiraAttachmentPayloads(ticket)
   };
 }
 
@@ -3522,6 +6175,10 @@ function getTicketQueueBucket(ticket: Ticket): QueueTicketBucket {
 
   if (ticket.state === "closed" || followUpStatus === "done" || followUpStatus === "rejected") {
     return "done";
+  }
+
+  if (ticket.relatedJiraKey) {
+    return followUpStatus === "blocked" || ticket.state === "escalated" ? "blocked" : "ongoing";
   }
 
   if (hasBlockingSignal) {
@@ -3605,7 +6262,7 @@ function formatLocalTimestamp(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
     date.getHours()
-  )}:${pad(date.getMinutes())}`;
+  )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function formatByteSize(byteSize: number): string {
@@ -3869,6 +6526,9 @@ function updateAttachmentRecordContent(
 const richTextImageMaxBytes = 3 * 1024 * 1024;
 const richTextImageMinResizePixels = 48;
 const richTextImageMaxResizePixels = 1600;
+const richTextImageMinResizePercent = 15;
+const richTextImageMaxResizePercent = 100;
+const richTextImageResizeStepPercent = 5;
 const richTextAllowedTags = new Set([
   "a",
   "blockquote",
@@ -3885,6 +6545,10 @@ const richTextAllowedTags = new Set([
   "u",
   "ul"
 ]);
+
+interface SelectedRichTextImageState {
+  widthPercent: number;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -4207,6 +6871,23 @@ function buildTicketDynamicFields(
   return dynamicFields;
 }
 
+function getFirstTemplateAnswerByOptionSource(
+  form: NewTicketFormState,
+  formTemplate: ProductFormTemplate | undefined,
+  optionSources: FormTemplateOptionSource[]
+): string {
+  const sourceSet = new Set<FormTemplateOptionSource>(optionSources);
+  const matchingField = [...(formTemplate?.fields ?? [])]
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .find((field) => field.optionSource && sourceSet.has(field.optionSource));
+  const answer = matchingField ? form.dynamicAnswers[matchingField.id] ?? "" : "";
+
+  return answer
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)[0] ?? "";
+}
+
 function createTicketFromForm(
   form: NewTicketFormState,
   ticketList: Ticket[],
@@ -4222,7 +6903,13 @@ function createTicketFromForm(
   const moduleName = form.module.trim();
   const moduleConfig = getConfigModuleForTicket(config, form.product, form.pru, moduleName);
   const jiraComponent = moduleConfig?.jiraComponent?.trim();
-  const priority = form.priority || "Medium";
+  const formTemplate = getFormTemplateForTicket(config, form.product, form.typeId);
+  const selectedFixVersion = getFirstTemplateAnswerByOptionSource(form, formTemplate, [
+    "jiraUnreleasedVersions",
+    "jiraVersions"
+  ]);
+  const selectedSprint = getFirstTemplateAnswerByOptionSource(form, formTemplate, ["jiraSprints"]);
+  const priority = form.priority || "2 - Medium";
   const risk = form.risk || "Medium";
   const labels = form.labels
     .split(",")
@@ -4251,9 +6938,12 @@ function createTicketFromForm(
     clarifications: [],
     escalations: [],
     jiraDraft: {
+      summary: form.title.trim(),
       project: productConfig?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey,
       board: "Draft board",
       backlog: "Governance intake",
+      sprint: selectedSprint || undefined,
+      fixVersion: selectedFixVersion || undefined,
       components: jiraComponent ? [jiraComponent] : [],
       labels: jiraLabels,
       priority,
@@ -4311,7 +7001,12 @@ export function NexusPortal() {
   const [sentEmailNotificationIds, setSentEmailNotificationIds] = useState<string[]>([]);
   const [jiraCreationInFlightTicketKeys, setJiraCreationInFlightTicketKeys] = useState<string[]>([]);
   const [jiraUpdateInFlightTicketKeys, setJiraUpdateInFlightTicketKeys] = useState<string[]>([]);
+  const [jiraBulkSyncState, setJiraBulkSyncState] = useState<"idle" | "syncing">("idle");
+  const [jiraBulkSyncMessage, setJiraBulkSyncMessage] = useState("");
+  const [jiraBulkSyncError, setJiraBulkSyncError] = useState("");
   const emailNotificationsInFlightRef = useRef<Set<string>>(new Set());
+  const initialTicketLinkHandledRef = useRef(false);
+  const startupJiraSyncHandledRef = useRef(false);
 
   const roleOptions = useMemo(() => getRoleOptions(config), [config]);
   const rolePersonaOptions = useMemo(() => buildRolePersonaOptions(config), [config]);
@@ -4324,8 +7019,31 @@ export function NexusPortal() {
     () => getRoleScopedTickets(ticketList, role, config),
     [config, role, ticketList]
   );
+  const ticketListTickets = useMemo(
+    () => (role === "requester" ? ticketList : roleScopedTickets),
+    [role, roleScopedTickets, ticketList]
+  );
+  const dashboardTickets = useMemo(
+    () =>
+      role === "requester"
+        ? ticketList.filter((ticket) => ticketWasSubmittedByPersona(ticket, selectedPersona))
+        : roleScopedTickets,
+    [role, roleScopedTickets, selectedPersona, ticketList]
+  );
+  const clarificationTickets = useMemo(
+    () => roleScopedTickets.filter((ticket) => ticketHasOpenClarification(ticket)),
+    [roleScopedTickets]
+  );
+  const activeModuleTickets =
+    activeModule === "dashboard"
+      ? dashboardTickets
+      : activeModule === "tickets"
+        ? ticketListTickets
+        : activeModule === "clarifications"
+          ? clarificationTickets
+          : roleScopedTickets;
   const selectedTicket =
-    roleScopedTickets.find((ticket) => ticket.key === selectedTicketKey) ?? roleScopedTickets[0];
+    activeModuleTickets.find((ticket) => ticket.key === selectedTicketKey) ?? activeModuleTickets[0];
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => roleCanAccessNavItem(role, item)),
     [role]
@@ -4335,23 +7053,11 @@ export function NexusPortal() {
     const normalizedQuery = query.trim().toLowerCase();
 
     if (!normalizedQuery) {
-      return roleScopedTickets;
+      return dashboardTickets;
     }
 
-    return roleScopedTickets.filter((ticket) =>
-      [
-        ticket.key,
-        ticket.title,
-        ticket.product,
-        ticket.module,
-        ticket.site,
-        getConfigTicketTypeLabel(config, ticket.typeId)
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(normalizedQuery)
-    );
-  }, [config, query, roleScopedTickets]);
+    return dashboardTickets.filter((ticket) => getTicketSearchText(ticket, config).includes(normalizedQuery));
+  }, [config, dashboardTickets, query]);
 
   const readNotificationIds = useMemo(
     () => new Set(readNotificationIdsByPersona[selectedPersona.id] ?? []),
@@ -4366,12 +7072,14 @@ export function NexusPortal() {
     () =>
       [
         ...filterVisible(initialNotifications, role),
+        ...buildJiraReadyToCreateNotifications(ticketList, selectedPersona, config),
         ...buildClarificationNotifications(ticketList, role, selectedPersona, config)
       ]
+        .filter((item) => !readNotificationIds.has(item.id))
         .sort((left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt))
         .map((item) => ({
           ...item,
-          unread: item.unread && !readNotificationIds.has(item.id)
+          unread: item.unread
         })),
     [config, readNotificationIds, role, selectedPersona, ticketList]
   );
@@ -4482,11 +7190,11 @@ export function NexusPortal() {
     }
 
     const localSecrets = readLocalIntegrationSecrets();
-    const pendingEmails = buildApprovalRequestedEmailEnvelopes(
-      config,
-      ticketList,
-      typeof window === "undefined" ? "" : window.location.origin
-    ).filter(
+    const portalOrigin = typeof window === "undefined" ? "" : window.location.origin;
+    const pendingEmails = [
+      ...buildApprovalRequestedEmailEnvelopes(config, ticketList, portalOrigin),
+      ...buildJiraReadyToCreateEmailEnvelopes(config, ticketList, portalOrigin)
+    ].filter(
       (email) =>
         !sentEmailNotificationIds.includes(email.id) &&
         !emailNotificationsInFlightRef.current.has(email.id)
@@ -4515,21 +7223,23 @@ export function NexusPortal() {
             username: localSecrets.smtpUsername?.trim() || "",
             password: localSecrets.smtpPassword || ""
           },
+          idempotencyKey: email.id,
           message: {
             to: email.recipients,
             subject: email.subject,
-            body: email.body
+            body: email.body,
+            htmlBody: email.htmlBody
           }
         })
       })
         .then(async (response) => {
           const payload = (await response.json().catch(() => null)) as
             | IntegrationApiErrorPayload
-            | { data?: { accepted?: string[]; rejected?: string[] } }
+            | { data?: { accepted?: string[]; deduplicated?: boolean; deliveryStatus?: string; rejected?: string[] } }
             | null;
 
           if (!response.ok) {
-            console.error("Approval email notification failed.", {
+            console.error("Email notification failed.", {
               ticketKey: email.ticketKey,
               eventType: email.eventType,
               error: formatIntegrationApiError(payload as IntegrationApiErrorPayload | null, "SMTP notification failed.")
@@ -4537,16 +7247,20 @@ export function NexusPortal() {
             return;
           }
 
-          const accepted = (payload as { data?: { accepted?: string[] } } | null)?.data?.accepted ?? [];
+          const data = (
+            payload as { data?: { accepted?: string[]; deduplicated?: boolean; deliveryStatus?: string } } | null
+          )?.data;
+          const accepted = data?.accepted ?? [];
+          const duplicateSent = data?.deduplicated === true && data.deliveryStatus === "sent";
 
-          if (accepted.length > 0) {
+          if (accepted.length > 0 || duplicateSent) {
             setSentEmailNotificationIds((current) =>
               current.includes(email.id) ? current : [...current, email.id]
             );
           }
         })
         .catch((error) => {
-          console.error("Approval email notification request failed.", {
+          console.error("Email notification request failed.", {
             ticketKey: email.ticketKey,
             eventType: email.eventType,
             error: getErrorMessage(error)
@@ -4557,23 +7271,6 @@ export function NexusPortal() {
         });
     });
   }, [config, hasLoadedConfig, hasLoadedTickets, sentEmailNotificationIds, ticketList]);
-
-  useEffect(() => {
-    if (activeModule !== "notifications") {
-      return;
-    }
-
-    const unreadNotificationIds = visibleNotifications.filter((item) => item.unread).map((item) => item.id);
-
-    if (!unreadNotificationIds.length) {
-      return;
-    }
-
-    setReadNotificationIdsByPersona((current) => ({
-      ...current,
-      [selectedPersona.id]: Array.from(new Set([...(current[selectedPersona.id] ?? []), ...unreadNotificationIds]))
-    }));
-  }, [activeModule, selectedPersona.id, visibleNotifications]);
 
   useEffect(() => {
     if (activeModule !== "jira" || !currentJiraAttentionIds.length) {
@@ -4751,6 +7448,41 @@ export function NexusPortal() {
   }, []);
 
   useEffect(() => {
+    if (!hasLoadedTickets || initialTicketLinkHandledRef.current || typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const linkedTicketKey = new URLSearchParams(window.location.search).get("ticket")?.trim() ?? "";
+
+      if (!linkedTicketKey) {
+        initialTicketLinkHandledRef.current = true;
+        return;
+      }
+
+      if (!ticketList.length) {
+        return;
+      }
+
+      const linkedTicket = ticketList.find(
+        (ticket) => ticket.key.toLowerCase() === linkedTicketKey.toLowerCase()
+      );
+      const ticketKey = linkedTicket?.key ?? linkedTicketKey;
+
+      initialTicketLinkHandledRef.current = true;
+      setQuery(ticketKey);
+      setSelectedTicketKey(ticketKey);
+      setActiveModule("tickets");
+      setActiveTab("Overview");
+      setIsTicketDetailOpen(Boolean(linkedTicket));
+    } catch (error) {
+      console.error("Failed to open ticket deep link.", {
+        error: getErrorMessage(error)
+      });
+    }
+  }, [hasLoadedTickets, ticketList]);
+
+  useEffect(() => {
     if (!hasLoadedConfig || !hasLoadedTickets) {
       return;
     }
@@ -4807,15 +7539,32 @@ export function NexusPortal() {
     setIsTicketDetailOpen(true);
   }
 
-  function focusTicketOnDashboard(ticketKey: string) {
-    setSelectedTicketKey(ticketKey);
-    setActiveTab("Overview");
-  }
-
   function focusTicketOnJira(ticketKey: string) {
     setSelectedTicketKey(ticketKey);
     setActiveModule("jira");
     setActiveTab("Jira");
+  }
+
+  function searchAndOpenTicket(searchValue: string) {
+    const normalizedSearch = searchValue.trim().toLowerCase();
+    setQuery(searchValue);
+
+    if (!normalizedSearch) {
+      return;
+    }
+
+    const exactMatch = ticketListTickets.find((ticket) => ticket.key.toLowerCase() === normalizedSearch);
+    const fuzzyMatch = ticketListTickets.find((ticket) => getTicketSearchText(ticket, config).includes(normalizedSearch));
+    const matchingTicket = exactMatch ?? fuzzyMatch;
+
+    if (matchingTicket) {
+      selectTicket(matchingTicket.key);
+      return;
+    }
+
+    setActiveModule("tickets");
+    setActiveTab("Overview");
+    setIsTicketDetailOpen(false);
   }
 
   function openTicketModule(ticketKey: string, module: ModuleKey, tab?: DetailTab) {
@@ -4833,6 +7582,29 @@ export function NexusPortal() {
       setIsTicketDetailOpen(true);
     }
   }
+
+  function openModule(module: ModuleKey) {
+    setActiveModule(module);
+
+    if (module === "tickets") {
+      setIsTicketDetailOpen(false);
+      setActiveTab("Overview");
+    }
+  }
+
+function openNotificationItem(notification: NotificationItem) {
+  setReadNotificationIdsByPersona((current) => ({
+    ...current,
+    [selectedPersona.id]: Array.from(new Set([...(current[selectedPersona.id] ?? []), notification.id]))
+  }));
+
+  if (notification.actionLabel.toLowerCase().includes("jira")) {
+    openTicketModule(notification.ticketKey, "jira");
+    return;
+  }
+
+  openTicketModule(notification.ticketKey, "tickets", "Clarifications");
+}
 
   function changePersona(nextPersonaId: string) {
     const nextPersona = rolePersonaOptions.find((option) => option.id === nextPersonaId);
@@ -5196,69 +7968,167 @@ export function NexusPortal() {
     );
   }
 
-  function createEscalation(ticketKey: string, input: NewEscalationInput) {
-    const reason = input.reason.trim();
-    const impact = input.impact.trim();
-    const requestedAction = input.requestedAction.trim();
-
-    if (!reason || !impact || !requestedAction) {
-      return;
-    }
-
+  function updateTicket(ticketKey: string, input: TicketUpdateInput) {
     const now = new Date();
+    const timestamp = formatLocalTimestamp(now);
     const actor = selectedPersona;
-    const roleLabel = actor.roleLabel;
+    const title = input.title.trim();
+    const requestedState = ticketStateOptions.some((option) => option.value === input.state) ? input.state : undefined;
+    const normalizedDescription = normalizeRichTextForStorage(input.description);
+    const normalizedBusinessImpact = normalizeRichTextForStorage(input.businessImpact);
+    const requesterNote = normalizeRichTextForStorage(input.requesterNote);
 
     setTicketList((currentTickets) =>
-      currentTickets.map((ticket) =>
-        ticket.key === ticketKey
-          ? {
-              ...ticket,
-              state: ticket.state === "closed" ? ticket.state : "escalated",
-              updatedAt: now.toISOString(),
-              escalations: [
-                ...ticket.escalations,
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        if (!canEditTicketForPersona(config, actor, ticket)) {
+          console.warn("Ticket update rejected by role scope.", {
+            ticketKey,
+            role: actor.role
+          });
+          return ticket;
+        }
+
+        const priorityOptions = getTicketUpdateOptionLabels(config.priorities, ticket.priority);
+        const riskOptions = getTicketUpdateOptionLabels(config.riskOptions, ticket.risk);
+        const currentDescription = normalizeRichTextForStorage(ticket.description);
+        const currentBusinessImpact = normalizeRichTextForStorage(getEditableTicketBusinessImpact(ticket));
+        const nextTitle = title || ticket.title;
+        const nextState = requestedState ?? ticket.state;
+        const nextPriority = normalizeTicketUpdateOptionValue(input.priority, ticket.priority, priorityOptions);
+        const nextRisk = normalizeTicketUpdateOptionValue(input.risk, ticket.risk, riskOptions);
+        const changes: TicketUpdateChange[] = [];
+
+        if (nextTitle !== ticket.title) {
+          changes.push({
+            field: "Title",
+            oldValue: ticket.title,
+            newValue: nextTitle
+          });
+        }
+
+        if (nextState !== ticket.state) {
+          changes.push({
+            field: "Lifecycle status",
+            oldValue: getTicketStateLabel(ticket.state),
+            newValue: getTicketStateLabel(nextState)
+          });
+        }
+
+        if (nextPriority !== ticket.priority) {
+          changes.push({
+            field: "Priority",
+            oldValue: ticket.priority,
+            newValue: nextPriority
+          });
+        }
+
+        if (nextRisk !== ticket.risk) {
+          changes.push({
+            field: "Risk",
+            oldValue: ticket.risk,
+            newValue: nextRisk
+          });
+        }
+
+        if (normalizedDescription !== currentDescription) {
+          changes.push({
+            field: "Description",
+            oldValue: summarizeTicketUpdateValue(currentDescription),
+            newValue: summarizeTicketUpdateValue(normalizedDescription)
+          });
+        }
+
+        if (normalizedBusinessImpact !== currentBusinessImpact) {
+          changes.push({
+            field: "Business impact",
+            oldValue: summarizeTicketUpdateValue(currentBusinessImpact),
+            newValue: summarizeTicketUpdateValue(normalizedBusinessImpact)
+          });
+        }
+
+        if (changes.length === 0 && !requesterNote) {
+          return ticket;
+        }
+
+        const requesterComment = buildRequesterTicketUpdateComment(changes, requesterNote, actor);
+        const noteSummary = requesterNote ? summarizeTicketUpdateValue(requesterNote, 140) : "";
+        const auditReason =
+          noteSummary || `Ticket corrected by ${actor.roleLabel}. Requester-visible copy was added.`;
+        const auditEntries: Ticket["audit"] =
+          changes.length > 0
+            ? changes.map((change, index) => ({
+                id: `audit-${ticket.key}-ticket-update-${now.getTime()}-${index}`,
+                eventType: `Ticket ${change.field.toLowerCase()} updated`,
+                actor: formatPersonaAuditActor(actor),
+                createdAt: timestamp,
+                visibility: "public" as VisibilityLevel,
+                oldValue: change.oldValue,
+                newValue: change.newValue,
+                reason: auditReason
+              }))
+            : [
                 {
-                  id: `escalation-${ticket.key}-${now.getTime()}`,
-                  type: input.type,
-                  severity: input.severity,
-                  reason,
-                  impact,
-                  urgency: input.urgency.trim() || "Needs prioritization",
-                  requestedAction,
-                  mitigationPlan: input.mitigationPlan.trim() || "Mitigation plan pending.",
-                  decisionMaker: input.decisionMaker.trim() || roleLabel,
-                  dueAt: formatEscalationDueDate(input.dueAt),
-                  status: "open"
-                }
-              ],
-              audit: [
-                ...ticket.audit,
-                {
-                  id: `audit-${ticket.key}-escalation-${now.getTime()}`,
-                  eventType: "Escalation opened",
+                  id: `audit-${ticket.key}-ticket-update-note-${now.getTime()}`,
+                  eventType: "Ticket update note added",
                   actor: formatPersonaAuditActor(actor),
-                  createdAt: now.toISOString(),
-                  visibility: "approvers_only",
-                  reason,
-                  newValue: `${input.type} escalation`
+                  createdAt: timestamp,
+                  visibility: "public" as VisibilityLevel,
+                  reason: auditReason
                 }
-              ]
+              ];
+
+        return {
+          ...ticket,
+          title: nextTitle,
+          state: nextState,
+          priority: nextPriority,
+          risk: nextRisk,
+          description: normalizedDescription,
+          dynamicFields: {
+            ...ticket.dynamicFields,
+            "Business impact": normalizedBusinessImpact
+          },
+          updatedAt: timestamp,
+          comments: [
+            ...ticket.comments,
+            {
+              id: `comment-${ticket.key}-ticket-update-${now.getTime()}`,
+              author: actor.displayName,
+              role: actor.roleLabel,
+              body: requesterComment,
+              createdAt: timestamp,
+              visibility: "public",
+              source: "portal"
             }
-          : ticket
-      )
+          ],
+          audit: [...ticket.audit, ...auditEntries]
+        };
+      })
     );
   }
 
-  function updateEscalationStatus(
-    ticketKey: string,
-    escalationId: string,
-    status: EscalationStatus,
-    decisionNote: string
-  ) {
+  function markEscalationManagerInviteDelivery({
+    error,
+    escalationId,
+    managerEmail,
+    status,
+    statusUpdateId,
+    ticketKey
+  }: {
+    error?: string;
+    escalationId: string;
+    managerEmail: string;
+    status: Extract<EscalationManagerInviteStatus, "sent" | "failed">;
+    statusUpdateId?: string;
+    ticketKey: string;
+  }) {
     const now = new Date();
+    const timestamp = now.toISOString();
     const actor = selectedPersona;
-    const trimmedNote = decisionNote.trim();
 
     setTicketList((currentTickets) =>
       currentTickets.map((ticket) => {
@@ -5272,19 +8142,414 @@ export function NexusPortal() {
           return ticket;
         }
 
+        const eventType =
+          status === "sent" ? "Escalation manager invited" : "Escalation manager invite failed";
+        const reason =
+          status === "sent"
+            ? `Manager invite sent to ${managerEmail}.`
+            : `Manager invite to ${managerEmail} failed. ${error ?? ""}`.trim();
+
         return {
           ...ticket,
-          updatedAt: now.toISOString(),
+          updatedAt: timestamp,
           escalations: ticket.escalations.map((candidate) =>
-            candidate.id === escalationId ? { ...candidate, status } : candidate
+            candidate.id === escalationId
+              ? {
+                  ...candidate,
+                  managerInviteStatus: status,
+                  managerInvitedAt: status === "sent" ? timestamp : candidate.managerInvitedAt,
+                  managerInviteError: status === "failed" ? error ?? "Manager invite failed." : undefined,
+                  statusUpdates: candidate.statusUpdates?.map((statusUpdate) =>
+                    statusUpdateId && statusUpdate.id === statusUpdateId && statusUpdate.managerInvite
+                      ? {
+                          ...statusUpdate,
+                          managerInvite: {
+                            ...statusUpdate.managerInvite,
+                            status,
+                            sentAt: status === "sent" ? timestamp : statusUpdate.managerInvite.sentAt,
+                            error: status === "failed" ? error ?? "Manager invite failed." : undefined
+                          }
+                        }
+                      : statusUpdate
+                  )
+                }
+              : candidate
+          ),
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-escalation-manager-${status}-${now.getTime()}`,
+              eventType,
+              actor: formatPersonaAuditActor(actor),
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              reason,
+              newValue: escalation.reason
+            }
+          ]
+        };
+      })
+    );
+  }
+
+  async function sendEscalationManagerInviteEmail({
+    actionPlan,
+    escalation,
+    managerEmail,
+    managerName,
+    meetingSeries,
+    statusNote,
+    statusUpdateId,
+    ticket
+  }: {
+    actionPlan: string;
+    escalation: Ticket["escalations"][number];
+    managerEmail: string;
+    managerName: string;
+    meetingSeries: string;
+    statusNote: string;
+    statusUpdateId?: string;
+    ticket: Ticket;
+  }) {
+    const email = managerEmail.trim();
+    const name = managerName.trim() || email;
+
+    if (!email || !isValidEmailAddress(email)) {
+      markEscalationManagerInviteDelivery({
+        escalationId: escalation.id,
+        managerEmail: email || "missing email",
+        status: "failed",
+        statusUpdateId,
+        ticketKey: ticket.key,
+        error: "Enter a valid manager email address before sending the invite."
+      });
+      return;
+    }
+
+    const smtp = config.integrations.smtp;
+
+    if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+      markEscalationManagerInviteDelivery({
+        escalationId: escalation.id,
+        managerEmail: email,
+        status: "failed",
+        statusUpdateId,
+        ticketKey: ticket.key,
+        error: "SMTP email delivery is not enabled."
+      });
+      return;
+    }
+
+    const portalHomeUrl = typeof window === "undefined" ? "" : window.location.origin;
+    const ticketUrl = portalHomeUrl ? `${portalHomeUrl}/?ticket=${encodeURIComponent(ticket.key)}` : "";
+    const actionPlanText =
+      htmlToPlainTextFallback(actionPlan || escalation.actionPlan || escalation.mitigationPlan).trim() ||
+      "Action plan pending.";
+    const statusUpdateText =
+      htmlToPlainTextFallback(statusNote || escalation.statusNote || "").trim() || "No status update added.";
+    const meetingSeriesText = meetingSeries.trim() || escalation.meetingSeries?.trim() || "Not scheduled.";
+    const jiraLabel = ticket.relatedJiraKey ? `Jira: ${ticket.relatedJiraKey}` : "Jira: Not linked";
+    const body = [
+      `Manager invite for escalation on ${ticket.key} - ${ticket.title}`,
+      "",
+      `${selectedPersona.displayName} (${selectedPersona.roleLabel}) invited you to this escalation follow-up.`,
+      "",
+      `Ticket: ${ticket.key} - ${ticket.title}`,
+      jiraLabel,
+      `Current portal status: ${getTicketCurrentStatusLabel(ticket)}`,
+      `Escalation status: ${getEscalationStatusLabel(escalation.status)}`,
+      `Severity: ${escalation.severity}`,
+      `Due target: ${formatDateTimeDisplay(escalation.dueAt)}`,
+      "",
+      "Requested action:",
+      htmlToPlainTextFallback(escalation.requestedAction).trim() || "No requested action provided.",
+      "",
+      "Action plan:",
+      actionPlanText,
+      "",
+      "Meeting series:",
+      meetingSeriesText,
+      "",
+      "Latest status update:",
+      statusUpdateText,
+      "",
+      ticketUrl ? `Open ticket: ${ticketUrl}` : "Open the ticket in NEXUS Portal."
+    ].join("\n");
+    const localSecrets = readLocalIntegrationSecrets();
+    const idempotencyKey = [
+      "email",
+      "escalationManagerInvite",
+      ticket.key,
+      escalation.id,
+      statusUpdateId ?? "create",
+      email.toLowerCase(),
+      getNotificationEmailDeliveryFingerprint([body, email.toLowerCase()])
+    ].join(":");
+
+    try {
+      const response = await fetch("/api/integrations/smtp/send-notification", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          config: {
+            enabled: smtp.enabled,
+            host: smtp.host,
+            port: smtp.port,
+            security: smtp.security,
+            fromName: smtp.fromName,
+            fromEmail: smtp.fromEmail,
+            username: localSecrets.smtpUsername?.trim() || "",
+            password: localSecrets.smtpPassword || ""
+          },
+          idempotencyKey,
+          message: {
+            to: [{ name, email }],
+            subject: `Escalation follow-up: ${ticket.key} - ${ticket.title}`,
+            body,
+            htmlBody: renderNotificationEmailHtmlBody(body, {
+              ticketKey: ticket.key,
+              ticketTitle: ticket.title,
+              portalHomeUrl,
+              portalUrl: ticketUrl,
+              ticketUrl
+            })
+          }
+        })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | IntegrationApiErrorPayload
+        | { data?: { accepted?: string[]; deduplicated?: boolean; deliveryStatus?: string; rejected?: string[] } }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(formatIntegrationApiError(payload as IntegrationApiErrorPayload | null, "SMTP manager invite failed."));
+      }
+
+      const data = (
+        payload as { data?: { accepted?: string[]; deduplicated?: boolean; deliveryStatus?: string; rejected?: string[] } } | null
+      )?.data;
+      const accepted = data?.accepted ?? [];
+      const duplicateSent = data?.deduplicated === true && data.deliveryStatus === "sent";
+
+      if (accepted.length === 0 && !duplicateSent) {
+        const rejected = data?.rejected?.filter(Boolean).join(", ");
+        throw new Error(rejected ? `SMTP did not accept the manager invite. Rejected: ${rejected}.` : "SMTP did not accept the manager invite.");
+      }
+
+      markEscalationManagerInviteDelivery({
+        escalationId: escalation.id,
+        managerEmail: email,
+        status: "sent",
+        statusUpdateId,
+        ticketKey: ticket.key
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+
+      console.error("Escalation manager invite failed.", {
+        ticketKey: ticket.key,
+        escalationId: escalation.id,
+        managerEmail: email,
+        error: message
+      });
+      markEscalationManagerInviteDelivery({
+        escalationId: escalation.id,
+        managerEmail: email,
+        status: "failed",
+        statusUpdateId,
+        ticketKey: ticket.key,
+        error: message
+      });
+    }
+  }
+
+  function createEscalation(ticketKey: string, input: NewEscalationInput) {
+    const reason = input.reason.trim();
+    const impact = normalizeRichTextForStorage(input.impact);
+    const requestedAction = normalizeRichTextForStorage(input.requestedAction);
+
+    if (!reason || !impact || !requestedAction) {
+      return;
+    }
+
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const actor = selectedPersona;
+    const roleLabel = actor.roleLabel;
+    const sourceTicket = ticketList.find((ticket) => ticket.key === ticketKey);
+    const actionItems = normalizeEscalationActionItems(input.actionItems, input.actionPlan || input.mitigationPlan);
+    const actionPlanText =
+      formatEscalationActionItemsForStorage(actionItems) ||
+      htmlToPlainTextFallback(input.actionPlan || input.mitigationPlan).trim() ||
+      "Action plan pending.";
+    const actionPlan = normalizeRichTextForStorage(actionPlanText);
+    const meetingSeries = input.meetingSeries.trim();
+    const people = normalizeEscalationPeople(input.people, input.managerName, input.managerEmail);
+    const primaryPerson = getPrimaryEscalationPerson(people);
+    const managerName = primaryPerson?.name.trim() || input.managerName.trim();
+    const managerEmail = primaryPerson?.email?.trim() || input.managerEmail.trim();
+    const managerInviteStatus: EscalationManagerInviteStatus =
+      input.sendManagerInvite ? "pending" : "not_sent";
+    const newEscalation: Ticket["escalations"][number] = {
+      id: `escalation-${ticketKey}-${now.getTime()}`,
+      type: input.type,
+      severity: input.severity,
+      reason,
+      impact,
+      urgency: input.urgency.trim() || "Needs prioritization",
+      requestedAction,
+      mitigationPlan: actionPlan,
+      actionPlan,
+      actionItems,
+      meetingSeries,
+      decisionMaker: input.decisionMaker.trim() || roleLabel,
+      managerName,
+      managerEmail,
+      people,
+      managerInviteStatus,
+      dueAt: formatEscalationDueDate(input.dueAt),
+      status: "open",
+      statusUpdates: []
+    };
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) =>
+        ticket.key === ticketKey
+          ? {
+              ...ticket,
+              state: ticket.state === "closed" ? ticket.state : "escalated",
+              updatedAt: timestamp,
+              escalations: [...ticket.escalations, newEscalation],
+              audit: [
+                ...ticket.audit,
+                {
+                  id: `audit-${ticket.key}-escalation-${now.getTime()}`,
+                  eventType: "Escalation opened",
+                  actor: formatPersonaAuditActor(actor),
+                  createdAt: timestamp,
+                  visibility: "approvers_only",
+                  reason,
+                  newValue: `${input.type} escalation`
+                }
+              ]
+            }
+          : ticket
+      )
+    );
+
+    if (input.sendManagerInvite && sourceTicket) {
+      void sendEscalationManagerInviteEmail({
+        actionPlan,
+        escalation: newEscalation,
+        managerEmail,
+        managerName,
+        meetingSeries,
+        statusNote: "Escalation opened.",
+        ticket: {
+          ...sourceTicket,
+          state: sourceTicket.state === "closed" ? sourceTicket.state : "escalated",
+          updatedAt: timestamp,
+          escalations: [...sourceTicket.escalations, newEscalation]
+        }
+      });
+    }
+  }
+
+  function updateEscalationStatus(
+    ticketKey: string,
+    escalationId: string,
+    status: EscalationStatus,
+    decisionNote: string,
+    details: EscalationStatusUpdateDetails = {}
+  ) {
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const actor = selectedPersona;
+    const trimmedNote = normalizeRichTextForStorage(decisionNote);
+    const actionItems = normalizeEscalationActionItems(details.actionItems, details.actionPlan);
+    const actionPlanText = formatEscalationActionItemsForStorage(actionItems);
+    const actionPlan = normalizeRichTextForStorage(actionPlanText || details.actionPlan || "");
+    const meetingSeries = details.meetingSeries?.trim() ?? "";
+    const people = normalizeEscalationPeople(details.people, details.managerName, details.managerEmail);
+    const primaryPerson = getPrimaryEscalationPerson(people);
+    const managerName = primaryPerson?.name.trim() || details.managerName?.trim() || "";
+    const managerEmail = primaryPerson?.email?.trim() || details.managerEmail?.trim() || "";
+    const sendManagerInvite = Boolean(details.sendManagerInvite);
+    const sourceTicket = ticketList.find((ticket) => ticket.key === ticketKey);
+    const sourceEscalation = sourceTicket?.escalations.find((candidate) => candidate.id === escalationId);
+    const statusUpdateId = `escalation-update-${ticketKey}-${now.getTime()}`;
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        const escalation = ticket.escalations.find((candidate) => candidate.id === escalationId);
+
+        if (!escalation) {
+          return ticket;
+        }
+
+        const nextActionPlan = actionPlan || escalation.actionPlan || escalation.mitigationPlan;
+        const nextMeetingSeries = meetingSeries || escalation.meetingSeries || "";
+        const nextPeople = people.length > 0 ? people : getEscalationPeople(escalation);
+        const nextPrimaryPerson = getPrimaryEscalationPerson(nextPeople);
+        const nextManagerName = managerName || nextPrimaryPerson?.name || escalation.managerName || "";
+        const nextManagerEmail = managerEmail || nextPrimaryPerson?.email || escalation.managerEmail || "";
+        const statusUpdate = {
+          id: statusUpdateId,
+          author: actor.displayName,
+          role: actor.roleLabel,
+          status,
+          note: trimmedNote || escalation.statusNote || "",
+          actionPlan: nextActionPlan,
+          actionItems: actionItems.length > 0 ? actionItems : getEscalationActionItems(escalation),
+          meetingSeries: nextMeetingSeries,
+          people: nextPeople,
+          createdAt: timestamp,
+          managerInvite:
+            sendManagerInvite && nextManagerEmail
+              ? {
+                  name: nextManagerName || nextManagerEmail,
+                  email: nextManagerEmail,
+                  status: "pending" as const
+                }
+              : undefined
+        };
+
+        return {
+          ...ticket,
+          updatedAt: timestamp,
+          escalations: ticket.escalations.map((candidate) =>
+            candidate.id === escalationId
+              ? {
+                  ...candidate,
+                  status,
+                  actionPlan: nextActionPlan,
+                  actionItems: actionItems.length > 0 ? actionItems : candidate.actionItems,
+                  mitigationPlan: nextActionPlan || candidate.mitigationPlan,
+                  meetingSeries: nextMeetingSeries,
+                  managerName: nextManagerName,
+                  managerEmail: nextManagerEmail,
+                  people: nextPeople,
+                  managerInviteStatus: sendManagerInvite ? "pending" : candidate.managerInviteStatus,
+                  managerInviteError: sendManagerInvite ? undefined : candidate.managerInviteError,
+                  statusNote: trimmedNote || candidate.statusNote,
+                  statusUpdatedAt: timestamp,
+                  statusUpdates: [statusUpdate, ...(candidate.statusUpdates ?? [])]
+                }
+              : candidate
           ),
           audit: [
             ...ticket.audit,
             {
               id: `audit-${ticket.key}-escalation-decision-${now.getTime()}`,
-              eventType: "Escalation decision updated",
+              eventType: "Escalation status updated",
               actor: formatPersonaAuditActor(actor),
-              createdAt: now.toISOString(),
+              createdAt: timestamp,
               visibility: "approvers_only",
               reason: trimmedNote || `Updated ${escalation.reason}`,
               oldValue: escalation.status.replace("_", " "),
@@ -5294,6 +8559,40 @@ export function NexusPortal() {
         };
       })
     );
+
+    if (sendManagerInvite && sourceTicket && sourceEscalation) {
+      const nextEscalation = {
+        ...sourceEscalation,
+        status,
+        actionPlan: actionPlan || sourceEscalation.actionPlan || sourceEscalation.mitigationPlan,
+        actionItems: actionItems.length > 0 ? actionItems : sourceEscalation.actionItems,
+        mitigationPlan: actionPlan || sourceEscalation.actionPlan || sourceEscalation.mitigationPlan,
+        meetingSeries: meetingSeries || sourceEscalation.meetingSeries || "",
+        managerName: managerName || sourceEscalation.managerName || "",
+        managerEmail: managerEmail || sourceEscalation.managerEmail || "",
+        people: people.length > 0 ? people : sourceEscalation.people,
+        managerInviteStatus: "pending" as EscalationManagerInviteStatus,
+        statusNote: trimmedNote || sourceEscalation.statusNote,
+        statusUpdatedAt: timestamp
+      };
+
+      void sendEscalationManagerInviteEmail({
+        actionPlan: nextEscalation.actionPlan ?? nextEscalation.mitigationPlan,
+        escalation: nextEscalation,
+        managerEmail: nextEscalation.managerEmail ?? "",
+        managerName: nextEscalation.managerName ?? "",
+        meetingSeries: nextEscalation.meetingSeries ?? "",
+        statusNote: trimmedNote || nextEscalation.statusNote || "",
+        statusUpdateId,
+        ticket: {
+          ...sourceTicket,
+          updatedAt: timestamp,
+          escalations: sourceTicket.escalations.map((candidate) =>
+            candidate.id === escalationId ? nextEscalation : candidate
+          )
+        }
+      });
+    }
   }
 
   async function createJiraForTicket(
@@ -5309,6 +8608,10 @@ export function NexusPortal() {
 
     if (!ticket) {
       throw new Error(`Ticket ${ticketKey} was not found.`);
+    }
+
+    if (!canManageJiraForTicket(config, selectedPersona, ticket)) {
+      throw new Error("Your role is not allowed to create Jira issues for this ticket.");
     }
 
     const updatedDraftFromInput = applyJiraDraftUpdate(ticket.jiraDraft, draftUpdate);
@@ -5368,6 +8671,9 @@ export function NexusPortal() {
         payload as { data?: { jiraKey?: string } } | null
       )?.data?.jiraKey?.trim();
       const jiraIssueStatus = (payload as { data?: { jiraStatus?: JiraIssueStatusDetails } } | null)?.data?.jiraStatus;
+      const jiraAttachmentResult = (payload as { data?: { attachments?: JiraAttachmentActionPayload } } | null)
+        ?.data?.attachments;
+      const jiraWarnings = (payload as { data?: { warnings?: string[] } } | null)?.data?.warnings ?? [];
 
       if (!jiraIssueKey) {
         throw new Error("Jira create response did not include an issue key.");
@@ -5378,6 +8684,7 @@ export function NexusPortal() {
       const actor = selectedPersona;
       const nextFollowUpStatus = getJiraFollowUpStatusFromIssueStatus(jiraIssueStatus, "created");
       const nextFollowUpLabel = getJiraFollowUpStatusLabel(nextFollowUpStatus);
+      const nextSyncedStatus = jiraIssueStatus?.name?.trim() || nextFollowUpLabel;
 
       setTicketList((currentTickets) =>
         currentTickets.map((currentTicket) => {
@@ -5395,9 +8702,12 @@ export function NexusPortal() {
             labels: getJiraLabelsWithModule(currentUpdatedDraftFromInput.labels, currentTicket.module)
           };
           const currentPreviousJiraKey = currentTicket.relatedJiraKey?.trim() ?? "";
-          const commentBody = currentPreviousJiraKey
+          const baseCommentBody = currentPreviousJiraKey
             ? `Jira issue ${jiraIssueKey} created and linked to ${currentTicket.key}, replacing ${currentPreviousJiraKey}.`
             : `Jira issue ${jiraIssueKey} created and linked to ${currentTicket.key}.`;
+          const commentBody = `${baseCommentBody}${formatJiraAttachmentActionComment(
+            jiraAttachmentResult
+          )}${formatJiraActionWarningComment(jiraWarnings)}`;
 
           return {
             ...currentTicket,
@@ -5407,7 +8717,7 @@ export function NexusPortal() {
             jiraDraft: {
               ...currentUpdatedDraft,
               status: "synced",
-              syncedStatus: nextFollowUpLabel,
+              syncedStatus: nextSyncedStatus,
               followUpStatus: nextFollowUpStatus,
               followUpUpdatedAt: timestamp
             },
@@ -5463,6 +8773,10 @@ export function NexusPortal() {
       throw new Error(`Ticket ${ticketKey} was not found.`);
     }
 
+    if (!canManageJiraForTicket(config, selectedPersona, ticket)) {
+      throw new Error("Your role is not allowed to update Jira issues for this ticket.");
+    }
+
     const jiraIssueKey = getValidJiraIssueKey(ticket.relatedJiraKey);
 
     if (!jiraIssueKey) {
@@ -5513,6 +8827,9 @@ export function NexusPortal() {
       const returnedJiraIssueKey =
         (payload as { data?: { jiraKey?: string } } | null)?.data?.jiraKey?.trim() || jiraIssueKey;
       const jiraIssueStatus = (payload as { data?: { jiraStatus?: JiraIssueStatusDetails } } | null)?.data?.jiraStatus;
+      const jiraAttachmentResult = (payload as { data?: { attachments?: JiraAttachmentActionPayload } } | null)
+        ?.data?.attachments;
+      const jiraWarnings = (payload as { data?: { warnings?: string[] } } | null)?.data?.warnings ?? [];
       const now = new Date();
       const timestamp = now.toISOString();
       const actor = selectedPersona;
@@ -5531,6 +8848,7 @@ export function NexusPortal() {
           const previousFollowUpStatus = getTicketJiraFollowUpStatus(currentTicket);
           const nextFollowUpStatus = getJiraFollowUpStatusFromIssueStatus(jiraIssueStatus, previousFollowUpStatus);
           const nextFollowUpLabel = getJiraFollowUpStatusLabel(nextFollowUpStatus);
+          const nextSyncedStatus = jiraIssueStatus?.name?.trim() || nextFollowUpLabel;
           const followUpStatusChanged = nextFollowUpStatus !== previousFollowUpStatus;
 
           return {
@@ -5541,7 +8859,7 @@ export function NexusPortal() {
             jiraDraft: {
               ...currentUpdatedDraft,
               status: "synced",
-              syncedStatus: nextFollowUpLabel,
+              syncedStatus: nextSyncedStatus,
               followUpStatus: nextFollowUpStatus,
               followUpUpdatedAt: followUpStatusChanged
                 ? timestamp
@@ -5566,7 +8884,9 @@ export function NexusPortal() {
                 id: `comment-${currentTicket.key}-jira-updated-${now.getTime()}`,
                 author: actor.displayName,
                 role: actor.roleLabel,
-                body: `Jira issue ${returnedJiraIssueKey} updated from portal Jira fields.`,
+                body: `Jira issue ${returnedJiraIssueKey} updated from portal Jira fields.${formatJiraAttachmentActionComment(
+                  jiraAttachmentResult
+                )}${formatJiraActionWarningComment(jiraWarnings)}`,
                 createdAt: timestamp,
                 visibility: "public",
                 source: "jira"
@@ -5587,7 +8907,129 @@ export function NexusPortal() {
     }
   }
 
+  async function postJiraCommentForTicket(ticketKey: string, body: string) {
+    const ticket = ticketList.find((candidate) => candidate.key === ticketKey);
+
+    if (!ticket) {
+      throw new Error(`Ticket ${ticketKey} was not found.`);
+    }
+
+    if (!canCommentOnJiraForTicket(config, selectedPersona, ticket)) {
+      throw new Error("Your role is not allowed to add Jira comments for this ticket.");
+    }
+
+    const jiraIssueKey = getValidJiraIssueKey(ticket.relatedJiraKey);
+
+    if (!jiraIssueKey) {
+      throw new Error("Link the portal ticket to a valid Jira issue before adding a Jira comment.");
+    }
+
+    const commentBody = body.trim();
+    const actor = selectedPersona;
+    const jiraCommentBody = formatPortalAuthoredJiraComment(actor, commentBody);
+
+    if (!commentBody) {
+      throw new Error("Write a Jira comment before sending.");
+    }
+
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+
+    if (!localJiraToken) {
+      throw new Error(
+        config.integrations.jira.tokenConfigured
+          ? "Jira token is not available in this browser. Open Admin > Integrations and paste the token before adding Jira comments."
+          : "Configure a Jira token in Admin > Integrations before adding Jira comments."
+      );
+    }
+
+    try {
+      const response = await fetch("/api/integrations/jira/comment", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          config: buildTicketJiraActionConfig(ticket, ticket.jiraDraft, config, localJiraToken),
+          issueKey: jiraIssueKey,
+          comment: jiraCommentBody
+        })
+      });
+      const payload = (await response.json().catch(() => null)) as JiraCreateTaskPayload | null;
+
+      if (!response.ok) {
+        throw createIntegrationActionError(
+          payload as IntegrationApiErrorPayload | null,
+          "Jira comment failed."
+        );
+      }
+
+      const returnedComment = (payload as { data?: { comment?: JiraSyncedCommentInput } } | null)?.data?.comment;
+
+      if (!returnedComment?.id) {
+        throw new Error("Jira comment response did not include a comment id.");
+      }
+
+      const now = new Date();
+      const timestamp = now.toISOString();
+
+      setTicketList((currentTickets) =>
+        currentTickets.map((currentTicket) => {
+          if (currentTicket.key !== ticketKey || !currentTicket.relatedJiraKey) {
+            return currentTicket;
+          }
+
+          const commentMerge = mergeImportedJiraComments(currentTicket, [
+            {
+              id: returnedComment.id,
+              author: actor.displayName,
+              role: actor.roleLabel,
+              body: commentBody,
+              createdAt: returnedComment.createdAt || timestamp,
+              updatedAt: returnedComment.updatedAt ?? null
+            }
+          ]);
+
+          return {
+            ...currentTicket,
+            updatedAt: timestamp,
+            audit: [
+              ...currentTicket.audit,
+              {
+                id: `audit-${currentTicket.key}-jira-comment-${now.getTime()}`,
+                eventType: "Jira comment added",
+                actor: formatPersonaAuditActor(actor),
+                createdAt: timestamp,
+                visibility: "approvers_only" as VisibilityLevel,
+                oldValue: currentTicket.relatedJiraKey,
+                newValue: returnedComment.id,
+                reason: summarizeTicketUpdateValue(commentBody, 140)
+              }
+            ],
+            comments: commentMerge.comments
+          };
+        })
+      );
+    } catch (error) {
+      console.error("Failed to add Jira comment.", {
+        error: getErrorMessage(error),
+        ticketKey,
+        jiraIssueKey
+      });
+      throw error;
+    }
+  }
+
   function updateJiraDraft(ticketKey: string, draftUpdate: JiraDraftUpdateInput) {
+    const ticketForPermission = ticketList.find((candidate) => candidate.key === ticketKey);
+
+    if (!ticketForPermission) {
+      throw new Error(`Ticket ${ticketKey} was not found.`);
+    }
+
+    if (!canManageJiraForTicket(config, selectedPersona, ticketForPermission)) {
+      throw new Error("Your role is not allowed to update Jira fields for this ticket.");
+    }
+
     const now = new Date();
     const timestamp = now.toISOString();
     const actor = selectedPersona;
@@ -5603,6 +9045,15 @@ export function NexusPortal() {
           ...updatedDraftFromInput,
           labels: getJiraLabelsWithModule(updatedDraftFromInput.labels, ticket.module)
         };
+        const changes = createJiraDraftAuditChanges(ticket, updatedDraft);
+
+        if (changes.length === 0) {
+          return ticket;
+        }
+
+        const auditReason = ticket.relatedJiraKey
+          ? "Jira fields updated for the linked issue."
+          : "Jira handoff fields updated before issue creation.";
 
         return {
           ...ticket,
@@ -5610,18 +9061,18 @@ export function NexusPortal() {
           updatedAt: timestamp,
           audit: [
             ...ticket.audit,
-            {
-              id: `audit-${ticket.key}-jira-draft-${now.getTime()}`,
-              eventType: "Jira draft updated",
+            ...changes.map((change, index) => ({
+              id: `audit-${ticket.key}-jira-draft-${now.getTime()}-${index}`,
+              eventType: change.field.startsWith("Jira ")
+                ? `${change.field} updated`
+                : `Jira ${change.field.toLowerCase()} updated`,
               actor: formatPersonaAuditActor(actor),
               createdAt: timestamp,
-              visibility: "approvers_only",
-              oldValue: ticket.jiraDraft.project,
-              newValue: updatedDraft.project,
-              reason: ticket.relatedJiraKey
-                ? "Jira fields updated for the linked issue."
-                : "Jira handoff fields updated before issue creation."
-            }
+              visibility: "approvers_only" as VisibilityLevel,
+              oldValue: change.oldValue,
+              newValue: change.newValue,
+              reason: auditReason
+            }))
           ]
         };
       })
@@ -5629,6 +9080,16 @@ export function NexusPortal() {
   }
 
   async function updateJiraIssueLink(ticketKey: string, jiraKey: string) {
+    const ticketForPermission = ticketList.find((candidate) => candidate.key === ticketKey);
+
+    if (!ticketForPermission) {
+      throw new Error(`Ticket ${ticketKey} was not found.`);
+    }
+
+    if (!canManageJiraForTicket(config, selectedPersona, ticketForPermission)) {
+      throw new Error("Your role is not allowed to update Jira links for this ticket.");
+    }
+
     const normalizedJiraKey = getValidJiraIssueKey(jiraKey);
     const isClearingLink = !jiraKey.trim();
 
@@ -5710,9 +9171,292 @@ export function NexusPortal() {
     );
   }
 
+  const syncJiraActivityForTicket = useCallback((
+    ticketKey: string,
+    status: JiraFollowUpStatus,
+    note: string,
+    jiraComments: JiraSyncedCommentInput[],
+    jiraStatusName?: string,
+    issueFields?: JiraSyncedIssueFieldsInput
+  ): JiraActivitySyncResult => {
+    if (status === "not_created") {
+      return {
+        statusChanged: false,
+        jiraStatusChanged: false,
+        jiraFieldsChanged: false,
+        importedComments: 0,
+        updatedComments: 0
+      };
+    }
+
+    const ticketForSync = ticketList.find((candidate) => candidate.key === ticketKey);
+
+    if (!ticketForSync?.relatedJiraKey) {
+      throw new Error(`Ticket ${ticketKey} is not linked to Jira.`);
+    }
+
+    const previousStatus = getTicketJiraFollowUpStatus(ticketForSync);
+    const normalizedStatus: SelectableJiraFollowUpStatus = status === "testing" ? "it_test" : status;
+    const normalizedNote = normalizeRichTextForStorage(note);
+    const commentMerge = mergeImportedJiraComments(ticketForSync, jiraComments);
+    const syncedJiraDraftFieldUpdate = getSyncedJiraDraftFieldUpdate(issueFields);
+    const jiraFieldsChanged = jiraDraftFieldsChanged(ticketForSync.jiraDraft, syncedJiraDraftFieldUpdate);
+    const statusChanged = previousStatus !== normalizedStatus;
+    const nextSyncedStatus = jiraStatusName?.trim() || getJiraFollowUpStatusLabel(normalizedStatus);
+    const syncedStatusChanged =
+      normalizeJiraStatusToken(ticketForSync.jiraDraft.syncedStatus) !== normalizeJiraStatusToken(nextSyncedStatus);
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const nextLabel = getJiraFollowUpStatusLabel(normalizedStatus);
+    const nextTicketState = getTicketStateForJiraFollowUpStatus(normalizedStatus);
+    const shouldAppendSyncComment =
+      statusChanged ||
+      syncedStatusChanged ||
+      jiraFieldsChanged ||
+      commentMerge.importedComments > 0 ||
+      commentMerge.updatedComments > 0;
+
+    if (!shouldAppendSyncComment) {
+      return {
+        statusChanged,
+        jiraStatusChanged: syncedStatusChanged,
+        jiraFieldsChanged,
+        importedComments: 0,
+        updatedComments: 0
+      };
+    }
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey || !ticket.relatedJiraKey) {
+          return ticket;
+        }
+
+        const currentMerge = mergeImportedJiraComments(ticket, jiraComments);
+        const currentPreviousStatus = getTicketJiraFollowUpStatus(ticket);
+        const currentPreviousLabel = getJiraFollowUpStatusLabel(currentPreviousStatus);
+        const currentStatusChanged = currentPreviousStatus !== normalizedStatus;
+        const currentSyncedStatusChanged =
+          normalizeJiraStatusToken(ticket.jiraDraft.syncedStatus) !== normalizeJiraStatusToken(nextSyncedStatus);
+        const currentSyncedJiraDraftFieldUpdate = getSyncedJiraDraftFieldUpdate(issueFields);
+        const currentJiraFieldsChanged = jiraDraftFieldsChanged(ticket.jiraDraft, currentSyncedJiraDraftFieldUpdate);
+        const currentSyncedJiraFieldSummary = formatSyncedJiraFieldSummary(currentSyncedJiraDraftFieldUpdate);
+        const currentImportedCommentText = [
+          currentMerge.importedComments ? `${currentMerge.importedComments} Jira comment${currentMerge.importedComments === 1 ? "" : "s"} imported` : "",
+          currentMerge.updatedComments ? `${currentMerge.updatedComments} Jira comment${currentMerge.updatedComments === 1 ? "" : "s"} updated` : "",
+          currentJiraFieldsChanged ? currentSyncedJiraFieldSummary : ""
+        ].filter(Boolean).join(", ");
+        const currentReason = normalizedNote || currentImportedCommentText || `Jira status checked: ${nextSyncedStatus}.`;
+        const statusAuditOldValue = currentStatusChanged
+          ? currentPreviousLabel
+          : ticket.jiraDraft.syncedStatus || currentPreviousLabel;
+        const statusAuditNewValue = currentStatusChanged ? nextLabel : nextSyncedStatus;
+        const syncCommentBody = currentStatusChanged || currentSyncedStatusChanged
+          ? currentReason
+          : `Synced Jira comments. ${currentReason}`;
+
+        return {
+          ...ticket,
+          state: nextTicketState,
+          updatedAt: timestamp,
+          jiraDraft: {
+            ...ticket.jiraDraft,
+            ...(currentSyncedJiraDraftFieldUpdate ?? {}),
+            status: "synced",
+            syncedStatus: nextSyncedStatus,
+            followUpStatus: normalizedStatus,
+            followUpUpdatedAt: timestamp
+          },
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-jira-sync-${now.getTime()}`,
+              eventType: currentStatusChanged || currentSyncedStatusChanged ? "Jira follow-up synced" : "Jira comments synced",
+              actor: "Jira Sync",
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              oldValue: statusAuditOldValue,
+              newValue: statusAuditNewValue,
+              reason: currentReason
+            }
+          ],
+          comments: [
+            ...currentMerge.comments,
+            {
+              id: `comment-${ticket.key}-jira-sync-${now.getTime()}`,
+              author: "Jira Sync",
+              role: "System",
+              body: syncCommentBody,
+              createdAt: timestamp,
+              visibility: "public",
+              source: "system"
+            }
+          ]
+        };
+      })
+    );
+
+    return {
+      statusChanged,
+      jiraStatusChanged: syncedStatusChanged,
+      jiraFieldsChanged,
+      importedComments: commentMerge.importedComments,
+      updatedComments: commentMerge.updatedComments
+    };
+  }, [ticketList]);
+
+  const syncLinkedJiraTickets = useCallback(async (options: { silent?: boolean } = {}) => {
+    const silent = options.silent === true;
+
+    if (jiraBulkSyncState === "syncing") {
+      return;
+    }
+
+    const linkedTickets = ticketList.filter((ticket) => getValidJiraIssueKey(ticket.relatedJiraKey));
+
+    if (!config.integrations.jira.enabled || linkedTickets.length === 0) {
+      if (!silent) {
+        setJiraBulkSyncMessage(linkedTickets.length === 0 ? "No linked Jira tickets to sync." : "");
+        setJiraBulkSyncError(config.integrations.jira.enabled ? "" : "Jira integration is not enabled.");
+      }
+      return;
+    }
+
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+
+    if (!localJiraToken) {
+      if (!silent) {
+        setJiraBulkSyncError(
+          config.integrations.jira.tokenConfigured
+            ? "Jira token is not available in this browser. Open Admin > Integrations and paste the token before syncing Jira data."
+            : "Configure a Jira token in Admin > Integrations before syncing Jira data."
+        );
+        setJiraBulkSyncMessage("");
+      }
+      return;
+    }
+
+    setJiraBulkSyncState("syncing");
+    setJiraBulkSyncError("");
+
+    if (!silent) {
+      setJiraBulkSyncMessage(`Syncing ${formatCount(linkedTickets.length)} linked Jira ticket${linkedTickets.length === 1 ? "" : "s"}...`);
+    }
+
+    let syncedCount = 0;
+    let failedCount = 0;
+
+    for (const ticket of linkedTickets) {
+      const jiraIssueKey = getValidJiraIssueKey(ticket.relatedJiraKey);
+
+      if (!jiraIssueKey) {
+        continue;
+      }
+
+      try {
+        const response = await fetch("/api/integrations/jira/issue-status", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            config: buildTicketJiraActionConfig(ticket, ticket.jiraDraft, config, localJiraToken),
+            issueKey: jiraIssueKey
+          })
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | IntegrationApiErrorPayload
+          | {
+              data?: {
+                jiraStatus?: JiraIssueStatusDetails;
+                comments?: JiraSyncedCommentInput[];
+                issueFields?: JiraSyncedIssueFieldsInput;
+              };
+            }
+          | null;
+
+        if (!response.ok) {
+          throw createIntegrationActionError(payload as IntegrationApiErrorPayload | null, "Jira data sync failed.");
+        }
+
+        const data = (
+          payload as {
+            data?: {
+              jiraStatus?: JiraIssueStatusDetails;
+              comments?: JiraSyncedCommentInput[];
+              issueFields?: JiraSyncedIssueFieldsInput;
+            };
+          } | null
+        )?.data;
+        const nextFollowUpStatus = getJiraFollowUpStatusFromIssueStatus(data?.jiraStatus, getTicketJiraFollowUpStatus(ticket));
+        const jiraStatusSummary = getJiraIssueStatusSummary(data?.jiraStatus);
+        const syncedJiraFieldSummary = formatSyncedJiraFieldSummary(getSyncedJiraDraftFieldUpdate(data?.issueFields));
+
+        syncJiraActivityForTicket(
+          ticket.key,
+          nextFollowUpStatus,
+          [`Synced from Jira. Jira status: ${jiraStatusSummary}.`, syncedJiraFieldSummary].filter(Boolean).join(" "),
+          data?.comments ?? [],
+          data?.jiraStatus?.name,
+          data?.issueFields
+        );
+        syncedCount += 1;
+      } catch (error) {
+        failedCount += 1;
+        console.error("Linked Jira ticket sync failed.", {
+          ticketKey: ticket.key,
+          jiraIssueKey,
+          error: getErrorMessage(error)
+        });
+      }
+    }
+
+    setJiraBulkSyncState("idle");
+
+    if (failedCount > 0) {
+      setJiraBulkSyncError(`Synced ${formatCount(syncedCount)} Jira ticket${syncedCount === 1 ? "" : "s"}; ${formatCount(failedCount)} failed.`);
+      setJiraBulkSyncMessage("");
+      return;
+    }
+
+    setJiraBulkSyncError("");
+    setJiraBulkSyncMessage(`Synced ${formatCount(syncedCount)} Jira ticket${syncedCount === 1 ? "" : "s"}. Status, release dates, estimate, remaining time, and comments are up to date.`);
+  }, [config, jiraBulkSyncState, syncJiraActivityForTicket, ticketList]);
+
+  useEffect(() => {
+    if (startupJiraSyncHandledRef.current || !hasLoadedConfig || !hasLoadedTickets) {
+      return;
+    }
+
+    if (!config.integrations.jira.enabled || !ticketList.some((ticket) => getValidJiraIssueKey(ticket.relatedJiraKey))) {
+      startupJiraSyncHandledRef.current = true;
+      return;
+    }
+
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+
+    if (!localJiraToken) {
+      startupJiraSyncHandledRef.current = true;
+      return;
+    }
+
+    startupJiraSyncHandledRef.current = true;
+    void syncLinkedJiraTickets({ silent: true });
+  }, [config.integrations.jira.enabled, hasLoadedConfig, hasLoadedTickets, syncLinkedJiraTickets, ticketList]);
+
   function updateJiraFollowUpStatus(ticketKey: string, status: JiraFollowUpStatus, note: string) {
     if (status === "not_created") {
       return;
+    }
+
+    const ticketForPermission = ticketList.find((candidate) => candidate.key === ticketKey);
+
+    if (!ticketForPermission) {
+      throw new Error(`Ticket ${ticketKey} was not found.`);
+    }
+
+    if (!canManageJiraForTicket(config, selectedPersona, ticketForPermission)) {
+      throw new Error("Your role is not allowed to update Jira follow-up status for this ticket.");
     }
 
     const normalizedStatus: SelectableJiraFollowUpStatus = status === "testing" ? "it_test" : status;
@@ -6090,25 +9834,33 @@ export function NexusPortal() {
               normalizeRoleText(candidate.level) === normalizeRoleText(target.level)
           ) === index
         );
-        const clarificationThreads = clarificationTargets.map((target, index) => ({
-          id: `clarification-${ticket.key}-${now.getTime()}-${index}`,
-          level: target.level,
-          question,
-          status: "open" as const,
-          requestedBy: actor.displayName,
-          assignedTo: target.assignedTo,
-          dueAt,
-          messages: [
-            {
-              id: `message-${ticket.key}-approval-clarification-${now.getTime()}-${index}`,
-              author: actor.displayName,
-              role: roleLabel,
-              body: question,
-              createdAt: now.toISOString(),
-              visibility: "public" as VisibilityLevel
-            }
-          ]
-        }));
+        const clarificationTargetsByLevel = clarificationTargets.reduce((targetsByLevel, target) => {
+          const currentTargets = targetsByLevel.get(target.level) ?? [];
+          targetsByLevel.set(target.level, [...currentTargets, target]);
+
+          return targetsByLevel;
+        }, new Map<string, typeof clarificationTargets>());
+        const clarificationThreads = Array.from(clarificationTargetsByLevel.entries()).map(
+          ([level, targets], index) => ({
+            id: `clarification-${ticket.key}-${now.getTime()}-${index}`,
+            level,
+            question,
+            status: "open" as const,
+            requestedBy: actor.displayName,
+            assignedTo: getUniqueClarificationAssigneeLabels(targets.map((target) => target.assignedTo)).join(", "),
+            dueAt,
+            messages: [
+              {
+                id: `message-${ticket.key}-approval-clarification-${now.getTime()}-${index}`,
+                author: actor.displayName,
+                role: roleLabel,
+                body: question,
+                createdAt: now.toISOString(),
+                visibility: "public" as VisibilityLevel
+              }
+            ]
+          })
+        );
         const participantAccessLevel = getPullInAccessLevel(pullInActionType);
         const participantExists =
           !pullInTargetRole ||
@@ -6166,10 +9918,14 @@ export function NexusPortal() {
         rolePersonaOptions={rolePersonaOptions}
         selectedPersona={selectedPersona}
         selectedPersonaId={selectedPersona.id}
+        ticketSearchOptions={ticketListTickets}
+        ticketSearchQuery={query}
         onGoDashboard={goToDashboard}
         onPersonaChange={changePersona}
-        onOpenModule={setActiveModule}
+        onOpenModule={openModule}
         onOpenNotifications={() => setActiveModule("notifications")}
+        onTicketSearchChange={setQuery}
+        onTicketSearchSubmit={searchAndOpenTicket}
         onToggleMenu={() => setIsSideMenuOpen((isOpen) => !isOpen)}
         notificationCount={visibleNotifications.filter((item) => item.unread).length}
         isMounted={isTegelShellMounted}
@@ -6182,12 +9938,13 @@ export function NexusPortal() {
           isOpen={isSideMenuOpen}
           isMounted={isTegelShellMounted}
           onClose={() => setIsSideMenuOpen(false)}
-          onSelectModule={setActiveModule}
+          onSelectModule={openModule}
         />
         <div className="workspace">
           <main className="workspace-main">
             <ModuleHeader
               activeModule={activeModule}
+              role={role}
               selectedTicket={selectedTicket}
               query={query}
               onQueryChange={setQuery}
@@ -6198,6 +9955,7 @@ export function NexusPortal() {
               activeTab,
               allTickets: roleScopedTickets,
               filteredTickets,
+              ticketListTickets,
               selectedTicket,
               visibleAudit,
               visibleComments,
@@ -6214,18 +9972,25 @@ export function NexusPortal() {
               onCreateClarification: createClarificationThread,
               onCreateEscalation: createEscalation,
               onCreateJira: createJiraForTicket,
+              onPostJiraComment: postJiraCommentForTicket,
               onReopenTicket: reopenTicket,
               onUpdateJiraDraft: updateJiraDraft,
               onUpdateJiraIssue: updateJiraIssueForTicket,
               onUpdateJiraLink: updateJiraIssueLink,
+              onUpdateTicket: updateTicket,
               onUpdateWorkflowStatus: updateWorkflowStatus,
               onUpdateEscalationStatus: updateEscalationStatus,
               onUpdateJiraStatus: updateJiraFollowUpStatus,
+              onSyncJiraActivity: syncJiraActivityForTicket,
+              onSyncLinkedJiraTickets: () => syncLinkedJiraTickets({ silent: false }),
+              jiraBulkSyncError,
+              jiraBulkSyncMessage,
+              jiraBulkSyncState,
               onApprovalDecision: decideApproval,
               onTicketDetailOpenChange: setIsTicketDetailOpen,
               onOpenTicketModule: openTicketModule,
+              onOpenNotification: openNotificationItem,
               setActiveTab,
-              focusTicketOnDashboard,
               focusTicketOnJira,
               selectTicket
             })}
@@ -6309,11 +10074,15 @@ function TopBar({
   rolePersonaOptions,
   selectedPersona,
   selectedPersonaId,
+  ticketSearchOptions,
+  ticketSearchQuery,
   notificationCount,
   isMounted,
   onGoDashboard,
   onPersonaChange,
   onOpenModule,
+  onTicketSearchChange,
+  onTicketSearchSubmit,
   onToggleMenu,
   onOpenNotifications
 }: {
@@ -6321,16 +10090,57 @@ function TopBar({
   rolePersonaOptions: RolePersonaOption[];
   selectedPersona: RolePersonaOption;
   selectedPersonaId: string;
+  ticketSearchOptions: Ticket[];
+  ticketSearchQuery: string;
   notificationCount: number;
   isMounted: boolean;
   onGoDashboard: () => void;
   onPersonaChange: (personaId: string) => void;
   onOpenModule: (module: ModuleKey) => void;
+  onTicketSearchChange: (query: string) => void;
+  onTicketSearchSubmit: (query: string) => void;
   onToggleMenu: () => void;
   onOpenNotifications: () => void;
 }) {
   const [isAttentionOpen, setIsAttentionOpen] = useState(false);
+  const [isTicketSearchOpen, setIsTicketSearchOpen] = useState(false);
+  const [activeTicketSearchIndex, setActiveTicketSearchIndex] = useState(0);
+  const ticketSearchListId = useId();
   const attentionTotal = attentionItems.reduce((total, item) => total + item.count, 0);
+  const normalizedTicketSearchQuery = ticketSearchQuery.trim().toLowerCase();
+  const visibleTicketSearchOptions = useMemo(() => {
+    const source = normalizedTicketSearchQuery
+      ? ticketSearchOptions.filter((ticket) =>
+          [
+            ticket.key,
+            ticket.title,
+            ticket.product,
+            ticket.module,
+            ticket.site,
+            ticket.priority,
+            getTicketCurrentStatusLabel(ticket),
+            getTicketCurrentLocationLabel(ticket)
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedTicketSearchQuery)
+        )
+      : ticketSearchOptions;
+
+    return source.slice(0, 8);
+  }, [normalizedTicketSearchQuery, ticketSearchOptions]);
+  const shouldShowTicketSearchList = isTicketSearchOpen && visibleTicketSearchOptions.length > 0;
+
+  useEffect(() => {
+    setActiveTicketSearchIndex(0);
+  }, [normalizedTicketSearchQuery, visibleTicketSearchOptions.length]);
+
+  function openTicketSearchResult(ticket: Ticket) {
+    setIsAttentionOpen(false);
+    setIsTicketSearchOpen(false);
+    onTicketSearchChange(ticket.key);
+    onTicketSearchSubmit(ticket.key);
+  }
 
   if (!isMounted) {
     return <div className="tegel-header-fallback" aria-hidden="true" />;
@@ -6363,6 +10173,124 @@ function TopBar({
           onClick={onToggleMenu}
         />
         <TdsHeaderTitle slot="title">NEXUS PORTAL</TdsHeaderTitle>
+        <TdsHeaderItem className="tegel-header-search-item" slot="end">
+          <form
+            className={`tegel-header-ticket-search ${shouldShowTicketSearchList ? "is-open" : ""}`}
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setIsAttentionOpen(false);
+              setIsTicketSearchOpen(false);
+              onTicketSearchSubmit(ticketSearchQuery);
+            }}
+            onBlur={(event: ReactFocusEvent<HTMLFormElement>) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setIsTicketSearchOpen(false);
+              }
+            }}
+          >
+            <div className="tegel-header-ticket-search-control">
+              <TegelIcon name="search" size="16px" />
+              <label className="sr-only" htmlFor="header-ticket-search">
+                Search tickets
+              </label>
+              <input
+                id="header-ticket-search"
+                value={ticketSearchQuery}
+                onChange={(event) => {
+                  onTicketSearchChange(event.target.value);
+                  setIsTicketSearchOpen(true);
+                }}
+                onFocus={() => setIsTicketSearchOpen(true)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setIsTicketSearchOpen(true);
+                    setActiveTicketSearchIndex((current) =>
+                      Math.min(current + 1, Math.max(visibleTicketSearchOptions.length - 1, 0))
+                    );
+                    return;
+                  }
+
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setActiveTicketSearchIndex((current) => Math.max(current - 1, 0));
+                    return;
+                  }
+
+                  if (event.key === "Escape") {
+                    setIsTicketSearchOpen(false);
+                    return;
+                  }
+
+                  if (event.key === "Enter" && shouldShowTicketSearchList) {
+                    const selectedTicket = visibleTicketSearchOptions[activeTicketSearchIndex];
+
+                    if (selectedTicket) {
+                      event.preventDefault();
+                      openTicketSearchResult(selectedTicket);
+                    }
+                  }
+                }}
+                placeholder="Search ticket"
+                autoComplete="off"
+                role="combobox"
+                aria-expanded={shouldShowTicketSearchList}
+                aria-controls={ticketSearchListId}
+                aria-activedescendant={
+                  shouldShowTicketSearchList
+                    ? `${ticketSearchListId}-${visibleTicketSearchOptions[activeTicketSearchIndex]?.key}`
+                    : undefined
+                }
+              />
+              <span className="tegel-header-ticket-search-caret" aria-hidden="true" />
+              <button type="submit" title="Open matching ticket" aria-label="Open matching ticket">
+                Open
+              </button>
+            </div>
+            {shouldShowTicketSearchList ? (
+              <div className="tegel-header-ticket-search-list" id={ticketSearchListId} role="listbox">
+                {visibleTicketSearchOptions.map((ticket, index) => (
+                  <button
+                    id={`${ticketSearchListId}-${ticket.key}`}
+                    className={`tegel-header-ticket-search-option ${
+                      index === activeTicketSearchIndex ? "is-active" : ""
+                    }`}
+                    key={ticket.key}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeTicketSearchIndex}
+                    onMouseEnter={() => setActiveTicketSearchIndex(index)}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      openTicketSearchResult(ticket);
+                    }}
+                  >
+                    {(() => {
+                      const currentStatus = getTicketCurrentStatusLabel(ticket);
+                      const currentLocation = getTicketCurrentLocationLabel(ticket);
+
+                      return (
+                        <>
+                    <span className="tegel-header-ticket-search-option-main">
+                      <strong>{ticket.key}</strong>
+                      <span>{ticket.title}</span>
+                    </span>
+                    <span className="tegel-header-ticket-search-option-meta">
+                      <span>{currentStatus}</span>
+                      <span>{currentLocation}</span>
+                      <span>{ticket.product}</span>
+                      <span>{ticket.module}</span>
+                    </span>
+                        </>
+                      );
+                    })()}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </form>
+        </TdsHeaderItem>
         <label className="tegel-header-role" slot="end">
           <span className="tegel-header-role-label">Role</span>
           <span className="sr-only">Current role</span>
@@ -6456,9 +10384,27 @@ function TopBar({
   );
 }
 
-function getModuleHeaderDescription(activeModule: ModuleKey, selectedTicket?: Ticket): string {
+function getModuleHeaderTitle(activeModule: ModuleKey, role: RoleKey, fallbackLabel: string): string {
+  if (activeModule === "dashboard" && role === "requester") {
+    return "My support dashboard";
+  }
+
+  if (activeModule === "tickets" && role === "requester") {
+    return "Find support tickets";
+  }
+
+  if (activeModule === "releasePlan") {
+    return "Release plan";
+  }
+
+  return fallbackLabel;
+}
+
+function getModuleHeaderDescription(activeModule: ModuleKey, role: RoleKey, selectedTicket?: Ticket): string {
   if (activeModule === "dashboard") {
-    return "Triage role-visible work and continue the next action.";
+    return role === "requester"
+      ? "High-level view of your tickets, SLA health, clarifications, notifications, and planned releases."
+      : "High-level view of role-visible work, SLA health, approvals, clarifications, notifications, and releases.";
   }
 
   if (activeModule === "integrations") {
@@ -6473,6 +10419,20 @@ function getModuleHeaderDescription(activeModule: ModuleKey, selectedTicket?: Ti
     return "Role-based approval queue with decision actions and ticket context.";
   }
 
+  if (activeModule === "clarifications" && !selectedTicket) {
+    return "No open clarification requests for this role.";
+  }
+
+  if (activeModule === "tickets") {
+    return role === "requester"
+      ? "Search across all support tickets. Use My raised tickets when you only want your own requests."
+      : "Search, filter, and open the tickets visible to your current role.";
+  }
+
+  if (activeModule === "releasePlan") {
+    return "See planned releases, tickets per release, pre-prod and production dates, and sprint status.";
+  }
+
   return selectedTicket
     ? `${selectedTicket.key} - ${selectedTicket.title}`
     : "No ticket selected. Create a ticket to populate this workspace.";
@@ -6480,12 +10440,14 @@ function getModuleHeaderDescription(activeModule: ModuleKey, selectedTicket?: Ti
 
 function ModuleHeader({
   activeModule,
+  role,
   selectedTicket,
   query,
   onQueryChange,
   onNewTicket
 }: {
   activeModule: ModuleKey;
+  role: RoleKey;
   selectedTicket?: Ticket;
   query: string;
   onQueryChange: (query: string) => void;
@@ -6498,7 +10460,8 @@ function ModuleHeader({
       <section className="module-header ticket-list-header">
         <div>
           <span className="module-eyebrow">Ticket List</span>
-          <h1>Search and filter support tickets</h1>
+          <h1>{getModuleHeaderTitle(activeModule, role, "Search and filter support tickets")}</h1>
+          <p>{getModuleHeaderDescription(activeModule, role, selectedTicket)}</p>
         </div>
         <div className="module-actions">
           <button className="primary-button" type="button" onClick={onNewTicket}>
@@ -6514,9 +10477,9 @@ function ModuleHeader({
       <div>
         <div className="module-title-row">
           <TegelIcon name={item.iconName} size="26px" />
-          <h1>{item.label}</h1>
+          <h1>{getModuleHeaderTitle(activeModule, role, item.label)}</h1>
         </div>
-        <p>{getModuleHeaderDescription(activeModule, selectedTicket)}</p>
+        <p>{getModuleHeaderDescription(activeModule, role, selectedTicket)}</p>
       </div>
       <div className="module-actions">
         <label className="module-search">
@@ -6560,6 +10523,82 @@ function RichTextContent({
   );
 }
 
+function getJiraWikiImageMarkupPattern(): RegExp {
+  return /!([^!\r\n|]+?\.(?:png|jpe?g|gif|webp))(?:\|[^!\r\n]*)?!/gi;
+}
+
+function getJiraImageFileNameFromMarkup(value: string): string {
+  const trimmedValue = value.trim();
+
+  try {
+    const parsedUrl = new URL(trimmedValue);
+    const lastPathSegment = parsedUrl.pathname.split("/").filter(Boolean).pop() ?? "";
+
+    return decodeURIComponent(lastPathSegment || trimmedValue).trim();
+  } catch {
+    try {
+      const pathWithoutQuery = trimmedValue.split(/[?#]/)[0] ?? trimmedValue;
+      const lastPathSegment = pathWithoutQuery.split(/[\\/]/).filter(Boolean).pop() ?? pathWithoutQuery;
+
+      return decodeURIComponent(lastPathSegment).trim();
+    } catch {
+      return trimmedValue;
+    }
+  }
+}
+
+function getJiraCommentImageFileNames(value: string): string[] {
+  const pattern = getJiraWikiImageMarkupPattern();
+  const fileNames: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(value)) !== null) {
+    const fileName = getJiraImageFileNameFromMarkup(match[1] ?? "");
+
+    if (fileName && !fileNames.includes(fileName)) {
+      fileNames.push(fileName);
+    }
+  }
+
+  return fileNames;
+}
+
+function stripJiraCommentImageMarkup(value: string): string {
+  return value.replace(getJiraWikiImageMarkupPattern(), "").trim();
+}
+
+function JiraCommentContent({
+  value,
+  fallback = "No Jira comment body."
+}: {
+  value: string;
+  fallback?: string;
+}) {
+  const imageFileNames = getJiraCommentImageFileNames(value);
+  const shouldShowImagePlaceholders = imageFileNames.length > 0 && !/<img\b/i.test(value);
+  const displayValue = shouldShowImagePlaceholders ? stripJiraCommentImageMarkup(value) : value;
+
+  return (
+    <>
+      <RichTextContent
+        value={displayValue}
+        fallback={shouldShowImagePlaceholders ? "Jira image attachment." : fallback}
+        compact
+      />
+      {shouldShowImagePlaceholders ? (
+        <div className="jira-comment-image-placeholders" aria-label="Jira image attachments">
+          {imageFileNames.map((fileName) => (
+            <span key={fileName}>
+              <TegelIcon name="image" size="14px" />
+              Jira image: {fileName}. Refresh from Jira to load the preview.
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function RichTextEditor({
   label,
   value,
@@ -6577,7 +10616,9 @@ function RichTextEditor({
   const editorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const savedSelectionRef = useRef<Range | null>(null);
+  const selectedImageRef = useRef<HTMLImageElement | null>(null);
   const [editorError, setEditorError] = useState("");
+  const [selectedImageState, setSelectedImageState] = useState<SelectedRichTextImageState | null>(null);
   const isEmpty = isRichTextBlank(value);
   const minHeight = Math.max(112, rows * 34);
 
@@ -6590,8 +10631,14 @@ function RichTextEditor({
 
     const sanitizedValue = sanitizeRichText(value);
 
-    if (editor.innerHTML !== sanitizedValue) {
+    const currentSanitizedValue = normalizeRichTextForStorage(editor.innerHTML, "html");
+
+    if (editor.innerHTML !== sanitizedValue && currentSanitizedValue !== sanitizedValue) {
       editor.innerHTML = sanitizedValue;
+    }
+
+    if (selectedImageRef.current && !editor.contains(selectedImageRef.current)) {
+      clearSelectedRichTextImage();
     }
   }, [value]);
 
@@ -6605,6 +10652,82 @@ function RichTextEditor({
     const nextValue = normalizeRichTextForStorage(editor.innerHTML, "html");
 
     onChange(nextValue);
+  }
+
+  function clampRichTextImageWidthPercent(value: number): number {
+    if (!Number.isFinite(value)) {
+      return richTextImageMaxResizePercent;
+    }
+
+    const steppedValue = Math.round(value / richTextImageResizeStepPercent) * richTextImageResizeStepPercent;
+
+    return Math.min(
+      Math.max(steppedValue, richTextImageMinResizePercent),
+      richTextImageMaxResizePercent
+    );
+  }
+
+  function getImageWidthPercent(image: HTMLImageElement): number {
+    const editor = editorRef.current;
+    const inlineWidth = image.style.width.trim();
+
+    if (inlineWidth.endsWith("%")) {
+      return clampRichTextImageWidthPercent(Number.parseFloat(inlineWidth));
+    }
+
+    if (!editor) {
+      return richTextImageMaxResizePercent;
+    }
+
+    const editorWidth = Math.max(editor.clientWidth - 22, richTextImageMinResizePixels);
+    const imageWidth = image.getBoundingClientRect().width || editorWidth;
+
+    return clampRichTextImageWidthPercent((imageWidth / editorWidth) * 100);
+  }
+
+  function clearSelectedRichTextImage() {
+    selectedImageRef.current?.classList.remove("is-resize-selected");
+    selectedImageRef.current = null;
+    setSelectedImageState(null);
+  }
+
+  function selectRichTextImage(image: HTMLImageElement) {
+    if (!editorRef.current?.contains(image)) {
+      clearSelectedRichTextImage();
+      return;
+    }
+
+    selectedImageRef.current?.classList.remove("is-resize-selected");
+    selectedImageRef.current = image;
+    image.classList.add("is-resize-selected");
+    setSelectedImageState({ widthPercent: getImageWidthPercent(image) });
+  }
+
+  function applySelectedImageWidth(widthPercent: number) {
+    const editor = editorRef.current;
+    const image = selectedImageRef.current;
+
+    if (!editor || !image || !editor.contains(image)) {
+      clearSelectedRichTextImage();
+      return;
+    }
+
+    const nextWidthPercent = clampRichTextImageWidthPercent(widthPercent);
+
+    image.style.width = `${nextWidthPercent}%`;
+    image.style.height = "auto";
+    image.removeAttribute("width");
+    image.removeAttribute("height");
+    image.classList.add("is-resize-selected");
+    setSelectedImageState({ widthPercent: nextWidthPercent });
+    syncEditorValue();
+  }
+
+  function resizeSelectedImage(deltaPercent: number) {
+    const image = selectedImageRef.current;
+    const currentWidthPercent = selectedImageState?.widthPercent ?? (image ? getImageWidthPercent(image) : richTextImageMaxResizePercent);
+
+    applySelectedImageWidth(currentWidthPercent + deltaPercent);
   }
 
   function persistImageElementSize(image: HTMLImageElement): boolean {
@@ -6667,6 +10790,19 @@ function RichTextEditor({
     }
 
     onChange(nextValue);
+  }
+
+  function handleEditorBlur(event: ReactFocusEvent<HTMLDivElement>) {
+    const nextFocusedElement = event.relatedTarget;
+
+    if (
+      nextFocusedElement instanceof Node &&
+      event.currentTarget.parentElement?.contains(nextFocusedElement)
+    ) {
+      return;
+    }
+
+    commitEditorValue();
   }
 
   function saveSelection() {
@@ -6865,8 +11001,20 @@ function RichTextEditor({
   function handleEditorMouseUp(event: ReactMouseEvent<HTMLDivElement>) {
     saveSelection();
 
-    if (event.target instanceof HTMLImageElement && persistImageElementSize(event.target)) {
-      syncEditorValue();
+    if (event.target instanceof HTMLImageElement) {
+      const changed = persistImageElementSize(event.target);
+
+      selectRichTextImage(event.target);
+
+      if (changed) {
+        syncEditorValue();
+      }
+
+      return;
+    }
+
+    if (event.target instanceof HTMLElement && editorRef.current?.contains(event.target)) {
+      clearSelectedRichTextImage();
     }
   }
 
@@ -6930,6 +11078,48 @@ function RichTextEditor({
             }}
           />
         </div>
+        {selectedImageState ? (
+          <div className="rich-text-image-toolbar" aria-label={`${label} selected image controls`}>
+            <TegelIcon name="image" size="16px" />
+            <button
+              type="button"
+              title="Make image smaller"
+              aria-label="Make image smaller"
+              onMouseDown={prepareToolbarAction}
+              onClick={() => resizeSelectedImage(-10)}
+            >
+              -
+            </button>
+            <input
+              type="range"
+              min={richTextImageMinResizePercent}
+              max={richTextImageMaxResizePercent}
+              step={richTextImageResizeStepPercent}
+              value={selectedImageState.widthPercent}
+              aria-label="Image width"
+              onChange={(event) => applySelectedImageWidth(Number(event.target.value))}
+            />
+            <output>{selectedImageState.widthPercent}%</output>
+            <button
+              type="button"
+              title="Make image larger"
+              aria-label="Make image larger"
+              onMouseDown={prepareToolbarAction}
+              onClick={() => resizeSelectedImage(10)}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              title="Reset image width"
+              aria-label="Reset image width"
+              onMouseDown={prepareToolbarAction}
+              onClick={() => applySelectedImageWidth(richTextImageMaxResizePercent)}
+            >
+              100%
+            </button>
+          </div>
+        ) : null}
         <div
           ref={editorRef}
           id={editorId}
@@ -6937,7 +11127,7 @@ function RichTextEditor({
           className={`rich-text-editable ${isEmpty ? "is-empty" : ""}`}
           contentEditable
           data-placeholder={placeholder}
-          onBlur={commitEditorValue}
+          onBlur={handleEditorBlur}
           onInput={syncEditorValue}
           onKeyUp={saveSelection}
           onLoadCapture={handleEditorLoad}
@@ -6967,22 +11157,30 @@ function NewTicketModal({
   const [isReadingAttachments, setIsReadingAttachments] = useState(false);
   const activeProducts = config.products.filter((product) => product.active);
   const selectedProduct = getConfigProduct(config, form.product);
-  const availablePrus = selectedProduct?.prus.filter((pru) => pru.active) ?? [];
+  const activeProductPrus = selectedProduct?.prus.filter((pru) => pru.active) ?? [];
+  const activeProductPruSites = new Set(activeProductPrus.map((pru) => pru.site).filter(Boolean));
+  const regionSitesForSelectedProduct = config.regionSites.filter(
+    (site) =>
+      site.active &&
+      site.region !== ALL_SCOPE_LABEL &&
+      site.site !== ALL_SCOPE_LABEL &&
+      (!form.product || activeProductPruSites.has(site.site))
+  );
+  const availablePrus = activeProductPrus.filter((pru) => !form.site || pru.site === form.site);
   const selectedPru = availablePrus.find((pru) => pru.name === form.pru);
   const availableModules = selectedPru?.modules.filter((module) => module.active) ?? [];
   const activeRequestTypes = config.requestTypes.filter((type) => type.active);
   const activePriorities = config.priorities.filter((priority) => priority.active);
   const activeRisks = config.riskOptions.filter((risk) => risk.active);
-  const activeRegions = uniqueSortedValues(
-    config.regionSites
-      .filter((site) => site.active && site.region !== ALL_SCOPE_LABEL)
-      .map((site) => site.region)
-  );
-  const activeRegionSites = config.regionSites.filter(
-    (site) => site.active && site.region !== ALL_SCOPE_LABEL && site.site !== ALL_SCOPE_LABEL && (!form.region || site.region === form.region)
-  );
+  const activeRegions = uniqueSortedValues(regionSitesForSelectedProduct.map((site) => site.region));
+  const activeRegionSites = regionSitesForSelectedProduct.filter((site) => !form.region || site.region === form.region);
   const selectedFormTemplate = getFormTemplateForTicket(config, form.product, form.typeId);
   const templateFields = [...(selectedFormTemplate?.fields ?? [])].sort((left, right) => left.sortOrder - right.sortOrder);
+  const jiraTemplateMetadata = useJiraTemplateFieldMetadata(
+    config,
+    templateHasJiraOptionSource(templateFields),
+    selectedProduct?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey
+  );
 
   function updateForm<K extends keyof NewTicketFormState>(key: K, value: NewTicketFormState[K]) {
     setForm((currentForm) => ({
@@ -7003,6 +11201,7 @@ function NewTicketModal({
     setForm((currentForm) => ({
       ...currentForm,
       product: productName,
+      region: "",
       pru: "",
       site: "",
       module: "",
@@ -7114,8 +11313,8 @@ function NewTicketModal({
       return;
     }
 
-    if (!form.risk) {
-      setError("Risk is required.");
+    if (!form.product.trim()) {
+      setError("Product is required.");
       return;
     }
 
@@ -7124,8 +11323,8 @@ function NewTicketModal({
       return;
     }
 
-    if (!form.product.trim()) {
-      setError("Product is required.");
+    if (!form.site.trim()) {
+      setError("Site is required.");
       return;
     }
 
@@ -7134,13 +11333,13 @@ function NewTicketModal({
       return;
     }
 
-    if (!form.site.trim()) {
-      setError("Site is required.");
+    if (!form.module.trim()) {
+      setError("Module is required.");
       return;
     }
 
-    if (!form.module.trim()) {
-      setError("Module is required.");
+    if (!form.risk) {
+      setError("Risk is required.");
       return;
     }
 
@@ -7169,6 +11368,10 @@ function NewTicketModal({
   function renderTemplateField(field: FormTemplateField) {
     const value = form.dynamicAnswers[field.id] ?? "";
     const label = `${field.label}${field.required ? " *" : ""}`;
+    const options = getTemplateFieldOptions(field, config, {
+      form,
+      jiraFieldMetadata: jiraTemplateMetadata
+    });
 
     if (field.component === "textArea" || field.type === "longText") {
       return (
@@ -7222,7 +11425,7 @@ function NewTicketModal({
         <fieldset className="form-field dynamic-checkbox-group form-field-wide" key={field.id}>
           <legend>{label}</legend>
           <div>
-            {field.options.map((option) => (
+            {options.map((option) => (
               <label key={`${field.id}-${option}`}>
                 <input
                   checked={selectedValues.has(option)}
@@ -7233,6 +11436,7 @@ function NewTicketModal({
               </label>
             ))}
           </div>
+          {!options.length ? <p>No options available for this field yet.</p> : null}
           {field.helperText ? <p>{field.helperText}</p> : null}
         </fieldset>
       );
@@ -7243,13 +11447,14 @@ function NewTicketModal({
         <label className="form-field" key={field.id}>
           <span>{label}</span>
           <select value={value} onChange={(event) => updateDynamicAnswer(field.id, event.target.value)}>
-            <option value="">Select</option>
-            {field.options.map((option) => (
+            <option value="">{options.length ? "Select" : "No options available"}</option>
+            {options.map((option) => (
               <option key={`${field.id}-${option}`} value={option}>
                 {option}
               </option>
             ))}
           </select>
+          {field.helperText ? <small>{field.helperText}</small> : null}
         </label>
       );
     }
@@ -7321,33 +11526,11 @@ function NewTicketModal({
             </select>
           </label>
           <label className="form-field">
-            <span>Risk</span>
-            <select
-              value={form.risk}
-              onChange={(event) => updateForm("risk", event.target.value as NewTicketFormState["risk"])}
-            >
-              <option value="">Select risk</option>
-              {activeRisks.map((risk) => (
-                <option key={risk.id} value={risk.label}>
-                  {risk.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Region</span>
-            <select value={form.region} onChange={(event) => updateRegion(event.target.value)}>
-              <option value="">Select region</option>
-              {activeRegions.map((region) => (
-                <option key={region} value={region}>
-                  {region}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
             <span>Product</span>
-            <select value={form.product} onChange={(event) => updateProduct(event.target.value)}>
+            <select
+              value={form.product}
+              onChange={(event) => updateProduct(event.target.value)}
+            >
               <option value="">Select product</option>
               {activeProducts.map((item) => (
                 <option key={item.id} value={item.productName}>
@@ -7357,14 +11540,18 @@ function NewTicketModal({
             </select>
           </label>
           <label className="form-field">
-            <span>PRU</span>
-            <select value={form.pru} onChange={(event) => updatePru(event.target.value)} disabled={!form.product || !availablePrus.length}>
+            <span>Region</span>
+            <select
+              value={form.region}
+              onChange={(event) => updateRegion(event.target.value)}
+              disabled={!form.product || !activeRegions.length}
+            >
               <option value="">
-                {!form.product ? "Select product first" : availablePrus.length ? "Select PRU" : "No active PRUs"}
+                {!form.product ? "Select product first" : activeRegions.length ? "Select region" : "No active regions"}
               </option>
-              {availablePrus.map((item) => (
-                <option key={item.id} value={item.name}>
-                  {item.name}
+              {activeRegions.map((region) => (
+                <option key={region} value={region}>
+                  {region}
                 </option>
               ))}
             </select>
@@ -7374,11 +11561,45 @@ function NewTicketModal({
             <select
               value={form.site}
               onChange={(event) => updateSite(event.target.value)}
+              disabled={!form.product || !form.region || !activeRegionSites.length}
             >
-              <option value="">Select site</option>
+              <option value="">
+                {!form.product
+                  ? "Select product first"
+                  : !form.region
+                    ? "Select region first"
+                    : activeRegionSites.length
+                      ? "Select site"
+                      : "No active sites"}
+              </option>
               {activeRegionSites.map((item) => (
                 <option key={item.id} value={item.site}>
                   {item.site}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>PRU</span>
+            <select
+              value={form.pru}
+              onChange={(event) => updatePru(event.target.value)}
+              disabled={!form.product || !form.region || !form.site || !availablePrus.length}
+            >
+              <option value="">
+                {!form.product
+                  ? "Select product first"
+                  : !form.region
+                    ? "Select region first"
+                    : !form.site
+                      ? "Select site first"
+                      : availablePrus.length
+                        ? "Select PRU"
+                        : "No active PRUs for site"}
+              </option>
+              {availablePrus.map((item) => (
+                <option key={item.id} value={item.name}>
+                  {item.name}
                 </option>
               ))}
             </select>
@@ -7396,6 +11617,20 @@ function NewTicketModal({
               {availableModules.map((item) => (
                 <option key={item.id} value={item.name}>
                   {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Risk</span>
+            <select
+              value={form.risk}
+              onChange={(event) => updateForm("risk", event.target.value as NewTicketFormState["risk"])}
+            >
+              <option value="">Select risk</option>
+              {activeRisks.map((risk) => (
+                <option key={risk.id} value={risk.label}>
+                  {risk.label}
                 </option>
               ))}
             </select>
@@ -7458,6 +11693,13 @@ function NewTicketModal({
                   ? selectedFormTemplate.description
                   : "No extra questions are configured for this product and request type."}
               </p>
+              {templateHasJiraOptionSource(templateFields) ? (
+                <small>
+                  {jiraTemplateMetadata.status === "ready"
+                    ? jiraTemplateMetadata.message
+                    : jiraTemplateMetadata.message || "Jira-backed fields use fallback options until metadata is loaded."}
+                </small>
+              ) : null}
             </div>
             {templateFields.length > 0 ? (
               <div className="ticket-template-fields">
@@ -7489,6 +11731,7 @@ function renderModule({
   activeTab,
   allTickets,
   filteredTickets,
+  ticketListTickets,
   selectedTicket,
   visibleAudit,
   visibleComments,
@@ -7505,18 +11748,25 @@ function renderModule({
   onCreateClarification,
   onCreateEscalation,
   onCreateJira,
+  onPostJiraComment,
   onReopenTicket,
   onUpdateJiraDraft,
   onUpdateJiraIssue,
   onUpdateJiraLink,
+  onUpdateTicket,
   onUpdateWorkflowStatus,
   onUpdateEscalationStatus,
   onUpdateJiraStatus,
+  onSyncJiraActivity,
+  onSyncLinkedJiraTickets,
+  jiraBulkSyncError,
+  jiraBulkSyncMessage,
+  jiraBulkSyncState,
   onApprovalDecision,
   onTicketDetailOpenChange,
   onOpenTicketModule,
+  onOpenNotification,
   setActiveTab,
-  focusTicketOnDashboard,
   focusTicketOnJira,
   selectTicket
 }: {
@@ -7524,6 +11774,7 @@ function renderModule({
   activeTab: DetailTab;
   allTickets: Ticket[];
   filteredTickets: Ticket[];
+  ticketListTickets: Ticket[];
   selectedTicket?: Ticket;
   visibleAudit: Ticket["audit"];
   visibleComments: Ticket["comments"];
@@ -7540,18 +11791,26 @@ function renderModule({
   onCreateClarification: (ticketKey: string, input: NewClarificationThreadInput) => void;
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
   onCreateJira: CreateJiraHandler;
+  onPostJiraComment: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
   onUpdateJiraDraft: (ticketKey: string, draftUpdate: JiraDraftUpdateInput) => void;
   onUpdateJiraIssue: UpdateJiraIssueHandler;
   onUpdateJiraLink: UpdateJiraLinkHandler;
+  onUpdateTicket: UpdateTicketHandler;
   onUpdateWorkflowStatus: UpdateWorkflowStatusHandler;
   onUpdateEscalationStatus: (
     ticketKey: string,
     escalationId: string,
     status: EscalationStatus,
-    decisionNote: string
+    decisionNote: string,
+    details?: EscalationStatusUpdateDetails
   ) => void;
-  onUpdateJiraStatus: (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+  onUpdateJiraStatus: UpdateJiraStatusHandler;
+  onSyncJiraActivity: SyncJiraActivityHandler;
+  onSyncLinkedJiraTickets: () => Promise<void>;
+  jiraBulkSyncError: string;
+  jiraBulkSyncMessage: string;
+  jiraBulkSyncState: "idle" | "syncing";
   onApprovalDecision: (
     ticketKey: string,
     stepId: string,
@@ -7560,8 +11819,8 @@ function renderModule({
   ) => void;
   onTicketDetailOpenChange: (isOpen: boolean) => void;
   onOpenTicketModule: (ticketKey: string, module: ModuleKey, tab?: DetailTab) => void;
+  onOpenNotification: (notification: NotificationItem) => void;
   setActiveTab: (tab: DetailTab) => void;
-  focusTicketOnDashboard: (ticketKey: string) => void;
   focusTicketOnJira: (ticketKey: string) => void;
   selectTicket: (ticketKey: string) => void;
 }) {
@@ -7571,27 +11830,15 @@ function renderModule({
 
   if (activeModule === "dashboard") {
     return (
-      <div className="dashboard-layout">
-        <KpiStrip tickets={allTickets} role={role} config={config} selectedPersona={selectedPersona} />
-        <div className="dashboard-grid">
-          <GovernanceQueue
-            tickets={filteredTickets}
-            selectedTicketKey={selectedTicket?.key ?? ""}
-            onSelectTicket={focusTicketOnDashboard}
-          />
-          {selectedTicket ? (
-            <DashboardFocusPanel
-              config={config}
-              role={role}
-              selectedPersona={selectedPersona}
-              ticket={selectedTicket}
-              onOpenTicketModule={onOpenTicketModule}
-            />
-          ) : (
-            <WorkspaceEmptyPanel />
-          )}
-        </div>
-      </div>
+      <DashboardOverview
+        config={config}
+        notifications={visibleNotifications}
+        role={role}
+        selectedPersona={selectedPersona}
+        tickets={filteredTickets}
+        onOpenNotification={onOpenNotification}
+        onOpenTicketModule={onOpenTicketModule}
+      />
     );
   }
 
@@ -7605,7 +11852,7 @@ function renderModule({
         selectedTicket={selectedTicket}
         selectedTicketKey={selectedTicket?.key ?? ""}
         isDetailOpen={isTicketDetailOpen}
-        tickets={allTickets}
+        tickets={ticketListTickets}
         visibleAudit={visibleAudit}
         visibleComments={visibleComments}
         onAddClarificationReply={onAddClarificationReply}
@@ -7614,17 +11861,15 @@ function renderModule({
         onAddComment={onAddComment}
         onCreateClarification={onCreateClarification}
         onCreateEscalation={onCreateEscalation}
-        onCreateJira={onCreateJira}
+        onPostJiraComment={onPostJiraComment}
         onOpenTicket={selectTicket}
         onDetailOpenChange={onTicketDetailOpenChange}
         onReopenTicket={onReopenTicket}
         onTabChange={setActiveTab}
-        onUpdateJiraDraft={onUpdateJiraDraft}
-        onUpdateJiraIssue={onUpdateJiraIssue}
-        onUpdateJiraLink={onUpdateJiraLink}
+        onUpdateTicket={onUpdateTicket}
         onUpdateWorkflowStatus={onUpdateWorkflowStatus}
         onUpdateEscalationStatus={onUpdateEscalationStatus}
-        onUpdateJiraStatus={onUpdateJiraStatus}
+        onSyncJiraActivity={onSyncJiraActivity}
       />
     );
   }
@@ -7642,12 +11887,30 @@ function renderModule({
     );
   }
 
+  if (activeModule === "releasePlan") {
+    return (
+      <ReleasePlanBoard
+        config={config}
+        tickets={allTickets}
+        jiraBulkSyncError={jiraBulkSyncError}
+        jiraBulkSyncMessage={jiraBulkSyncMessage}
+        jiraBulkSyncState={jiraBulkSyncState}
+        onOpenTicket={(ticketKey) => onOpenTicketModule(ticketKey, "tickets", "Overview")}
+        onSyncLinkedJiraTickets={onSyncLinkedJiraTickets}
+      />
+    );
+  }
+
   if (!selectedTicket) {
+    if (activeModule === "clarifications") {
+      return <ClarificationsEmptyPanel />;
+    }
+
     if (activeModule === "notifications") {
       return (
         <NotificationCenter
           items={visibleNotifications}
-          onOpenTicket={(ticketKey) => onOpenTicketModule(ticketKey, "tickets", "Clarifications")}
+          onOpenNotification={onOpenNotification}
         />
       );
     }
@@ -7668,7 +11931,7 @@ function renderModule({
 
     if (activeModule === "reports") {
       return (
-        <div className="focused-layout">
+        <div className="focused-layout report-layout">
           <AnalyticsPanel tickets={allTickets} expanded config={config} selectedPersona={selectedPersona} />
           <SlaBoard tickets={allTickets} />
         </div>
@@ -7722,13 +11985,16 @@ function renderModule({
         selectedTicket={selectedTicket}
         selectedTicketKey={selectedTicket?.key ?? ""}
         role={role}
+        selectedPersona={selectedPersona}
         onCreateJira={onCreateJira}
+        onPostJiraComment={onPostJiraComment}
         onReopenTicket={onReopenTicket}
         onSelectTicket={focusTicketOnJira}
         onUpdateJiraDraft={onUpdateJiraDraft}
         onUpdateJiraIssue={onUpdateJiraIssue}
         onUpdateJiraLink={onUpdateJiraLink}
         onUpdateJiraStatus={onUpdateJiraStatus}
+        onSyncJiraActivity={onSyncJiraActivity}
       />
     );
   }
@@ -7752,7 +12018,7 @@ function renderModule({
     return (
       <NotificationCenter
         items={visibleNotifications}
-        onOpenTicket={(ticketKey) => onOpenTicketModule(ticketKey, "tickets", "Clarifications")}
+        onOpenNotification={onOpenNotification}
       />
     );
   }
@@ -7799,7 +12065,7 @@ function renderModule({
 
   if (activeModule === "reports") {
     return (
-      <div className="focused-layout">
+      <div className="focused-layout report-layout">
         <AnalyticsPanel tickets={allTickets} expanded config={config} selectedPersona={selectedPersona} />
         <SlaBoard tickets={allTickets} />
       </div>
@@ -7824,6 +12090,22 @@ function WorkspaceEmptyPanel() {
       <EmptyState
         title="No predefined work"
         body="Demo tickets, seeded notifications, escalations, Jira drafts, comments, attachments, and audit entries are not loaded."
+      />
+    </section>
+  );
+}
+
+function ClarificationsEmptyPanel() {
+  return (
+    <section className="panel workspace-empty-panel">
+      <PanelHeader
+        title="No clarification requests"
+        description="There are no open clarification requests for this role."
+        iconName="message"
+      />
+      <EmptyState
+        title="Clarifications are clear"
+        body="When a ticket needs clarification from this role, it will appear here."
       />
     </section>
   );
@@ -8012,7 +12294,7 @@ function ApprovalCenter({
                         <span className="approval-status-chip">{getTicketListStatusLabel(item.ticket)}</span>
                       </td>
                       <td>
-                        <span className={`priority priority-${toClassName(item.ticket.priority)}`}>
+                        <span className={`priority priority-${getPriorityToneClassName(item.ticket.priority)}`}>
                           {item.ticket.priority}
                         </span>
                       </td>
@@ -8293,10 +12575,560 @@ function getDashboardProcessSteps(ticket: Ticket) {
   return getTicketLifecycleSteps(ticket).map((step) => ({
     label: step.label,
     detail: step.detail,
+    status: step.status,
     state: step.state
   }));
 }
 
+function getDashboardCurrentProcessStep(steps: ReturnType<typeof getDashboardProcessSteps>) {
+  return (
+    steps.find((step) => step.state === "active" || step.state === "blocked" || step.state === "rejected") ??
+    steps.find((step) => step.state === "waiting") ??
+    steps[steps.length - 1]
+  );
+}
+
+function getDashboardNextProcessStep(
+  steps: ReturnType<typeof getDashboardProcessSteps>,
+  currentStep?: ReturnType<typeof getDashboardProcessSteps>[number]
+) {
+  if (!currentStep) {
+    return undefined;
+  }
+
+  const currentIndex = steps.findIndex((step) => step.label === currentStep.label);
+
+  return currentIndex >= 0 ? steps.slice(currentIndex + 1).find((step) => step.state === "waiting") : undefined;
+}
+
+function getDashboardPercent(value: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+
+  return Math.round((value / total) * 100);
+}
+
+function countDashboardTicketsBySlaState(tickets: Ticket[]): Record<SlaState, number> {
+  return tickets.reduce(
+    (counts, ticket) => {
+      counts[ticket.slaState] += 1;
+      return counts;
+    },
+    { healthy: 0, watch: 0, breach: 0, paused: 0 } as Record<SlaState, number>
+  );
+}
+
+function getDashboardTopProductRows(tickets: Ticket[]): Array<{ label: string; count: number; blocked: number }> {
+  const rowsByProduct = new Map<string, { label: string; count: number; blocked: number }>();
+
+  for (const ticket of tickets) {
+    const label = ticket.product || "Unknown product";
+    const current = rowsByProduct.get(label) ?? { label, count: 0, blocked: 0 };
+    current.count += 1;
+    current.blocked += getTicketQueueBucket(ticket) === "blocked" ? 1 : 0;
+    rowsByProduct.set(label, current);
+  }
+
+  return Array.from(rowsByProduct.values())
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+    .slice(0, 5);
+}
+
+function getEmptyReleasePlanJiraMetadata(): ReleasePlanJiraMetadata {
+  return {
+    versionDateLookup: new Map(),
+    boards: [],
+    sprints: []
+  };
+}
+
+function useReleasePlanJiraMetadata(config: AdminConfig, tickets: Ticket[]): ReleasePlanJiraMetadata {
+  const [jiraMetadata, setJiraMetadata] = useState<ReleasePlanJiraMetadata>(() => getEmptyReleasePlanJiraMetadata());
+  const projectKeys = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          tickets
+            .map((ticket) =>
+              getValidJiraProjectKey(ticket.jiraDraft.project) ||
+              getValidJiraProjectKey(config.integrations.jira.defaultProjectKey)
+            )
+            .filter((projectKey): projectKey is string => Boolean(projectKey))
+        )
+      ).sort(),
+    [config.integrations.jira.defaultProjectKey, tickets]
+  );
+
+  useEffect(() => {
+    const integration = config.integrations.jira;
+
+    if (!integration.enabled || projectKeys.length === 0) {
+      setJiraMetadata(getEmptyReleasePlanJiraMetadata());
+      return;
+    }
+
+    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+
+    if (!localToken) {
+      setJiraMetadata(getEmptyReleasePlanJiraMetadata());
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function loadVersionDates() {
+      const nextLookup: ReleasePlanVersionDateLookup = new Map();
+      const nextBoards = new Map<string, JiraBoardMetadataOption>();
+      const nextSprints = new Map<string, ReleasePlanSprintMetadata>();
+
+      await Promise.all(
+        projectKeys.map(async (projectKey) => {
+          const response = await fetch("/api/integrations/jira/sync", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              config: {
+                enabled: integration.enabled,
+                apiBaseUrl: integration.apiBaseUrl,
+                apiVersion: integration.apiVersion,
+                authMode: integration.authMode,
+                username: integration.username,
+                token: localToken,
+                defaultProjectKey: projectKey,
+                defaultIssueType: integration.defaultIssueType
+              }
+            }),
+            signal: controller.signal
+          });
+          const payload = (await response.json().catch(() => null)) as JiraSyncMetadataPayload | null;
+
+          if (!response.ok) {
+            return;
+          }
+
+          for (const board of payload?.data?.boards ?? []) {
+            const boardId = board.id?.trim() ?? "";
+            const boardName = board.name?.trim() ?? "";
+
+            if (!boardId || !boardName) {
+              continue;
+            }
+
+            nextBoards.set(boardId, {
+              id: boardId,
+              name: boardName,
+              type: board.type?.trim() || "board"
+            });
+          }
+
+          for (const sprint of payload?.data?.sprints ?? []) {
+            const sprintId = sprint.id?.trim() ?? "";
+            const sprintName = sprint.name?.trim() ?? "";
+            const boardId = sprint.boardId?.trim() ?? "";
+            const boardName = sprint.boardName?.trim() ?? "";
+
+            if (!sprintId || !sprintName) {
+              continue;
+            }
+
+            nextSprints.set(`${boardId || "unknown"}::${sprintId}`, {
+              id: sprintId,
+              name: sprintName,
+              state: sprint.state?.trim() || "future",
+              boardId,
+              boardName,
+              startDate: sprint.startDate?.trim() ?? "",
+              endDate: sprint.endDate?.trim() ?? ""
+            });
+          }
+
+          for (const version of payload?.data?.versions ?? []) {
+            const versionName = version.name?.trim() ?? "";
+            const startDate = formatReleaseDate(version.startDate || version.userStartDate);
+            const releaseDate = formatReleaseDate(version.releaseDate || version.userReleaseDate);
+
+            if (!versionName) {
+              continue;
+            }
+
+            const dateValue = { name: versionName, startDate, releaseDate };
+            nextLookup.set(getReleasePlanVersionDateLookupKey(projectKey, versionName), dateValue);
+
+            if (!nextLookup.has(getReleasePlanVersionDateLookupKey("*", versionName))) {
+              nextLookup.set(getReleasePlanVersionDateLookupKey("*", versionName), dateValue);
+            }
+          }
+        })
+      );
+
+      if (!cancelled) {
+        setJiraMetadata({
+          versionDateLookup: nextLookup,
+          boards: Array.from(nextBoards.values()).sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true })),
+          sprints: Array.from(nextSprints.values()).sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }))
+        });
+      }
+    }
+
+    loadVersionDates().catch((error) => {
+      if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
+        console.warn("[release-plan] Jira version dates could not be loaded.", {
+          error: getErrorMessage(error)
+        });
+        setJiraMetadata(getEmptyReleasePlanJiraMetadata());
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    config.integrations.jira.apiBaseUrl,
+    config.integrations.jira.apiVersion,
+    config.integrations.jira.authMode,
+    config.integrations.jira.defaultIssueType,
+    config.integrations.jira.enabled,
+    config.integrations.jira,
+    config.integrations.jira.username,
+    projectKeys
+  ]);
+
+  return jiraMetadata;
+}
+
+function useReleasePlanVersionDateLookup(config: AdminConfig, tickets: Ticket[]): ReleasePlanVersionDateLookup {
+  return useReleasePlanJiraMetadata(config, tickets).versionDateLookup;
+}
+
+function DashboardOverview({
+  config,
+  notifications,
+  role,
+  selectedPersona,
+  tickets,
+  onOpenNotification,
+  onOpenTicketModule
+}: {
+  config: AdminConfig;
+  notifications: NotificationItem[];
+  role: RoleKey;
+  selectedPersona: RolePersonaOption;
+  tickets: Ticket[];
+  onOpenNotification: (notification: NotificationItem) => void;
+  onOpenTicketModule: (ticketKey: string, module: ModuleKey, tab?: DetailTab) => void;
+}) {
+  const totalTickets = tickets.length;
+  const openTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) !== "done").length;
+  const doneTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) === "done").length;
+  const blockedTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) === "blocked").length;
+  const slaCounts = countDashboardTicketsBySlaState(tickets);
+  const approvalItems = getApprovalQueueItems(tickets, config, selectedPersona).filter(
+    (item) => item.actionable && item.step.status !== "blocked"
+  );
+  const clarificationItems = tickets.flatMap((ticket) =>
+    buildClarificationThreadGroups(ticket).flatMap((group) =>
+      group.threads
+        .filter((thread) => clarificationNeedsRoleAttention(thread, role))
+        .map((thread) => ({ ticket, thread }))
+    )
+  );
+  const unreadNotifications = notifications.filter((notification) => notification.unread);
+  const jiraAttentionTickets = tickets.filter((ticket) => Boolean(getJiraAttentionId(ticket)));
+  const productRows = getDashboardTopProductRows(tickets);
+  const versionDateLookup = useReleasePlanVersionDateLookup(config, tickets);
+  const releaseRows = tickets
+    .map((ticket) => getReleasePlanTicket(ticket, versionDateLookup, config))
+    .reduce((rows, item) => {
+      const current = rows.get(item.releaseVersion) ?? {
+        releaseVersion: item.releaseVersion,
+        tickets: 0,
+        preprodDate: item.preprodDate,
+        prodDate: item.prodDate,
+        sortDate: getReleasePlanSortDate(item.prodDate || item.preprodDate)
+      };
+
+      current.tickets += 1;
+      current.preprodDate = selectEarliestReleasePlanDate([current.preprodDate, item.preprodDate]);
+      current.prodDate = selectEarliestReleasePlanDate([current.prodDate, item.prodDate]);
+      current.sortDate = Math.min(current.sortDate, getReleasePlanSortDate(item.prodDate || item.preprodDate));
+      rows.set(item.releaseVersion, current);
+
+      return rows;
+    }, new Map<string, { releaseVersion: string; tickets: number; preprodDate: string; prodDate: string; sortDate: number }>());
+  const releaseTimeline = Array.from(releaseRows.values())
+    .sort((left, right) => left.sortDate - right.sortDate || left.releaseVersion.localeCompare(right.releaseVersion))
+    .slice(0, 4);
+  const attentionRows: Array<{
+    id: string;
+    tone: "critical" | "warning" | "info";
+    title: string;
+    detail: string;
+    meta: string;
+    ticketKey: string;
+    module: ModuleKey;
+    tab?: DetailTab;
+  }> = [
+    ...tickets
+      .filter((ticket) => ticket.slaState === "breach")
+      .map((ticket) => ({
+        id: `sla-${ticket.key}`,
+        tone: "critical" as const,
+        title: "SLA breach",
+        detail: `${ticket.key} - ${ticket.title}`,
+        meta: ticket.slaLabel,
+        ticketKey: ticket.key,
+        module: "tickets" as ModuleKey,
+        tab: "Overview" as DetailTab
+      })),
+    ...clarificationItems.map(({ ticket, thread }) => ({
+      id: `clarification-${ticket.key}-${thread.id}`,
+      tone: "warning" as const,
+      title: "Clarification needed",
+      detail: `${ticket.key} - ${thread.question}`,
+      meta: thread.assignedTo,
+      ticketKey: ticket.key,
+      module: "clarifications" as ModuleKey
+    })),
+    ...approvalItems.map((item) => ({
+      id: `approval-${item.ticket.key}-${item.step.id}`,
+      tone: "info" as const,
+      title: "Approval action",
+      detail: `${item.ticket.key} - ${item.step.label}`,
+      meta: item.step.ownerName,
+      ticketKey: item.ticket.key,
+      module: "approvals" as ModuleKey
+    })),
+    ...jiraAttentionTickets.map((ticket) => ({
+      id: `jira-${ticket.key}`,
+      tone: "info" as const,
+      title: "Jira follow-up",
+      detail: `${ticket.key} - ${ticket.title}`,
+      meta: getJiraFollowUpStatusLabel(getTicketJiraFollowUpStatus(ticket)),
+      ticketKey: ticket.key,
+      module: "jira" as ModuleKey
+    }))
+  ].slice(0, 8);
+  const overviewMetrics = [
+    {
+      label: role === "requester" ? "My tickets" : "Visible tickets",
+      value: formatCount(totalTickets),
+      detail: `${formatCount(openTickets)} open · ${formatCount(doneTickets)} done`,
+      state: "healthy" as SlaState,
+      iconName: "folder" as TegelIconName
+    },
+    {
+      label: "SLA health",
+      value: formatCount(slaCounts.breach),
+      detail: slaCounts.breach > 0 ? "Breaches need action" : `${formatCount(slaCounts.watch)} watched · no breach`,
+      state: slaCounts.breach > 0 ? ("breach" as SlaState) : slaCounts.watch > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
+      iconName: "warning" as TegelIconName
+    },
+    {
+      label: "Clarifications",
+      value: formatCount(clarificationItems.length),
+      detail: "Waiting for role answer",
+      state: clarificationItems.length > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
+      iconName: "message" as TegelIconName
+    },
+    {
+      label: "Notifications",
+      value: formatCount(unreadNotifications.length),
+      detail: "Unread role-visible updates",
+      state: unreadNotifications.length > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
+      iconName: "notification" as TegelIconName
+    },
+    {
+      label: "Approvals",
+      value: formatCount(approvalItems.length),
+      detail: "Actionable gates",
+      state: approvalItems.length > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
+      iconName: "document_check" as TegelIconName
+    },
+    {
+      label: "Blocked work",
+      value: formatCount(blockedTickets),
+      detail: `${getDashboardPercent(blockedTickets, totalTickets)}% of visible work`,
+      state: blockedTickets > 0 ? ("breach" as SlaState) : ("healthy" as SlaState),
+      iconName: "route" as TegelIconName
+    }
+  ];
+
+  return (
+    <div className="dashboard-overview-layout">
+      <section className="dashboard-command-panel">
+        <div>
+          <span>Operational overview</span>
+          <h2>{role === "requester" ? "Your support portfolio at a glance" : "Role workload at a glance"}</h2>
+          <p>
+            SLA, clarifications, approvals, notifications, releases, and blocked work summarized for quick review.
+          </p>
+        </div>
+        <div className="dashboard-command-actions">
+          <button
+            className="secondary-button"
+            disabled={!unreadNotifications[0]}
+            type="button"
+            onClick={() => unreadNotifications[0] && onOpenNotification(unreadNotifications[0])}
+          >
+            <TegelIcon name="notification" size="16px" />
+            Open latest notice
+          </button>
+          <button
+            className="primary-button"
+            disabled={!attentionRows[0]}
+            type="button"
+            onClick={() => attentionRows[0] && onOpenTicketModule(attentionRows[0].ticketKey, attentionRows[0].module, attentionRows[0].tab)}
+          >
+            <TegelIcon name="route" size="16px" />
+            Open top action
+          </button>
+        </div>
+      </section>
+
+      <section className="dashboard-overview-metrics" aria-label="Dashboard overview metrics">
+        {overviewMetrics.map((item) => (
+          <article className={`dashboard-overview-metric state-${item.state}`} key={item.label}>
+            <div>
+              <span>{item.label}</span>
+              <TegelIcon name={item.iconName} size="18px" />
+            </div>
+            <strong>{item.value}</strong>
+            <p>{item.detail}</p>
+          </article>
+        ))}
+      </section>
+
+      <div className="dashboard-overview-grid">
+        <section className="panel dashboard-health-panel">
+          <PanelHeader title="Health overview" description="SLA and workflow distribution across visible work." iconName="dashboard" />
+          <div className="dashboard-health-split">
+            <div className="dashboard-ring-card">
+              <div
+                className="dashboard-ring"
+                style={{
+                  "--done": `${getDashboardPercent(doneTickets, totalTickets) * 3.6}deg`,
+                  "--blocked": `${getDashboardPercent(blockedTickets, totalTickets) * 3.6}deg`
+                } as CSSProperties}
+                aria-label={`${getDashboardPercent(doneTickets, totalTickets)} percent done`}
+              >
+                <strong>{getDashboardPercent(doneTickets, totalTickets)}%</strong>
+                <span>done</span>
+              </div>
+              <p>{formatCount(openTickets)} open items remain in scope.</p>
+            </div>
+            <div className="dashboard-distribution-list">
+              {(["healthy", "watch", "breach", "paused"] as SlaState[]).map((state) => (
+                <div className={`dashboard-distribution-row state-${state}`} key={state}>
+                  <div>
+                    <span>{state === "healthy" ? "Healthy" : state === "watch" ? "Watch" : state === "breach" ? "Breach" : "Paused"}</span>
+                    <strong>{formatCount(slaCounts[state])}</strong>
+                  </div>
+                  <div className="dashboard-distribution-track">
+                    <span style={{ width: `${getDashboardPercent(slaCounts[state], totalTickets)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="panel dashboard-attention-panel">
+          <PanelHeader title="Needs attention" description="The highest-priority items to inspect first." iconName="warning" />
+          {attentionRows.length === 0 ? (
+            <EmptyState title="No urgent actions" body="SLA, clarifications, approvals, and Jira follow-up are currently clear." />
+          ) : (
+            <div className="dashboard-attention-list" role="list">
+              {attentionRows.map((item) => (
+                <button
+                  className={`dashboard-attention-row tone-${item.tone}`}
+                  key={item.id}
+                  onClick={() => onOpenTicketModule(item.ticketKey, "tickets", "Overview")}
+                  type="button"
+                >
+                  <span>{item.title}</span>
+                  <strong>{item.detail}</strong>
+                  <small>{item.meta}</small>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel dashboard-portfolio-panel">
+          <PanelHeader title="Portfolio mix" description="Where visible work is concentrated." iconName="folder" />
+          <div className="dashboard-product-list">
+            {productRows.length === 0 ? (
+              <EmptyState title="No portfolio data" body="Create or import tickets to populate product distribution." />
+            ) : (
+              productRows.map((row) => (
+                <div className="dashboard-product-row" key={row.label}>
+                  <div>
+                    <strong>{row.label}</strong>
+                    <span>{formatCount(row.count)} tickets · {formatCount(row.blocked)} blocked</span>
+                  </div>
+                  <div className="dashboard-product-track">
+                    <span style={{ width: `${getDashboardPercent(row.count, totalTickets)}%` }} />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="panel dashboard-release-panel">
+          <PanelHeader title="Release snapshot" description="Upcoming release dates from planned tickets." iconName="calendar" />
+          {releaseTimeline.length === 0 ? (
+            <EmptyState title="No release data" body="Tickets with fix versions will appear in this release summary." />
+          ) : (
+            <div className="dashboard-release-list">
+              {releaseTimeline.map((release) => (
+                <div className="dashboard-release-row" key={release.releaseVersion}>
+                  <div>
+                    <strong>{release.releaseVersion}</strong>
+                    <span>{formatCount(release.tickets)} ticket{release.tickets === 1 ? "" : "s"}</span>
+                  </div>
+                  <div>
+                    <span>Pre-prod {formatReleasePlanDate(release.preprodDate)}</span>
+                    <span>Prod {formatReleasePlanDate(release.prodDate)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel dashboard-notification-panel">
+          <PanelHeader title="Latest notifications" description="Recent unread and role-visible activity." iconName="notification" />
+          {notifications.length === 0 ? (
+            <EmptyState title="No notifications" body="Role-visible updates will appear here when workflow activity occurs." />
+          ) : (
+            <div className="dashboard-notification-list">
+              {notifications.slice(0, 5).map((notification) => (
+                <button
+                  className={notification.unread ? "is-unread" : ""}
+                  key={notification.id}
+                  onClick={() => onOpenNotification(notification)}
+                  type="button"
+                >
+                  <span>{notification.title}</span>
+                  <strong>{notification.ticketKey}</strong>
+                  <small>{notification.body}</small>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function DashboardFocusPanel({
   config,
   role,
@@ -8311,6 +13143,13 @@ function DashboardFocusPanel({
   onOpenTicketModule: (ticketKey: string, module: ModuleKey, tab?: DetailTab) => void;
 }) {
   const actionSummary = getWorkflowActionSummary(ticket);
+  const workflowHealth = summarizeWorkflowHealth(ticket);
+  const processSteps = getDashboardProcessSteps(ticket);
+  const completedProcessSteps = processSteps.filter((step) => step.state === "complete").length;
+  const totalProcessSteps = processSteps.length || 1;
+  const currentProcessStep = getDashboardCurrentProcessStep(processSteps);
+  const nextProcessStep = getDashboardNextProcessStep(processSteps, currentProcessStep);
+  const processProgressPercent = Math.round((completedProcessSteps / totalProcessSteps) * 100);
   const openClarifications = ticket.clarifications.filter((thread) => thread.status !== "answered").length;
   const openEscalations = ticket.escalations.filter((escalation) => escalation.status !== "resolved").length;
   const activeSteps = ticket.workflow.filter((step) => step.status === "active" || step.status === "delegated" || step.status === "blocked");
@@ -8369,8 +13208,8 @@ function DashboardFocusPanel({
   return (
     <section className="panel dashboard-focus-panel">
       <PanelHeader
-        title="Selected work"
-        description="Current ticket and next action."
+        title={role === "requester" ? "Selected ticket" : "Selected work"}
+        description="Current status, next step, and useful places to continue."
         iconName="route"
       />
       <div className="dashboard-focus-hero">
@@ -8385,26 +13224,59 @@ function DashboardFocusPanel({
           <span className={`ticket-status-chip tag-variant-${getStatusColorVariant(config, currentStatusLabel)}`}>
             {currentStatusLabel}
           </span>
-          <span className={`priority priority-${toClassName(ticket.priority)}`}>{ticket.priority}</span>
+          <span className={`priority priority-${getPriorityToneClassName(ticket.priority)}`}>{ticket.priority}</span>
           <span className={`sla-chip state-${ticket.slaState}`}>{ticket.slaLabel}</span>
           {ticket.relatedJiraKey ? (
             <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} className="jira-issue-link ticket-jira-link" />
           ) : null}
         </div>
       </div>
-      <div className="dashboard-next-action">
-        <span>Next action</span>
-        <strong>{actionSummary.label}</strong>
-        <p>{actionSummary.detail}</p>
+      <div className="dashboard-status-board" aria-label="Selected ticket position">
+        <article className={`dashboard-status-card dashboard-status-current step-${currentProcessStep?.state ?? "waiting"}`}>
+          <span>Current position</span>
+          <strong>{currentProcessStep?.label ?? currentStatusLabel}</strong>
+          <small>{currentProcessStep?.detail ?? actionSummary.detail}</small>
+        </article>
+        <article className="dashboard-status-card">
+          <span>Done already</span>
+          <strong>
+            {completedProcessSteps}/{totalProcessSteps} stages done
+          </strong>
+          <small>
+            {workflowHealth.completed}/{workflowHealth.total} review gates complete
+          </small>
+        </article>
+        <article className="dashboard-status-card dashboard-status-next">
+          <span>Next action</span>
+          <strong>{actionSummary.label}</strong>
+          <small>{actionSummary.detail}</small>
+        </article>
       </div>
-      <div className="dashboard-process" aria-label="Ticket process">
-        {getDashboardProcessSteps(ticket).map((step) => (
-          <div className={`dashboard-process-step step-${step.state}`} key={step.label}>
+      <div className="dashboard-progress-meter" aria-label={`Ticket lifecycle progress ${processProgressPercent}%`}>
+        <div>
+          <span>Lifecycle progress</span>
+          <strong>{processProgressPercent}%</strong>
+        </div>
+        <div className="dashboard-progress-track" aria-hidden="true">
+          <span style={{ width: `${processProgressPercent}%` }} />
+        </div>
+      </div>
+      <ol className="dashboard-process" aria-label="Ticket process">
+        {processSteps.map((step, index) => (
+          <li
+            className={`dashboard-process-step step-${step.state} ${step.label === currentProcessStep?.label ? "is-current" : ""}`}
+            key={step.label}
+          >
+            <div className="dashboard-process-step-top">
+              <span className="dashboard-process-index">{index + 1}</span>
+              <span className={`dashboard-process-state step-${step.state}`}>{step.status}</span>
+            </div>
             <strong>{step.label}</strong>
             <span>{step.detail}</span>
-          </div>
+            {nextProcessStep?.label === step.label ? <small className="dashboard-process-next-label">Next stage</small> : null}
+          </li>
         ))}
-      </div>
+      </ol>
       <div className="dashboard-focus-grid">
         <div>
           <h3>Active gates</h3>
@@ -8443,6 +13315,7 @@ function DashboardFocusPanel({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function KpiStrip({
   tickets,
   role,
@@ -8463,9 +13336,13 @@ function KpiStrip({
 
   const items = [
     {
-      label: "Open governed work",
+      label: role === "requester" ? "My open tickets" : "Open governed work",
       value: formatCount(openTickets),
-      detail: role === "admin" ? "Across configured PRUs and sites" : "Visible to current role",
+      detail: role === "requester"
+        ? "Submitted by you"
+        : role === "admin"
+          ? "Across configured PRUs and sites"
+          : "Visible to current role",
       state: "healthy" as SlaState
     },
     {
@@ -8517,6 +13394,577 @@ function IntegrationAdminWorkspace({
     <div className="focused-layout integration-admin-workspace">
       <IntegrationHealthPanel config={config} role={role} />
       <IntegrationConfigurationPanel config={config} onConfigChange={onConfigChange} />
+    </div>
+  );
+}
+
+function ReleasePlanBoard({
+  config,
+  jiraBulkSyncError,
+  jiraBulkSyncMessage,
+  jiraBulkSyncState,
+  tickets,
+  onOpenTicket,
+  onSyncLinkedJiraTickets
+}: {
+  config: AdminConfig;
+  jiraBulkSyncError: string;
+  jiraBulkSyncMessage: string;
+  jiraBulkSyncState: "idle" | "syncing";
+  tickets: Ticket[];
+  onOpenTicket: (ticketKey: string) => void;
+  onSyncLinkedJiraTickets: () => Promise<void>;
+}) {
+  const [activeTab, setActiveTab] = useState<ReleasePlanTab>("releases");
+  const [releaseFilter, setReleaseFilter] = useState(REPORT_ALL_VALUE);
+  const [sprintFilter, setSprintFilter] = useState(REPORT_ALL_VALUE);
+  const [boardFilter, setBoardFilter] = useState(REPORT_ALL_VALUE);
+  const jiraMetadata = useReleasePlanJiraMetadata(config, tickets);
+  const versionDateLookup = jiraMetadata.versionDateLookup;
+  const releaseTickets = useMemo(
+    () => tickets.map((ticket) => getReleasePlanTicket(ticket, versionDateLookup, config)),
+    [config, tickets, versionDateLookup]
+  );
+  const boardOptions = useMemo(
+    () => [
+      { value: REPORT_ALL_VALUE, label: "All product boards" },
+      ...uniqueSortedReportValues(
+        [
+          ...tickets.map((ticket) => ticket.jiraDraft.board?.trim() || "No product board"),
+          ...jiraMetadata.boards.map((board) => board.name)
+        ]
+      ).map((board) => ({
+        value: board,
+        label: board
+      }))
+    ],
+    [jiraMetadata.boards, tickets]
+  );
+  const releaseOptions = useMemo(
+    () => [
+      { value: REPORT_ALL_VALUE, label: "All releases" },
+      ...uniqueSortedReportValues([
+        ...releaseTickets.map((item) => item.releaseVersion),
+        ...Array.from(versionDateLookup.values()).map((versionDate) => versionDate.name)
+      ]).map((releaseVersion) => ({
+        value: releaseVersion,
+        label: releaseVersion
+      }))
+    ],
+    [releaseTickets, versionDateLookup]
+  );
+  const sprintOptions = useMemo(
+    () => [
+      { value: REPORT_ALL_VALUE, label: "All sprints" },
+      ...uniqueSortedReportValues([
+        ...releaseTickets
+          .filter((item) => {
+            const board = item.ticket.jiraDraft.board?.trim() || "No product board";
+            return boardFilter === REPORT_ALL_VALUE || board === boardFilter;
+          })
+          .filter((item) => item.sprint !== "No sprint")
+          .map((item) => item.sprint),
+        ...jiraMetadata.sprints
+          .filter((sprint) => boardFilter === REPORT_ALL_VALUE || sprint.boardName === boardFilter)
+          .map((sprint) => sprint.name)
+      ]).map((sprint) => ({
+        value: sprint,
+        label: sprint
+      }))
+    ],
+    [boardFilter, jiraMetadata.sprints, releaseTickets]
+  );
+  useEffect(() => {
+    if (sprintFilter !== REPORT_ALL_VALUE && !sprintOptions.some((option) => option.value === sprintFilter)) {
+      setSprintFilter(REPORT_ALL_VALUE);
+    }
+  }, [sprintFilter, sprintOptions]);
+  const filteredTickets = useMemo(
+    () =>
+      tickets.filter((ticket) => {
+        const board = ticket.jiraDraft.board?.trim() || "No product board";
+
+        if (boardFilter !== REPORT_ALL_VALUE && board !== boardFilter) {
+          return false;
+        }
+
+        if (activeTab === "releases" && releaseFilter !== REPORT_ALL_VALUE && getReleasePlanVersion(ticket) !== releaseFilter) {
+          return false;
+        }
+
+        if (activeTab === "sprintPlanning") {
+          const sprint = ticket.jiraDraft.sprint?.trim() || "No sprint";
+
+          if (sprint === "No sprint") {
+            return false;
+          }
+
+          if (sprintFilter !== REPORT_ALL_VALUE && sprint !== sprintFilter) {
+            return false;
+          }
+        }
+
+        return true;
+      }),
+    [activeTab, boardFilter, releaseFilter, sprintFilter, tickets]
+  );
+  const releaseFilteredTickets = useMemo(
+    () =>
+      tickets.filter((ticket) => {
+        const board = ticket.jiraDraft.board?.trim() || "No product board";
+
+        if (boardFilter !== REPORT_ALL_VALUE && board !== boardFilter) {
+          return false;
+        }
+
+        if (releaseFilter !== REPORT_ALL_VALUE && getReleasePlanVersion(ticket) !== releaseFilter) {
+          return false;
+        }
+
+        return true;
+      }),
+    [boardFilter, releaseFilter, tickets]
+  );
+  const sprintFilteredTickets = useMemo(
+    () =>
+      tickets.filter((ticket) => {
+        const board = ticket.jiraDraft.board?.trim() || "No product board";
+        const sprint = ticket.jiraDraft.sprint?.trim() || "No sprint";
+
+        if (boardFilter !== REPORT_ALL_VALUE && board !== boardFilter) {
+          return false;
+        }
+
+        if (sprint === "No sprint") {
+          return false;
+        }
+
+        if (sprintFilter === REPORT_ALL_VALUE) {
+          return true;
+        }
+
+        return sprint === sprintFilter;
+      }),
+    [boardFilter, sprintFilter, tickets]
+  );
+  const filteredMetadataSprints = useMemo(
+    () =>
+      jiraMetadata.sprints.filter((sprint) => {
+        if (boardFilter !== REPORT_ALL_VALUE && sprint.boardName !== boardFilter) {
+          return false;
+        }
+
+        if (sprintFilter !== REPORT_ALL_VALUE && sprint.name !== sprintFilter) {
+          return false;
+        }
+
+        return true;
+      }),
+    [boardFilter, jiraMetadata.sprints, sprintFilter]
+  );
+  const releaseGroups = useMemo(
+    () => buildReleasePlanGroups(releaseFilteredTickets, versionDateLookup, config),
+    [config, releaseFilteredTickets, versionDateLookup]
+  );
+  const sprintGroups = useMemo(
+    () => buildSprintPlanGroups(sprintFilteredTickets, versionDateLookup, config, filteredMetadataSprints),
+    [config, filteredMetadataSprints, sprintFilteredTickets, versionDateLookup]
+  );
+  const filteredReleaseTickets = useMemo(
+    () => filteredTickets.map((ticket) => getReleasePlanTicket(ticket, versionDateLookup, config)),
+    [config, filteredTickets, versionDateLookup]
+  );
+  const plannedReleaseTickets = filteredReleaseTickets.filter((item) => item.releaseVersion !== releasePlanUnplannedLabel).length;
+  const activeSprintCount = new Set(
+    filteredReleaseTickets.filter((item) => item.sprint !== "No sprint").map((item) => item.sprint)
+  ).size;
+  const activeBoardCount = new Set(
+    filteredTickets.map((ticket) => ticket.jiraDraft.board?.trim() || "No product board")
+  ).size;
+  const prodDateCount = filteredReleaseTickets.filter((item) => !isMissingReleasePlanValue(item.prodDate)).length;
+  const totalEstimateHours = filteredTickets.reduce((sum, ticket) => sum + getTicketEstimateHours(ticket), 0);
+  const remainingHours = filteredTickets.reduce((sum, ticket) => sum + getTicketRemainingHours(ticket), 0);
+
+  return (
+    <section className="panel release-plan-board">
+      <PanelHeader
+        title="Release plan"
+        description="End-user release view grouped by Jira fix version, sprint, pre-prod date, and production date."
+        iconName="calendar"
+      />
+      <div className="release-plan-tabs" role="tablist" aria-label="Release planning views">
+        <button
+          aria-selected={activeTab === "releases"}
+          className={activeTab === "releases" ? "is-active" : ""}
+          role="tab"
+          type="button"
+          onClick={() => setActiveTab("releases")}
+        >
+          Releases
+        </button>
+        <button
+          aria-selected={activeTab === "sprintPlanning"}
+          className={activeTab === "sprintPlanning" ? "is-active" : ""}
+          role="tab"
+          type="button"
+          onClick={() => setActiveTab("sprintPlanning")}
+        >
+          Sprint planning
+        </button>
+      </div>
+      <div className="release-plan-controls">
+        {activeTab === "releases" ? (
+          <label className="release-plan-filter">
+            <span>Release</span>
+            <select value={releaseFilter} onChange={(event) => setReleaseFilter(event.target.value)}>
+              {releaseOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label className="release-plan-filter">
+            <span>Sprint</span>
+            <select value={sprintFilter} onChange={(event) => setSprintFilter(event.target.value)}>
+              {sprintOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="release-plan-filter">
+          <span>Product board</span>
+          <select value={boardFilter} onChange={(event) => setBoardFilter(event.target.value)}>
+            {boardOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => {
+            if (activeTab === "releases") {
+              setReleaseFilter(REPORT_ALL_VALUE);
+            } else {
+              setSprintFilter(REPORT_ALL_VALUE);
+            }
+            setBoardFilter(REPORT_ALL_VALUE);
+          }}
+        >
+          Reset filters
+        </button>
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={jiraBulkSyncState === "syncing"}
+          onClick={() => void onSyncLinkedJiraTickets()}
+        >
+          {jiraBulkSyncState === "syncing" ? "Syncing Jira..." : "Sync Jira data"}
+        </button>
+      </div>
+      {jiraBulkSyncError || jiraBulkSyncMessage ? (
+        <p className={jiraBulkSyncError ? "admin-form-error" : "admin-form-success"} role="status">
+          {jiraBulkSyncError || jiraBulkSyncMessage}
+        </p>
+      ) : null}
+      <div className="release-plan-summary-grid">
+        <ReleasePlanMetric label="Visible tickets" value={filteredTickets.length} />
+        <ReleasePlanMetric label="Releases" value={releaseGroups.length} />
+        <ReleasePlanMetric label="Planned tickets" value={plannedReleaseTickets} />
+        <ReleasePlanMetric label="Sprints" value={activeSprintCount} />
+        <ReleasePlanMetric label="Product boards" value={activeBoardCount} />
+        <ReleasePlanMetric label="Prod dates" value={prodDateCount} />
+      </div>
+      {activeTab === "releases" ? (
+        <div className="release-plan-list">
+          {releaseGroups.length === 0 ? (
+            <EmptyState title="No release plan items" body="No visible tickets match the selected release filters." />
+          ) : null}
+          {releaseGroups.map((group) => (
+            <ReleasePlanGroupCard
+              config={config}
+              group={group}
+              key={`${group.id}-${group.releaseVersion}`}
+              onOpenTicket={onOpenTicket}
+            />
+          ))}
+        </div>
+      ) : (
+        <SprintPlanningBoard
+          config={config}
+          groups={sprintGroups}
+          remainingHours={remainingHours}
+          taskCount={filteredTickets.length}
+          totalEstimateHours={totalEstimateHours}
+          onOpenTicket={onOpenTicket}
+        />
+      )}
+    </section>
+  );
+}
+
+function ReleasePlanMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <article className="release-plan-metric">
+      <span>{label}</span>
+      <strong>{formatCount(value)}</strong>
+    </article>
+  );
+}
+
+function SprintPlanningBoard({
+  config,
+  groups,
+  totalEstimateHours,
+  remainingHours,
+  taskCount,
+  onOpenTicket
+}: {
+  config: AdminConfig;
+  groups: SprintPlanGroup[];
+  totalEstimateHours: number;
+  remainingHours: number;
+  taskCount: number;
+  onOpenTicket: (ticketKey: string) => void;
+}) {
+  const resourceCount = new Set(groups.flatMap((group) => group.resources)).size;
+
+  return (
+    <div className="sprint-planning-board">
+      <div className="sprint-planning-summary">
+        <ReleasePlanMetric label="Task number" value={taskCount} />
+        <ReleasePlanMetric label="Estimate hours" value={totalEstimateHours} />
+        <ReleasePlanMetric label="Remain hours" value={remainingHours} />
+        <ReleasePlanMetric label="Resources" value={resourceCount} />
+      </div>
+      <div className="sprint-plan-list">
+        {groups.length === 0 ? (
+          <EmptyState title="No sprint plan items" body="No visible tickets match the selected sprint filters." />
+        ) : null}
+        {groups.map((group) => (
+          <SprintPlanGroupCard config={config} group={group} key={`${group.id}-${group.sprint}`} onOpenTicket={onOpenTicket} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SprintPlanGroupCard({
+  config,
+  group,
+  onOpenTicket
+}: {
+  config: AdminConfig;
+  group: SprintPlanGroup;
+  onOpenTicket: (ticketKey: string) => void;
+}) {
+  return (
+    <article className="sprint-plan-group">
+      <header className="sprint-plan-header">
+        <div>
+          <span>Sprint</span>
+          <h3>{group.sprint}</h3>
+          <small>{group.releaseVersions.join(", ") || "No linked release"}</small>
+        </div>
+        <div className="sprint-plan-header-metrics">
+          <span>{formatCount(group.taskCount)} tasks</span>
+          <span>{formatCount(group.totalEstimateHours)}h estimate</span>
+          <span>{formatCount(group.remainingHours)}h remain</span>
+        </div>
+      </header>
+      <div className="sprint-plan-meta-grid">
+        <div>
+          <span>Product board</span>
+          <strong>{group.boardNames.join(", ") || "No product board"}</strong>
+        </div>
+        <div>
+          <span>Sprint state</span>
+          <strong>{group.state || "Not synced"}</strong>
+        </div>
+        <div>
+          <span>Start</span>
+          <strong>{group.startDate || "Not planned"}</strong>
+        </div>
+        <div>
+          <span>End</span>
+          <strong>{group.endDate || "Not planned"}</strong>
+        </div>
+      </div>
+      <div className="sprint-plan-resource-row">
+        <span>Resources</span>
+        <strong>{group.resources.join(", ") || "Unassigned"}</strong>
+      </div>
+      <SprintTaskDetailTable config={config} group={group} onOpenTicket={onOpenTicket} />
+    </article>
+  );
+}
+
+function SprintTaskDetailTable({
+  config,
+  group,
+  onOpenTicket
+}: {
+  config: AdminConfig;
+  group: SprintPlanGroup;
+  onOpenTicket: (ticketKey: string) => void;
+}) {
+  const tasks = group.lanes.flatMap((lane) => lane.tickets);
+
+  return (
+    <div className="sprint-task-details">
+      <header>
+        <div>
+          <span>Task details</span>
+          <strong>{formatCount(tasks.length)} tasks in this sprint</strong>
+        </div>
+      </header>
+      {tasks.length === 0 ? (
+        <p>No portal tasks are linked to this sprint yet.</p>
+      ) : (
+        <div className="sprint-task-table" aria-label={`${group.sprint} task details`}>
+          <div className="sprint-task-table-header">
+            <span>Ticket</span>
+            <span>Jira ID</span>
+            <span>Product / PRU</span>
+            <span>Status</span>
+            <span>Resource</span>
+            <span>Estimate</span>
+            <span>Remain</span>
+            <span>Release</span>
+          </div>
+          {tasks.map((item) => (
+            <button
+              className="sprint-task-table-row"
+              key={`${group.id}-${item.ticket.key}`}
+              type="button"
+              onClick={() => onOpenTicket(item.ticket.key)}
+            >
+              <span>
+                <strong>{item.ticket.key}</strong>
+                <small>{item.ticket.title}</small>
+              </span>
+              <span>
+                {item.ticket.relatedJiraKey ? (
+                  <JiraIssueLink config={config} jiraKey={item.ticket.relatedJiraKey} />
+                ) : (
+                  <strong>No Jira ID</strong>
+                )}
+              </span>
+              <span>
+                <strong>{item.ticket.product || "No product"}</strong>
+                <small>{item.ticket.pru || item.ticket.module || "No PRU"}</small>
+              </span>
+              <span>
+                <span className={`jira-follow-up-badge tone-${item.sprintStatusTone}`}>{item.sprintStatusLabel}</span>
+              </span>
+              <span>{getTicketResourceName(item.ticket)}</span>
+              <span>{formatCount(getTicketEstimateHours(item.ticket))}h</span>
+              <span>{formatCount(getTicketRemainingHours(item.ticket))}h</span>
+              <span>
+                <strong>{item.releaseVersion}</strong>
+                <small>{formatReleasePlanDate(item.prodDate)}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReleasePlanGroupCard({
+  config,
+  group,
+  onOpenTicket
+}: {
+  config: AdminConfig;
+  group: ReleasePlanGroup;
+  onOpenTicket: (ticketKey: string) => void;
+}) {
+  return (
+    <article className="release-plan-group">
+      <header className="release-plan-group-header">
+        <div>
+          <span>Release</span>
+          <h3>{group.releaseVersion}</h3>
+        </div>
+        <strong>{formatCount(group.tickets.length)} tickets</strong>
+      </header>
+      <div className="release-plan-date-grid">
+        <ReleasePlanDateBlock label="Pre-prod release" value={group.preprodDate} />
+        <ReleasePlanDateBlock label="Production release" value={group.prodDate} />
+        <div className="release-plan-sprints">
+          <span>Sprints</span>
+          <strong>{group.sprintNames.join(", ")}</strong>
+        </div>
+      </div>
+      <div className="release-plan-status-row" aria-label="Sprint status summary">
+        {group.statusCounts.map((item) => (
+          <span className={`jira-follow-up-badge tone-${item.tone}`} key={`${group.id}-${item.label}`}>
+            {item.label}: {formatCount(item.value)}
+          </span>
+        ))}
+      </div>
+      <div className="release-plan-ticket-table" role="table" aria-label={`${group.releaseVersion} tickets`}>
+        <div className="release-plan-ticket-header" role="row">
+          <span>Ticket</span>
+          <span>Jira ID</span>
+          <span>Product / PRU</span>
+          <span>Product board</span>
+          <span>Sprint</span>
+          <span>Status</span>
+          <span>Pre-prod</span>
+          <span>Prod</span>
+        </div>
+        {group.tickets.map((item) => (
+          <button
+            className="release-plan-ticket-row"
+            key={`${group.id}-${item.ticket.key}`}
+            type="button"
+            role="row"
+            onClick={() => onOpenTicket(item.ticket.key)}
+          >
+            <span className="release-plan-ticket-main">
+              <strong>{item.ticket.key}</strong>
+              <small>{item.ticket.title}</small>
+            </span>
+            <span>
+              {item.ticket.relatedJiraKey ? (
+                <JiraIssueLink config={config} jiraKey={item.ticket.relatedJiraKey} />
+              ) : (
+                <strong>No Jira ID</strong>
+              )}
+            </span>
+            <span>
+              <strong>{item.ticket.product || "No product"}</strong>
+              <small>{item.ticket.pru || "No PRU"}</small>
+            </span>
+            <span>{item.ticket.jiraDraft.board?.trim() || "No product board"}</span>
+            <span>{item.sprint}</span>
+            <span>
+              <span className={`jira-follow-up-badge tone-${item.sprintStatusTone}`}>{item.sprintStatusLabel}</span>
+            </span>
+            <span>{formatReleasePlanDate(item.preprodDate)}</span>
+            <span>{formatReleasePlanDate(item.prodDate)}</span>
+          </button>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function ReleasePlanDateBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="release-plan-date-block">
+      <span>{label}</span>
+      <strong>{formatReleasePlanDate(value)}</strong>
     </div>
   );
 }
@@ -8623,14 +14071,12 @@ function TicketListWorkspace({
   onAddComment,
   onCreateClarification,
   onCreateEscalation,
-  onCreateJira,
+  onPostJiraComment,
   onReopenTicket,
-  onUpdateJiraDraft,
-  onUpdateJiraIssue,
-  onUpdateJiraLink,
+  onUpdateTicket,
   onUpdateWorkflowStatus,
   onUpdateEscalationStatus,
-  onUpdateJiraStatus,
+  onSyncJiraActivity,
   onTabChange
 }: {
   tickets: Ticket[];
@@ -8651,19 +14097,18 @@ function TicketListWorkspace({
   onAddComment: (ticketKey: string, body: string, visibility: VisibilityLevel) => void;
   onCreateClarification: (ticketKey: string, input: NewClarificationThreadInput) => void;
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
-  onCreateJira: CreateJiraHandler;
+  onPostJiraComment?: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
-  onUpdateJiraDraft: (ticketKey: string, draftUpdate: JiraDraftUpdateInput) => void;
-  onUpdateJiraIssue: UpdateJiraIssueHandler;
-  onUpdateJiraLink: UpdateJiraLinkHandler;
+  onUpdateTicket: UpdateTicketHandler;
   onUpdateWorkflowStatus: UpdateWorkflowStatusHandler;
   onUpdateEscalationStatus: (
     ticketKey: string,
     escalationId: string,
     status: EscalationStatus,
-    decisionNote: string
+    decisionNote: string,
+    details?: EscalationStatusUpdateDetails
   ) => void;
-  onUpdateJiraStatus: (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+  onSyncJiraActivity: SyncJiraActivityHandler;
   onTabChange: (tab: DetailTab) => void;
 }) {
   const [search, setSearch] = useState("");
@@ -8674,10 +14119,6 @@ function TicketListWorkspace({
   const [submitterFilter, setSubmitterFilter] = useState("all");
   const [sortBy, setSortBy] = useState<TicketListSortKey>("updatedAt");
   const [mineOnly, setMineOnly] = useState(false);
-  const currentSubmitterLabels = useMemo(
-    () => new Set([selectedPersona.displayName, selectedPersona.roleLabel, getConfigRoleLabel(config, role), "YS"]),
-    [config, role, selectedPersona.displayName, selectedPersona.roleLabel]
-  );
 
   const rows = useMemo<TicketListRow[]>(
     () =>
@@ -8750,7 +14191,6 @@ function TicketListWorkspace({
 
   const filteredRows = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-    const matchesCurrentUser = (submitter: string) => currentSubmitterLabels.has(submitter);
     const matchesSearch = (row: TicketListRow) =>
       [
         row.ticket.key,
@@ -8791,19 +14231,19 @@ function TicketListWorkspace({
         return false;
       }
 
-      if (mineOnly && !matchesCurrentUser(row.submitter)) {
+      if (mineOnly && !ticketWasSubmittedByPersona(row.ticket, selectedPersona)) {
         return false;
       }
 
       return true;
     });
   }, [
-    currentSubmitterLabels,
     mineOnly,
     priorityFilter,
     productFilter,
     rows,
     search,
+    selectedPersona,
     statusFilter,
     submitterFilter,
     typeFilter
@@ -8838,10 +14278,55 @@ function TicketListWorkspace({
     setMineOnly(false);
   }
 
+  if (selectedTicket && isDetailOpen) {
+    return (
+      <div className="ticket-list-workspace ticket-list-detail-mode">
+        <div className="ticket-detail-toolbar">
+          <button className="secondary-button" type="button" onClick={() => onDetailOpenChange(false)}>
+            <TegelIcon name="arrow_left" size="16px" />
+            Back to ticket list
+          </button>
+          <span>
+            {selectedTicket.key} · {selectedTicket.title}
+          </span>
+        </div>
+        <TicketDetail
+          activeTab={activeTab}
+          config={config}
+          selectedPersona={selectedPersona}
+          onAddClarificationReply={onAddClarificationReply}
+          onAddAttachments={onAddAttachments}
+          onReplaceAttachmentContent={onReplaceAttachmentContent}
+          onAddComment={onAddComment}
+          onCreateClarification={onCreateClarification}
+          onCreateEscalation={onCreateEscalation}
+          onPostJiraComment={onPostJiraComment}
+          onReopenTicket={onReopenTicket}
+          onTabChange={onTabChange}
+          onUpdateTicket={onUpdateTicket}
+          onUpdateWorkflowStatus={onUpdateWorkflowStatus}
+          onUpdateEscalationStatus={onUpdateEscalationStatus}
+          onSyncJiraActivity={onSyncJiraActivity}
+          role={role}
+          ticket={selectedTicket}
+          visibleAudit={visibleAudit}
+          visibleComments={visibleComments}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="ticket-list-workspace">
       <section className="ticket-list-filter-card" aria-labelledby="ticket-list-filters-title">
-        <h2 id="ticket-list-filters-title">Filters</h2>
+        <div className="ticket-list-filter-heading">
+          <h2 id="ticket-list-filters-title">Find tickets</h2>
+          <p>
+            {role === "requester"
+              ? "Dashboard shows your submitted tickets. This list lets you search across all support tickets."
+              : "Use filters to narrow the tickets visible to your current role."}
+          </p>
+        </div>
         <div className="ticket-list-filters-grid">
           <label className="ticket-list-field">
             <span>Search</span>
@@ -8918,7 +14403,7 @@ function TicketListWorkspace({
             type="button"
             onClick={() => setMineOnly((isActive) => !isActive)}
           >
-            My raised tickets
+            {role === "requester" ? "Only my tickets" : "My raised tickets"}
           </button>
           <button className="secondary-button" type="button" onClick={resetFilters}>
             Reset filters
@@ -8987,7 +14472,7 @@ function TicketListWorkspace({
                     </span>
                   </td>
                   <td>
-                    <span className={`priority priority-${toClassName(row.ticket.priority)}`}>
+                    <span className={`priority priority-${getPriorityToneClassName(row.ticket.priority)}`}>
                       {row.ticket.priority}
                     </span>
                   </td>
@@ -9015,41 +14500,19 @@ function TicketListWorkspace({
         </div>
       </section>
 
-      {selectedTicket && isDetailOpen ? (
-        <TicketDetail
-          activeTab={activeTab}
-          config={config}
-          onAddClarificationReply={onAddClarificationReply}
-          onAddAttachments={onAddAttachments}
-          onReplaceAttachmentContent={onReplaceAttachmentContent}
-          onAddComment={onAddComment}
-          onCreateClarification={onCreateClarification}
-          onCreateEscalation={onCreateEscalation}
-          onCreateJira={onCreateJira}
-          onReopenTicket={onReopenTicket}
-          onTabChange={onTabChange}
-          onUpdateJiraDraft={onUpdateJiraDraft}
-          onUpdateJiraIssue={onUpdateJiraIssue}
-          onUpdateJiraLink={onUpdateJiraLink}
-          onUpdateWorkflowStatus={onUpdateWorkflowStatus}
-          onUpdateEscalationStatus={onUpdateEscalationStatus}
-          onUpdateJiraStatus={onUpdateJiraStatus}
-          role={role}
-          ticket={selectedTicket}
-          visibleAudit={visibleAudit}
-          visibleComments={visibleComments}
-        />
-      ) : null}
     </div>
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function GovernanceQueue({
   tickets: queueTickets,
+  role,
   selectedTicketKey,
   onSelectTicket
 }: {
   tickets: Ticket[];
+  role: RoleKey;
   selectedTicketKey: string;
   onSelectTicket: (ticketKey: string) => void;
 }) {
@@ -9082,8 +14545,12 @@ function GovernanceQueue({
   return (
     <section className="panel queue-panel">
       <PanelHeader
-        title="Governance queue"
-        description="Tickets grouped by status."
+        title={role === "requester" ? "My submitted tickets" : "Governance queue"}
+        description={
+          role === "requester"
+            ? "Tickets you created, grouped by current status."
+            : "Role-visible tickets grouped by current status."
+        }
         iconName="folder"
       />
       <div className="queue-filter-bar" aria-label="Queue status filters">
@@ -9104,7 +14571,11 @@ function GovernanceQueue({
         {filteredQueueTickets.length === 0 ? (
           <EmptyState
             title="No tickets in this bucket"
-            body="No governed work matches the current queue status and search scope."
+            body={
+              role === "requester"
+                ? "No submitted tickets match this status and search scope."
+                : "No governed work matches the current queue status and search scope."
+            }
           />
         ) : null}
         {filteredQueueTickets.map((ticket) => {
@@ -9135,7 +14606,7 @@ function GovernanceQueue({
                 <span className={`queue-status queue-status-${bucket}`}>
                   {getQueueBucketLabel(bucket)}
                 </span>
-                <span className={`priority priority-${toClassName(ticket.priority)}`}>
+                <span className={`priority priority-${getPriorityToneClassName(ticket.priority)}`}>
                   {ticket.priority}
                 </span>
                 <small>{ticket.slaLabel}</small>
@@ -9148,6 +14619,28 @@ function GovernanceQueue({
   );
 }
 
+function getTicketTabDescription(tab: DetailTab): string {
+  switch (tab) {
+    case "Workflow":
+      return "Approval and review steps, showing what is done, current, waiting, or blocked.";
+    case "Clarifications":
+      return "Questions and answers needed before the ticket can move forward.";
+    case "Comments":
+      return "Public, internal, architecture, Jira, and system comments visible to this role.";
+    case "Jira":
+      return "Read-only Jira handoff, current Jira status, and Jira comments.";
+    case "Escalations":
+      return "Raised risks or decisions that need extra attention.";
+    case "Audit":
+      return "System history for status changes, approvals, Jira sync, and configuration actions.";
+    case "Attachments":
+      return "Files connected to this support ticket.";
+    case "Overview":
+    default:
+      return "Ticket summary, request details, and key fields.";
+  }
+}
+
 function TicketDetail({
   ticket,
   activeTab,
@@ -9155,20 +14648,19 @@ function TicketDetail({
   visibleAudit,
   visibleComments,
   role,
+  selectedPersona,
   onAddClarificationReply,
   onAddAttachments,
   onReplaceAttachmentContent,
   onAddComment,
   onCreateClarification,
   onCreateEscalation,
-  onCreateJira,
+  onPostJiraComment,
   onReopenTicket,
-  onUpdateJiraDraft,
-  onUpdateJiraIssue,
-  onUpdateJiraLink,
+  onUpdateTicket,
   onUpdateWorkflowStatus,
   onUpdateEscalationStatus,
-  onUpdateJiraStatus,
+  onSyncJiraActivity,
   onTabChange
 }: {
   ticket: Ticket;
@@ -9177,25 +14669,25 @@ function TicketDetail({
   visibleAudit: Ticket["audit"];
   visibleComments: Ticket["comments"];
   role: RoleKey;
+  selectedPersona: RolePersonaOption;
   onAddClarificationReply: (ticketKey: string, threadId: string, body: string) => void;
   onAddAttachments: (ticketKey: string, attachments: NewTicketAttachmentInput[]) => void;
   onReplaceAttachmentContent: (ticketKey: string, attachmentId: string, attachment: NewTicketAttachmentInput) => void;
   onAddComment: (ticketKey: string, body: string, visibility: VisibilityLevel) => void;
   onCreateClarification: (ticketKey: string, input: NewClarificationThreadInput) => void;
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
-  onCreateJira: CreateJiraHandler;
+  onPostJiraComment?: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
-  onUpdateJiraDraft: (ticketKey: string, draftUpdate: JiraDraftUpdateInput) => void;
-  onUpdateJiraIssue: UpdateJiraIssueHandler;
-  onUpdateJiraLink: UpdateJiraLinkHandler;
+  onUpdateTicket: UpdateTicketHandler;
   onUpdateWorkflowStatus: UpdateWorkflowStatusHandler;
   onUpdateEscalationStatus: (
     ticketKey: string,
     escalationId: string,
     status: EscalationStatus,
-    decisionNote: string
+    decisionNote: string,
+    details?: EscalationStatusUpdateDetails
   ) => void;
-  onUpdateJiraStatus: (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+  onSyncJiraActivity: SyncJiraActivityHandler;
   onTabChange: (tab: DetailTab) => void;
 }) {
   const canReopenTicket = canReopenTicketForRole(ticket, role);
@@ -9214,7 +14706,7 @@ function TicketDetail({
             <span className={`ticket-status-chip tag-variant-${getStatusColorVariant(config, currentStatusLabel)}`}>
               {currentStatusLabel}
             </span>
-            <span className={`priority priority-${toClassName(ticket.priority)}`}>
+            <span className={`priority priority-${getPriorityToneClassName(ticket.priority)}`}>
               {ticket.priority}
             </span>
             <span className={`risk risk-${toClassName(ticket.risk)}`}>{ticket.risk} risk</span>
@@ -9245,9 +14737,15 @@ function TicketDetail({
           </button>
         ))}
       </div>
+      <p className="tab-helper">{getTicketTabDescription(activeTab)}</p>
       <div className="tab-content">
         {activeTab === "Overview" ? (
-          <OverviewPanel ticket={ticket} config={config} comments={visibleComments} onAddComment={onAddComment} role={role} />
+          <OverviewPanel
+            ticket={ticket}
+            config={config}
+            onUpdateTicket={onUpdateTicket}
+            selectedPersona={selectedPersona}
+          />
         ) : null}
         {activeTab === "Workflow" ? (
           <WorkflowPanel
@@ -9271,19 +14769,20 @@ function TicketDetail({
             role={role}
           />
         ) : null}
+        {activeTab === "Comments" ? (
+          <CommentPanel ticket={ticket} comments={visibleComments} embedded onAddComment={onAddComment} role={role} />
+        ) : null}
         {activeTab === "Jira" ? (
           <JiraSyncPanel
             ticket={ticket}
             config={config}
+            canManageJiraActions={false}
             embedded
             expanded
-            onCreateJira={onCreateJira}
-            onReopenTicket={onReopenTicket}
-            onUpdateJiraDraft={onUpdateJiraDraft}
-            onUpdateJiraIssue={onUpdateJiraIssue}
-            onUpdateJiraLink={onUpdateJiraLink}
-            onUpdateJiraStatus={onUpdateJiraStatus}
+            onPostJiraComment={onPostJiraComment}
+            onSyncJiraActivity={onSyncJiraActivity}
             role={role}
+            surface="ticket"
           />
         ) : null}
         {activeTab === "Escalations" ? (
@@ -9311,19 +14810,228 @@ function TicketDetail({
   );
 }
 
-function OverviewPanel({
+function TicketUpdatePanel({
   ticket,
   config,
-  comments,
-  role,
-  onAddComment
+  selectedPersona,
+  onUpdateTicket
 }: {
   ticket: Ticket;
   config: AdminConfig;
-  comments: Ticket["comments"];
-  role: RoleKey;
-  onAddComment: (ticketKey: string, body: string, visibility: VisibilityLevel) => void;
+  selectedPersona: RolePersonaOption;
+  onUpdateTicket: UpdateTicketHandler;
 }) {
+  const [form, setForm] = useState<TicketUpdateInput>(() => buildTicketUpdateForm(ticket));
+  const [formError, setFormError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+  const canEdit = canEditTicketForPersona(config, selectedPersona, ticket);
+  const priorityOptions = useMemo(
+    () => getTicketUpdateOptionLabels(config.priorities, ticket.priority),
+    [config.priorities, ticket.priority]
+  );
+  const riskOptions = useMemo(
+    () => getTicketUpdateOptionLabels(config.riskOptions, ticket.risk),
+    [config.riskOptions, ticket.risk]
+  );
+
+  useEffect(() => {
+    setForm(buildTicketUpdateForm(ticket));
+    setFormError("");
+  }, [ticket]);
+
+  useEffect(() => {
+    setSuccessMessage("");
+  }, [ticket.key]);
+
+  if (!canEdit) {
+    return null;
+  }
+
+  function formHasChanges(input: TicketUpdateInput): boolean {
+    const title = input.title.trim() || ticket.title;
+    const description = normalizeRichTextForStorage(input.description);
+    const businessImpact = normalizeRichTextForStorage(input.businessImpact);
+    const currentDescription = normalizeRichTextForStorage(ticket.description);
+    const currentBusinessImpact = normalizeRichTextForStorage(getEditableTicketBusinessImpact(ticket));
+
+    return (
+      title !== ticket.title ||
+      input.state !== ticket.state ||
+      input.priority !== ticket.priority ||
+      input.risk !== ticket.risk ||
+      description !== currentDescription ||
+      businessImpact !== currentBusinessImpact
+    );
+  }
+
+  function submitUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setFormError("");
+    setSuccessMessage("");
+
+    if (!form.title.trim()) {
+      setFormError("Title is required.");
+      return;
+    }
+
+    if (!formHasChanges(form) && isRichTextBlank(form.requesterNote)) {
+      setFormError("Change at least one field or add a requester note.");
+      return;
+    }
+
+    onUpdateTicket(ticket.key, form);
+    setForm((currentForm) => ({ ...currentForm, requesterNote: "" }));
+    setSuccessMessage("Ticket update saved and copied to requester comments.");
+  }
+
+  return (
+    <section className="ticket-update-panel embedded-section" aria-labelledby={`ticket-update-${ticket.key}`}>
+      <PanelHeader
+        title="Ticket correction"
+        description={`${selectedPersona.roleLabel} update with requester copy and audit trail.`}
+        iconName="edit"
+      />
+      <form className="ticket-update-form admin-form" onSubmit={submitUpdate}>
+        <div className="ticket-update-grid">
+          <label className="form-field">
+            <span>Lifecycle status</span>
+            <select
+              value={form.state}
+              onChange={(event) =>
+                setForm((currentForm) => ({
+                  ...currentForm,
+                  state: event.target.value as TicketState
+                }))
+              }
+            >
+              {ticketStateOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Priority</span>
+            <select
+              value={form.priority}
+              onChange={(event) =>
+                setForm((currentForm) => ({
+                  ...currentForm,
+                  priority: event.target.value
+                }))
+              }
+            >
+              {priorityOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Risk</span>
+            <select
+              value={form.risk}
+              onChange={(event) =>
+                setForm((currentForm) => ({
+                  ...currentForm,
+                  risk: event.target.value
+                }))
+              }
+            >
+              {riskOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <label className="form-field">
+          <span>Title</span>
+          <input
+            value={form.title}
+            onChange={(event) =>
+              setForm((currentForm) => ({
+                ...currentForm,
+                title: event.target.value
+              }))
+            }
+          />
+        </label>
+        <RichTextEditor
+          label="Request description"
+          value={form.description}
+          onChange={(value) =>
+            setForm((currentForm) => ({
+              ...currentForm,
+              description: value
+            }))
+          }
+          placeholder="Update the request summary."
+          rows={4}
+        />
+        <RichTextEditor
+          label="Business impact / added info"
+          value={form.businessImpact}
+          onChange={(value) =>
+            setForm((currentForm) => ({
+              ...currentForm,
+              businessImpact: value
+            }))
+          }
+          placeholder="Add or correct impact, urgency, or missing information."
+          rows={4}
+        />
+        <RichTextEditor
+          label="Requester copy / change note"
+          value={form.requesterNote}
+          onChange={(value) =>
+            setForm((currentForm) => ({
+              ...currentForm,
+              requesterNote: value
+            }))
+          }
+          placeholder="Explain what changed for the requester."
+          rows={3}
+        />
+        {formError ? (
+          <p className="admin-form-error" role="alert">
+            {formError}
+          </p>
+        ) : null}
+        {successMessage ? (
+          <p className="admin-form-success" role="status">
+            {successMessage}
+          </p>
+        ) : null}
+        <div className="composer-actions">
+          <button className="primary-button" type="submit">
+            <TegelIcon name="save" size="16px" />
+            Save ticket update
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function OverviewPanel({
+  ticket,
+  config,
+  selectedPersona,
+  onUpdateTicket
+}: {
+  ticket: Ticket;
+  config: AdminConfig;
+  selectedPersona: RolePersonaOption;
+  onUpdateTicket: UpdateTicketHandler;
+}) {
+  const dynamicFieldEntries = Object.entries(ticket.dynamicFields).filter(
+    ([label]) => !hiddenTicketDynamicFieldLabels.has(label)
+  );
+
   return (
     <div className="overview-grid">
       <div className="field-list">
@@ -9350,14 +15058,19 @@ function OverviewPanel({
       </div>
       <div className="dynamic-fields">
         <h3>Dynamic fields</h3>
-        {Object.entries(ticket.dynamicFields).map(([label, value]) => (
+        {dynamicFieldEntries.map(([label, value]) => (
           <div className="dynamic-field" key={label}>
             <span>{label}</span>
             <RichTextContent value={value} />
           </div>
         ))}
       </div>
-      <CommentPanel ticket={ticket} comments={comments} embedded onAddComment={onAddComment} role={role} />
+      <TicketUpdatePanel
+        ticket={ticket}
+        config={config}
+        selectedPersona={selectedPersona}
+        onUpdateTicket={onUpdateTicket}
+      />
     </div>
   );
 }
@@ -9374,7 +15087,9 @@ function TicketLifecycleStrip({ ticket, config }: { ticket: Ticket; config: Admi
             <strong>{step.label}</strong>
             <small>{step.detail}</small>
           </div>
-          <span className={`admin-pill tag-variant-${getStatusColorVariant(config, step.status)}`}>{step.status}</span>
+          <span className={`admin-pill tag-variant-${getStatusColorVariant(config, step.status)} lifecycle-pill lifecycle-pill-${step.state}`}>
+            {step.status}
+          </span>
         </div>
       ))}
     </div>
@@ -9415,6 +15130,7 @@ function WorkflowPanel({
   const health = summarizeWorkflowHealth(configuredTicket);
   const workflowName = getTicketWorkflowTemplateName(ticket);
   const actionSummary = getWorkflowActionSummary(configuredTicket);
+  const currentPositionSummary = getWorkflowCurrentPositionSummary(ticket, configuredTicket);
   const parallelGroups = Array.from(
     new Set(configuredWorkflow.map((step) => step.parallelGroup).filter(Boolean))
   );
@@ -9489,12 +15205,10 @@ function WorkflowPanel({
       />
       <TicketLifecycleStrip ticket={ticket} config={config} />
       <div className="workflow-command-strip">
-        <div>
-          <span>Current status</span>
-          <strong>{getTicketCurrentStatusLabel(ticket)}</strong>
-          <small>
-            State {ticket.state.replace("_", " ")} · {health.waiting} waiting
-          </small>
+        <div className={`workflow-command-action action-tone-${currentPositionSummary.tone}`}>
+          <span>Current position</span>
+          <strong>{currentPositionSummary.label}</strong>
+          <small>{currentPositionSummary.detail}</small>
         </div>
         <div className={`workflow-command-action action-tone-${actionSummary.tone}`}>
           <span>Next action</span>
@@ -9588,7 +15302,7 @@ function WorkflowPanel({
                 <div className="step-title">
                   <strong>{step.label}</strong>
                   <span className={`step-state step-state-${step.status}`}>
-                    {nextActionLabel(step.status)}
+                    {getWorkflowStepProgressLabel(step.status)}
                   </span>
                 </div>
                 <div className="step-meta">
@@ -9605,7 +15319,7 @@ function WorkflowPanel({
                 <div className="step-footer">
                   <span>
                     <TegelIcon name="clock" size="14px" />
-                    <b>Due</b> {step.dueAt}
+                    <b>Due</b> {formatDateTimeDisplay(step.dueAt)}
                   </span>
                   {step.parallelGroup ? (
                     <span>
@@ -9768,7 +15482,7 @@ function ClarificationPanel({
                   />
                 </div>
                 <p>
-                  {group.threads.length} request{group.threads.length === 1 ? "" : "s"} · due {group.dueAt}
+                  {group.threads.length} request{group.threads.length === 1 ? "" : "s"} · due {formatDateTimeDisplay(group.dueAt)}
                 </p>
                 {requesterRoles.length > 0 ? (
                   <div className="thread-role-list" aria-label="Clarification requester roles">
@@ -9981,26 +15695,32 @@ function JiraWorkspace({
   selectedTicket,
   selectedTicketKey,
   role,
+  selectedPersona,
   onCreateJira,
+  onPostJiraComment,
   onReopenTicket,
   onSelectTicket,
   onUpdateJiraDraft,
   onUpdateJiraIssue,
   onUpdateJiraLink,
-  onUpdateJiraStatus
+  onUpdateJiraStatus,
+  onSyncJiraActivity
 }: {
   config: AdminConfig;
   tickets: Ticket[];
   selectedTicket?: Ticket;
   selectedTicketKey: string;
   role: RoleKey;
+  selectedPersona: RolePersonaOption;
   onCreateJira: CreateJiraHandler;
+  onPostJiraComment: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
   onSelectTicket: (ticketKey: string) => void;
   onUpdateJiraDraft: (ticketKey: string, draftUpdate: JiraDraftUpdateInput) => void;
   onUpdateJiraIssue: UpdateJiraIssueHandler;
   onUpdateJiraLink: UpdateJiraLinkHandler;
-  onUpdateJiraStatus: (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+  onUpdateJiraStatus: UpdateJiraStatusHandler;
+  onSyncJiraActivity: SyncJiraActivityHandler;
 }) {
   const readyTickets = useMemo(
     () =>
@@ -10087,14 +15807,18 @@ function JiraWorkspace({
           <JiraSyncPanel
             ticket={activeTicket}
             config={config}
+            canManageJiraActions={canManageJiraForTicket(config, selectedPersona, activeTicket)}
             expanded
             onCreateJira={onCreateJira}
+            onPostJiraComment={onPostJiraComment}
             onReopenTicket={onReopenTicket}
             onUpdateJiraDraft={onUpdateJiraDraft}
             onUpdateJiraIssue={onUpdateJiraIssue}
             onUpdateJiraLink={onUpdateJiraLink}
             onUpdateJiraStatus={onUpdateJiraStatus}
+            onSyncJiraActivity={onSyncJiraActivity}
             role={role}
+            surface="sync"
           />
           <WorkflowPanel ticket={activeTicket} config={config} />
         </div>
@@ -10105,30 +15829,40 @@ function JiraWorkspace({
   );
 }
 
+type JiraSyncPanelSurface = "ticket" | "sync";
+
 function JiraSyncPanel({
   ticket,
   config,
+  canManageJiraActions = false,
   expanded = false,
   embedded = false,
   role,
+  surface = "sync",
   onCreateJira,
+  onPostJiraComment,
   onReopenTicket,
   onUpdateJiraDraft,
   onUpdateJiraIssue,
   onUpdateJiraLink,
-  onUpdateJiraStatus
+  onUpdateJiraStatus,
+  onSyncJiraActivity
 }: {
   ticket: Ticket;
   config: AdminConfig;
+  canManageJiraActions?: boolean;
   expanded?: boolean;
   embedded?: boolean;
   role?: RoleKey;
+  surface?: JiraSyncPanelSurface;
   onCreateJira?: CreateJiraHandler;
+  onPostJiraComment?: PostJiraCommentHandler;
   onReopenTicket?: (ticketKey: string) => void;
   onUpdateJiraDraft?: (ticketKey: string, draftUpdate: JiraDraftUpdateInput) => void;
   onUpdateJiraIssue?: UpdateJiraIssueHandler;
   onUpdateJiraLink?: UpdateJiraLinkHandler;
-  onUpdateJiraStatus?: (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+  onUpdateJiraStatus?: UpdateJiraStatusHandler;
+  onSyncJiraActivity?: SyncJiraActivityHandler;
 }) {
   const draft = ticket.jiraDraft;
   const followUpStatus = getTicketJiraFollowUpStatus(ticket);
@@ -10136,7 +15870,7 @@ function JiraSyncPanel({
     getSelectableJiraFollowUpStatus(followUpStatus)
   );
   const [followUpNote, setFollowUpNote] = useState("");
-  const [draftForm, setDraftForm] = useState<JiraDraftFormState>(() => getJiraDraftFormState(draft));
+  const [draftForm, setDraftForm] = useState<JiraDraftFormState>(() => getJiraDraftFormState(ticket));
   const [draftSaveState, setDraftSaveState] = useState<"idle" | "saved">("idle");
   const [jiraCreateState, setJiraCreateState] = useState<"idle" | "creating">("idle");
   const [jiraCreateError, setJiraCreateError] = useState("");
@@ -10146,6 +15880,10 @@ function JiraSyncPanel({
   const [jiraStatusSyncState, setJiraStatusSyncState] = useState<"idle" | "syncing">("idle");
   const [jiraStatusSyncError, setJiraStatusSyncError] = useState("");
   const [jiraStatusSyncSuccess, setJiraStatusSyncSuccess] = useState("");
+  const [jiraCommentDraft, setJiraCommentDraft] = useState("");
+  const [jiraCommentState, setJiraCommentState] = useState<"idle" | "posting">("idle");
+  const [jiraCommentError, setJiraCommentError] = useState("");
+  const [jiraCommentSuccess, setJiraCommentSuccess] = useState("");
   const [isJiraLinkStale, setIsJiraLinkStale] = useState(false);
   const [jiraLinkDraft, setJiraLinkDraft] = useState(ticket.relatedJiraKey ?? "");
   const [jiraLinkState, setJiraLinkState] = useState<"idle" | "saving">("idle");
@@ -10153,10 +15891,24 @@ function JiraSyncPanel({
   const [jiraLinkSuccess, setJiraLinkSuccess] = useState("");
   const [isJiraLinkCorrectionOpen, setIsJiraLinkCorrectionOpen] = useState(false);
   const [jiraFieldMetadata, setJiraFieldMetadata] = useState<JiraFieldMetadata>(emptyJiraFieldMetadata);
+  const isJiraSyncSurface = surface === "sync";
   const canCreateJira = canCreateJiraForTicket(ticket);
   const canReplaceJira = canReplaceJiraForTicket(ticket);
-  const canManageJira = Boolean(role && (onCreateJira || onUpdateJiraIssue || onUpdateJiraStatus || onUpdateJiraDraft || onUpdateJiraLink));
+  const canManageJira = Boolean(
+    isJiraSyncSurface &&
+      canManageJiraActions &&
+      canOperateJira(role) &&
+      (
+        onCreateJira ||
+        onUpdateJiraIssue ||
+        onUpdateJiraStatus ||
+        onUpdateJiraDraft ||
+        onUpdateJiraLink
+      )
+  );
   const canEditJiraDraft = Boolean(canManageJira && onUpdateJiraDraft);
+  const canPostJiraComment = Boolean(ticket.relatedJiraKey && onPostJiraComment);
+  const shouldLoadJiraMetadata = isJiraSyncSurface && (canEditJiraDraft || canReplaceJira || Boolean(ticket.relatedJiraKey));
   const canReopenTicket = Boolean(role && onReopenTicket && canReopenTicketForRole(ticket, role));
   const productProjectKey = getConfigProduct(config, ticket.product)?.jiraProjectKey;
   const metadataProjectKey =
@@ -10164,10 +15916,17 @@ function JiraSyncPanel({
     getValidJiraProjectKey(draft.project) ||
     getValidJiraProjectKey(productProjectKey) ||
     getValidJiraProjectKey(config.integrations.jira.defaultProjectKey);
-  const jiraDescription = useMemo(() => getTicketJiraDescription(ticket), [ticket]);
+  const generatedJiraDescription = useMemo(() => getGeneratedTicketJiraDescription(ticket), [ticket]);
+  const jiraSummaryPreview = canEditJiraDraft
+    ? draftForm.summary.trim() || getTicketJiraSummary(ticket)
+    : getTicketJiraSummary(ticket);
+  const jiraDescriptionPreview = canEditJiraDraft
+    ? composeJiraDescription(draftForm.description.trim() || generatedJiraDescription, draftForm.releaseNote)
+    : getTicketJiraDescription(ticket);
   const selectedComponents = parseCommaSeparatedValues(draftForm.components);
   const shouldValidateComponents = jiraFieldMetadata.status === "ready";
   const componentMetadataOptions = shouldValidateComponents ? jiraFieldMetadata.components : undefined;
+  const priorityMetadataOptions = jiraFieldMetadata.status === "ready" ? jiraFieldMetadata.priorities : undefined;
   const selectedValidComponents = componentMetadataOptions
     ? getValidJiraMetadataSelections(selectedComponents, componentMetadataOptions)
     : selectedComponents;
@@ -10212,12 +15971,24 @@ function JiraSyncPanel({
     draftForm.fixVersion,
     ...getJiraMetadataNames(jiraFieldMetadata.versions)
   ]);
-  const priorityOptions = getUniqueOptionValues([
-    draftForm.priority,
-    ticket.priority,
-    ...getJiraMetadataNames(jiraFieldMetadata.priorities),
-    ...config.priorities.filter((priority) => priority.active).map((priority) => priority.label)
-  ]);
+  const selectedFixVersionMetadata = getJiraVersionMetadataByName(jiraFieldMetadata.versions, draftForm.fixVersion);
+  const selectedFixVersionStartDate = formatReleaseDate(
+    draftForm.fixVersionStartDate || selectedFixVersionMetadata?.startDate || selectedFixVersionMetadata?.userStartDate
+  );
+  const selectedFixVersionReleaseDate = formatReleaseDate(
+    draftForm.fixVersionReleaseDate || selectedFixVersionMetadata?.releaseDate || selectedFixVersionMetadata?.userReleaseDate
+  );
+  const selectedFixVersionStartDateDisplay = formatReleaseDateDisplay(selectedFixVersionStartDate);
+  const selectedFixVersionReleaseDateDisplay = formatReleaseDateDisplay(selectedFixVersionReleaseDate);
+  const selectedPriority = getJiraPriorityName(draftForm.priority || ticket.priority, priorityMetadataOptions);
+  const priorityOptions = priorityMetadataOptions?.length
+    ? getJiraMetadataNames(priorityMetadataOptions)
+    : getUniqueOptionValues([
+        selectedPriority,
+        draftForm.priority,
+        ticket.priority,
+        ...config.priorities.filter((priority) => priority.active).map((priority) => priority.label)
+      ]);
   const assigneeOptions = getUniqueOptionValues([
     draftForm.assignee,
     ...jiraFieldMetadata.assignableUsers.filter((user) => user.active).map((user) => user.name)
@@ -10239,17 +16010,27 @@ function JiraSyncPanel({
     ["Backlog", draft.backlog],
     ["Sprint", draft.sprint ?? "Not selected"],
     ["Fix Version", draft.fixVersion ?? "Not selected"],
+    ["Start date", formatReleaseDateDisplay(draft.fixVersionStartDate) || "Not selected"],
+    ["Release date", formatReleaseDateDisplay(draft.fixVersionReleaseDate) || "Not selected"],
     ["Priority", draft.priority],
     ["Estimate", draft.estimateHours ? `${draft.estimateHours}h` : "Pending"],
     ["Story Points", draft.storyPoints ? String(draft.storyPoints) : "Pending"],
     ["Assignee", draft.assignee ?? "Unassigned"]
   ];
+  const currentJiraStatusName = getJiraStatusDisplayName(ticket, followUpStatus);
+  const jiraStatusTimelineSteps = getJiraStatusTimelineSteps(
+    jiraFieldMetadata.statuses,
+    currentJiraStatusName,
+    followUpStatus
+  );
+  const importedJiraComments = ticket.comments
+    .filter((comment) => comment.source === "jira" && comment.id.includes("-jira-import-"))
+    .sort((left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt));
 
   useEffect(() => {
     setStatusDraft(getSelectableJiraFollowUpStatus(followUpStatus));
     setFollowUpNote("");
-    setDraftForm(getJiraDraftFormState(draft));
-    setDraftSaveState("idle");
+    setDraftForm(getJiraDraftFormState(ticket));
     setJiraCreateState("idle");
     setJiraCreateError("");
     setJiraUpdateState("idle");
@@ -10258,18 +16039,27 @@ function JiraSyncPanel({
     setJiraStatusSyncState("idle");
     setJiraStatusSyncError("");
     setJiraStatusSyncSuccess("");
+    setJiraCommentState("idle");
     setIsJiraLinkStale(false);
     setJiraLinkDraft(ticket.relatedJiraKey ?? "");
     setJiraLinkState("idle");
     setJiraLinkError("");
     setJiraLinkSuccess("");
     setIsJiraLinkCorrectionOpen(false);
-  }, [draft, followUpStatus, ticket.key, ticket.relatedJiraKey]);
+  }, [followUpStatus, ticket]);
+
+  useEffect(() => {
+    setDraftSaveState("idle");
+    setJiraCommentDraft("");
+    setJiraCommentState("idle");
+    setJiraCommentError("");
+    setJiraCommentSuccess("");
+  }, [ticket.key]);
 
   useEffect(() => {
     const integration = config.integrations.jira;
 
-    if (!canEditJiraDraft && !canReplaceJira) {
+    if (!shouldLoadJiraMetadata) {
       setJiraFieldMetadata(emptyJiraFieldMetadata);
       return;
     }
@@ -10363,6 +16153,7 @@ function JiraSyncPanel({
           components: data?.components ?? [],
           versions: data?.versions ?? [],
           priorities: data?.priorities ?? [],
+          statuses: data?.statuses ?? [],
           boards: data?.boards ?? [],
           sprints: data?.sprints ?? [],
           assignableUsers: data?.assignableUsers ?? []
@@ -10387,8 +16178,6 @@ function JiraSyncPanel({
       controller.abort();
     };
   }, [
-    canEditJiraDraft,
-    canReplaceJira,
     config.integrations.jira,
     config.integrations.jira.apiBaseUrl,
     config.integrations.jira.apiVersion,
@@ -10397,8 +16186,40 @@ function JiraSyncPanel({
     config.integrations.jira.enabled,
     config.integrations.jira.tokenConfigured,
     config.integrations.jira.username,
-    metadataProjectKey
+    metadataProjectKey,
+    shouldLoadJiraMetadata
   ]);
+
+  useEffect(() => {
+    if (jiraFieldMetadata.status !== "ready") {
+      return;
+    }
+
+    setDraftForm((currentForm) => {
+      if (
+        !currentForm.fixVersion.trim() ||
+        (currentForm.fixVersionStartDate.trim() && currentForm.fixVersionReleaseDate.trim())
+      ) {
+        return currentForm;
+      }
+
+      const versionMetadata = getJiraVersionMetadataByName(jiraFieldMetadata.versions, currentForm.fixVersion);
+      const nextStartDate = currentForm.fixVersionStartDate.trim()
+        ? currentForm.fixVersionStartDate
+        : versionMetadata?.startDate || versionMetadata?.userStartDate || "";
+      const nextReleaseDate = currentForm.fixVersionReleaseDate.trim()
+        ? currentForm.fixVersionReleaseDate
+        : versionMetadata?.releaseDate || versionMetadata?.userReleaseDate || "";
+
+      return nextStartDate || nextReleaseDate
+        ? {
+            ...currentForm,
+            fixVersionStartDate: nextStartDate,
+            fixVersionReleaseDate: nextReleaseDate
+          }
+        : currentForm;
+    });
+  }, [jiraFieldMetadata.status, jiraFieldMetadata.versions]);
 
   function updateDraftForm(field: keyof JiraDraftFormState, value: string) {
     setDraftForm((currentForm) => ({
@@ -10410,6 +16231,26 @@ function JiraSyncPanel({
     setJiraUpdateSuccess("");
     setJiraStatusSyncError("");
     setJiraStatusSyncSuccess("");
+    setJiraCommentError("");
+    setJiraCommentSuccess("");
+  }
+
+  function updateFixVersion(value: string) {
+    const versionMetadata = getJiraVersionMetadataByName(jiraFieldMetadata.versions, value);
+
+    setDraftForm((currentForm) => ({
+      ...currentForm,
+      fixVersion: value,
+      fixVersionStartDate: versionMetadata?.startDate ?? versionMetadata?.userStartDate ?? "",
+      fixVersionReleaseDate: versionMetadata?.releaseDate ?? versionMetadata?.userReleaseDate ?? ""
+    }));
+    setDraftSaveState("idle");
+    setJiraUpdateError("");
+    setJiraUpdateSuccess("");
+    setJiraStatusSyncError("");
+    setJiraStatusSyncSuccess("");
+    setJiraCommentError("");
+    setJiraCommentSuccess("");
   }
 
   function saveJiraDraft() {
@@ -10417,7 +16258,7 @@ function JiraSyncPanel({
       return;
     }
 
-    onUpdateJiraDraft(ticket.key, getJiraDraftUpdateInput(draftForm, componentMetadataOptions));
+    onUpdateJiraDraft(ticket.key, getJiraDraftUpdateInput(draftForm, componentMetadataOptions, priorityMetadataOptions));
     setDraftSaveState("saved");
   }
 
@@ -10428,9 +16269,19 @@ function JiraSyncPanel({
 
     setJiraCreateState("creating");
     setJiraCreateError("");
+    setJiraStatusSyncError("");
+    setJiraStatusSyncSuccess("");
+    setJiraUpdateError("");
+    setJiraUpdateSuccess("");
+    setJiraCommentError("");
+    setJiraCommentSuccess("");
 
     try {
-      await onCreateJira(ticket.key, getJiraDraftUpdateInput(draftForm, componentMetadataOptions), { replaceExisting });
+      await onCreateJira(
+        ticket.key,
+        getJiraDraftUpdateInput(draftForm, componentMetadataOptions, priorityMetadataOptions),
+        { replaceExisting }
+      );
       setIsJiraLinkStale(false);
     } catch (error) {
       setJiraCreateError(getErrorMessage(error));
@@ -10451,7 +16302,10 @@ function JiraSyncPanel({
     setJiraStatusSyncSuccess("");
 
     try {
-      await onUpdateJiraIssue(ticket.key, getJiraDraftUpdateInput(draftForm, componentMetadataOptions));
+      await onUpdateJiraIssue(
+        ticket.key,
+        getJiraDraftUpdateInput(draftForm, componentMetadataOptions, priorityMetadataOptions)
+      );
       setDraftSaveState("saved");
       setIsJiraLinkStale(false);
       setJiraUpdateSuccess(`Jira issue ${getValidJiraIssueKey(ticket.relatedJiraKey) || ticket.relatedJiraKey} updated.`);
@@ -10471,7 +16325,7 @@ function JiraSyncPanel({
   }
 
   async function syncJiraStatusFromRemote() {
-    if (!onUpdateJiraStatus || !ticket.relatedJiraKey) {
+    if (!onSyncJiraActivity || !ticket.relatedJiraKey) {
       return;
     }
 
@@ -10520,22 +16374,45 @@ function JiraSyncPanel({
       }
 
       const jiraIssueStatus = (payload as { data?: { jiraStatus?: JiraIssueStatusDetails } } | null)?.data?.jiraStatus;
+      const jiraComments = (payload as { data?: { comments?: JiraSyncedCommentInput[] } } | null)?.data?.comments ?? [];
+      const jiraIssueFields = (payload as { data?: { issueFields?: JiraSyncedIssueFieldsInput } } | null)?.data?.issueFields;
+      const warnings = (payload as { data?: { warnings?: string[] } } | null)?.data?.warnings ?? [];
       const nextFollowUpStatus = getJiraFollowUpStatusFromIssueStatus(jiraIssueStatus, followUpStatus);
       const jiraStatusSummary = getJiraIssueStatusSummary(jiraIssueStatus);
+      const syncedJiraFieldSummary = formatSyncedJiraFieldSummary(getSyncedJiraDraftFieldUpdate(jiraIssueFields));
       const nextFollowUpLabel = getJiraFollowUpStatusLabel(nextFollowUpStatus);
+      const syncResult = onSyncJiraActivity(
+        ticket.key,
+        nextFollowUpStatus,
+        [`Synced from Jira. Jira status: ${jiraStatusSummary}.`, syncedJiraFieldSummary].filter(Boolean).join(" "),
+        jiraComments,
+        jiraIssueStatus?.name,
+        jiraIssueFields
+      );
 
-      if (nextFollowUpStatus !== followUpStatus) {
-        onUpdateJiraStatus(
-          ticket.key,
-          nextFollowUpStatus,
-          `Synced from Jira. Jira status: ${jiraStatusSummary}.`
-        );
-      }
+      const commentSummary = [
+        syncResult.importedComments
+          ? `${syncResult.importedComments} Jira comment${syncResult.importedComments === 1 ? "" : "s"} imported`
+          : "",
+        syncResult.updatedComments
+          ? `${syncResult.updatedComments} Jira comment${syncResult.updatedComments === 1 ? "" : "s"} updated`
+          : ""
+      ].filter(Boolean).join("; ");
+      const warningSummary = warnings.length > 0 ? ` ${warnings.join(" ")}` : "";
 
       setJiraStatusSyncSuccess(
-        nextFollowUpStatus === followUpStatus
-          ? `Jira status already matches portal: ${nextFollowUpLabel}.`
-          : `Synced Jira status ${jiraStatusSummary} to portal status ${nextFollowUpLabel}.`
+        [
+          syncResult.statusChanged
+            ? `Synced Jira status ${jiraStatusSummary} to portal status ${nextFollowUpLabel}.`
+            : syncResult.jiraStatusChanged
+              ? `Synced Jira status ${jiraStatusSummary}.`
+              : syncResult.jiraFieldsChanged
+                ? "Synced Jira fields."
+                : `Jira status already matches portal: ${nextFollowUpLabel}.`,
+          syncResult.jiraFieldsChanged ? syncedJiraFieldSummary : "",
+          commentSummary || "No new Jira comments.",
+          warningSummary
+        ].filter(Boolean).join(" ")
       );
       setIsJiraLinkStale(false);
     } catch (error) {
@@ -10546,6 +16423,42 @@ function JiraSyncPanel({
       setJiraStatusSyncError(getErrorMessage(error));
     } finally {
       setJiraStatusSyncState("idle");
+    }
+  }
+
+  async function submitJiraComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!onPostJiraComment || !ticket.relatedJiraKey) {
+      return;
+    }
+
+    const trimmedComment = jiraCommentDraft.trim();
+
+    if (!trimmedComment) {
+      setJiraCommentError("Write a Jira comment before sending.");
+      return;
+    }
+
+    setJiraCommentState("posting");
+    setJiraCommentError("");
+    setJiraCommentSuccess("");
+    setJiraStatusSyncError("");
+    setJiraStatusSyncSuccess("");
+
+    try {
+      await onPostJiraComment(ticket.key, trimmedComment);
+      setJiraCommentDraft("");
+      setJiraCommentSuccess("Jira comment added.");
+      setIsJiraLinkStale(false);
+    } catch (error) {
+      if (getIntegrationActionErrorCode(error) === "jira_issue_not_found") {
+        setIsJiraLinkStale(true);
+      }
+
+      setJiraCommentError(getErrorMessage(error));
+    } finally {
+      setJiraCommentState("idle");
     }
   }
 
@@ -10608,8 +16521,12 @@ function JiraSyncPanel({
   return (
     <section className={embedded ? "embedded-section jira-panel" : "panel jira-panel"}>
       <PanelHeader
-        title="Jira preparation"
-        description="Portal governance gates execution-layer Jira creation and synchronization."
+        title={isJiraSyncSurface ? "Jira preparation" : "Jira activity"}
+        description={
+          isJiraSyncSurface
+            ? "Portal governance gates execution-layer Jira creation and synchronization."
+            : "Read-only Jira issue details and comments for this ticket."
+        }
         iconName="link"
       />
       <div className="jira-status-line">
@@ -10624,11 +16541,12 @@ function JiraSyncPanel({
           )
         )}
       </div>
-      <div className="jira-follow-up-strip" aria-label="Jira follow-up timeline">
-        {jiraFollowUpStatusOptions.map((option) => (
+      <div className="jira-follow-up-strip" aria-label="Jira status timeline">
+        {jiraStatusTimelineSteps.map((option) => (
           <span
-            className={`jira-follow-up-step tone-${option.tone} ${followUpStatus === option.value ? "is-current" : ""}`}
-            key={option.value}
+            className={`jira-follow-up-step tone-${option.tone} ${option.isCurrent ? "is-current" : ""}`}
+            key={option.key}
+            title={option.title || undefined}
           >
             {option.label}
           </span>
@@ -10636,10 +16554,126 @@ function JiraSyncPanel({
       </div>
       <div className="jira-description-preview">
         <div>
-          <span>User request / Jira description</span>
-          <strong>{ticket.title}</strong>
+          <span>Jira title / description preview</span>
+          <strong>{jiraSummaryPreview}</strong>
         </div>
-        <pre>{jiraDescription}</pre>
+        <pre>{jiraDescriptionPreview}</pre>
+      </div>
+      {!canManageJira && ticket.relatedJiraKey && onSyncJiraActivity ? (
+        <div className="jira-refresh-panel">
+          <div>
+            <span>Jira activity</span>
+            <strong>
+              <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} />
+            </strong>
+            <small>Refresh status and import Jira comments into the support ticket.</small>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={jiraStatusSyncState === "syncing"}
+            onClick={() => void syncJiraStatusFromRemote()}
+          >
+            <TegelIcon name="route" size="16px" />
+            {jiraStatusSyncState === "syncing" ? "Syncing..." : "Refresh from Jira"}
+          </button>
+          {jiraStatusSyncError ? <p className="admin-form-error">{jiraStatusSyncError}</p> : null}
+          {isJiraLinkStale ? (
+            <p className="admin-hint">
+              This linked Jira issue no longer exists. A Jira owner or admin can recreate the Jira issue from this
+              ticket.
+            </p>
+          ) : null}
+          {jiraStatusSyncSuccess ? <p className="admin-form-success">{jiraStatusSyncSuccess}</p> : null}
+        </div>
+      ) : null}
+      {!canEditJiraDraft ? (
+        <>
+          <div className={`jira-fields jira-fields-compact ${expanded ? "is-expanded" : ""}`}>
+            {fields.map(([label, value]) => (
+              <div className="jira-field" key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+          {expanded ? (
+            <div className="jira-meta jira-meta-compact">
+              <span>Components: {draft.components.join(", ") || "None"}</span>
+              <span>Labels: {draft.labels.join(", ") || "None"}</span>
+              {ticket.relatedJiraKey ? (
+                <span>
+                  Synced: <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} />
+                </span>
+              ) : null}
+              <span>Status: {getJiraFollowUpStatusLabel(followUpStatus)}</span>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      {canPostJiraComment ? (
+        <form className="jira-comment-form" onSubmit={submitJiraComment}>
+          <label className="form-field form-field-wide">
+            <span>Jira comment</span>
+            <textarea
+              rows={4}
+              value={jiraCommentDraft}
+              onChange={(event) => {
+                setJiraCommentDraft(event.target.value);
+                setJiraCommentError("");
+                setJiraCommentSuccess("");
+              }}
+              placeholder="Write a comment to add directly to the linked Jira issue."
+            />
+            <small>Posted to Jira and shown in the imported Jira comments for this ticket.</small>
+          </label>
+          <div className="composer-actions">
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={jiraCommentState === "posting" || !jiraCommentDraft.trim()}
+            >
+              <TegelIcon name="send" size="16px" />
+              {jiraCommentState === "posting" ? "Sending..." : "Add Jira comment"}
+            </button>
+          </div>
+          {jiraCommentError ? <p className="admin-form-error">{jiraCommentError}</p> : null}
+          {jiraCommentSuccess ? <p className="admin-form-success">{jiraCommentSuccess}</p> : null}
+        </form>
+      ) : null}
+      <div className="jira-imported-comments">
+        <div className="jira-imported-comments-header">
+          <div>
+            <span>Jira comments</span>
+            <strong>
+              {importedJiraComments.length === 0
+                ? "No Jira comments imported yet"
+                : `${importedJiraComments.length} imported`}
+            </strong>
+          </div>
+          {ticket.relatedJiraKey ? (
+            <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} />
+          ) : null}
+        </div>
+        {importedJiraComments.length === 0 ? (
+          <p>
+            {isJiraSyncSurface
+              ? "Refresh from Jira to load comments from the linked Jira issue."
+              : "No Jira comments have been imported for this linked issue yet."}
+          </p>
+        ) : (
+          <div className="jira-imported-comments-list">
+            {importedJiraComments.map((comment) => (
+              <article className="jira-imported-comment" key={comment.id}>
+                <div>
+                  <strong>{comment.author}</strong>
+                  <span>{formatTicketCommentTimestamp(comment.createdAt)}</span>
+                </div>
+                <JiraCommentContent value={comment.body} />
+              </article>
+            ))}
+          </div>
+        )}
       </div>
       {canEditJiraDraft ? (
         <>
@@ -10650,6 +16684,36 @@ function JiraSyncPanel({
             ) : null}
           </div>
           <div className={`jira-draft-form ${expanded ? "is-expanded" : ""}`}>
+          <label className="form-field form-field-wide">
+            <span>Jira title</span>
+            <input
+              type="text"
+              value={draftForm.summary}
+              onChange={(event) => updateDraftForm("summary", event.target.value)}
+              placeholder={ticket.title}
+            />
+            <small>Used as the Jira summary and release handoff title.</small>
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Jira description</span>
+            <textarea
+              rows={9}
+              value={draftForm.description}
+              onChange={(event) => updateDraftForm("description", event.target.value)}
+              placeholder={generatedJiraDescription}
+            />
+            <small>Sent to the Jira description field. Defaults to the generated portal request summary.</small>
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Release note</span>
+            <textarea
+              rows={4}
+              value={draftForm.releaseNote}
+              onChange={(event) => updateDraftForm("releaseNote", event.target.value)}
+              placeholder="Add the short release note or deployment summary."
+            />
+            <small>Appended to the Jira description under a Release note section.</small>
+          </label>
           <label className="form-field">
             <span>Project</span>
             <select value={draftForm.project} onChange={(event) => updateDraftForm("project", event.target.value)}>
@@ -10696,7 +16760,7 @@ function JiraSyncPanel({
           </label>
           <label className="form-field">
             <span>Fix version</span>
-            <select value={draftForm.fixVersion} onChange={(event) => updateDraftForm("fixVersion", event.target.value)}>
+            <select value={draftForm.fixVersion} onChange={(event) => updateFixVersion(event.target.value)}>
               <option value="">No fix version selected</option>
               {fixVersionOptions.map((option) => (
                 <option key={option} value={option}>
@@ -10704,10 +16768,38 @@ function JiraSyncPanel({
                 </option>
               ))}
             </select>
+            {selectedFixVersionMetadata ? (
+              <small>
+                {selectedFixVersionMetadata.released ? "Released" : "Unreleased"}
+                {selectedFixVersionStartDateDisplay ? ` · starts ${selectedFixVersionStartDateDisplay}` : ""}
+                {selectedFixVersionReleaseDateDisplay ? ` · ${selectedFixVersionReleaseDateDisplay}` : ""}
+                {selectedFixVersionMetadata.archived ? " · Archived" : ""}
+              </small>
+            ) : (
+              <small>Loaded versions come from Jira metadata.</small>
+            )}
+          </label>
+          <label className="form-field">
+            <span>Release start date</span>
+            <input
+              type="date"
+              value={draftForm.fixVersionStartDate}
+              onChange={(event) => updateDraftForm("fixVersionStartDate", event.target.value)}
+            />
+            <small>Used as the pre-prod date in Release Plan.</small>
+          </label>
+          <label className="form-field">
+            <span>Release date</span>
+            <input
+              type="date"
+              value={draftForm.fixVersionReleaseDate}
+              onChange={(event) => updateDraftForm("fixVersionReleaseDate", event.target.value)}
+            />
+            <small>Used in the portal planned release step.</small>
           </label>
           <label className="form-field">
             <span>Priority</span>
-            <select value={draftForm.priority} onChange={(event) => updateDraftForm("priority", event.target.value)}>
+            <select value={selectedPriority} onChange={(event) => updateDraftForm("priority", event.target.value)}>
               {priorityOptions.map((option) => (
                 <option key={option} value={option}>
                   {option}
@@ -10779,30 +16871,7 @@ function JiraSyncPanel({
           </label>
           </div>
         </>
-      ) : (
-        <>
-          <div className={`jira-fields ${expanded ? "is-expanded" : ""}`}>
-            {fields.map(([label, value]) => (
-              <div className="jira-field" key={label}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </div>
-            ))}
-          </div>
-          {expanded ? (
-            <div className="jira-meta">
-              <span>Components: {draft.components.join(", ") || "None"}</span>
-              <span>Labels: {draft.labels.join(", ") || "None"}</span>
-              {ticket.relatedJiraKey ? (
-                <span>
-                  Synced: <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} />
-                </span>
-              ) : null}
-              <span>Status: {getJiraFollowUpStatusLabel(followUpStatus)}</span>
-            </div>
-          ) : null}
-        </>
-      )}
+      ) : null}
       {canManageJira ? (
         <div className="jira-action-panel">
           <div className="jira-action-summary">
@@ -10866,26 +16935,36 @@ function JiraSyncPanel({
                 <button
                   className="secondary-button"
                   type="button"
-                  disabled={!onUpdateJiraStatus || jiraStatusSyncState === "syncing"}
+                  disabled={!onSyncJiraActivity || jiraStatusSyncState === "syncing"}
                   onClick={() => void syncJiraStatusFromRemote()}
                 >
                   <TegelIcon name="route" size="16px" />
-                  {jiraStatusSyncState === "syncing" ? "Syncing..." : "Sync Jira status"}
+                  {jiraStatusSyncState === "syncing" ? "Syncing..." : "Sync Jira status & comments"}
                 </button>
               </div>
               {jiraUpdateError ? <p className="admin-form-error">{jiraUpdateError}</p> : null}
               {jiraStatusSyncError ? <p className="admin-form-error">{jiraStatusSyncError}</p> : null}
               {isJiraLinkStale ? (
-                <div className="jira-draft-actions">
-                  <button
-                    className="primary-button"
-                    type="button"
-                    disabled={!canReplaceJira || !onCreateJira || jiraCreateState === "creating"}
-                    onClick={() => void createJiraFromDraft(true)}
-                  >
-                    <TegelIcon name="link" size="16px" />
-                    {jiraCreateState === "creating" ? "Creating..." : "Create valid Jira issue"}
-                  </button>
+                <div className="jira-stale-action">
+                  <p className="admin-hint">
+                    The linked Jira issue was not found. Recreate it to replace the invalid Jira link with a new issue.
+                  </p>
+                  <div className="jira-draft-actions">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      disabled={!canReplaceJira || !onCreateJira || jiraCreateState === "creating"}
+                      onClick={() => void createJiraFromDraft(true)}
+                    >
+                      <TegelIcon name="link" size="16px" />
+                      {jiraCreateState === "creating" ? "Creating..." : "Recreate Jira issue"}
+                    </button>
+                  </div>
+                  {!canReplaceJira ? (
+                    <p className="admin-hint">
+                      Complete required workflow gates before recreating the Jira issue.
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
               {jiraCreateError ? <p className="admin-form-error">{jiraCreateError}</p> : null}
@@ -10985,6 +17064,201 @@ function JiraSyncPanel({
   );
 }
 
+function EscalationActionChecklist({
+  items,
+  emptyLabel = "No action items"
+}: {
+  items: EscalationActionItem[];
+  emptyLabel?: string;
+}) {
+  if (items.length === 0) {
+    return <p className="escalation-checklist-empty">{emptyLabel}</p>;
+  }
+
+  return (
+    <ul className="escalation-checklist" aria-label="Escalation action checklist">
+      {items.map((item) => (
+        <li className={item.done ? "is-done" : ""} key={item.id}>
+          <input checked={item.done} readOnly type="checkbox" aria-label={item.label} />
+          <span>{item.label}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function EscalationActionChecklistEditor({
+  items,
+  onChange
+}: {
+  items: EscalationActionItemInput[];
+  onChange: (items: EscalationActionItemInput[]) => void;
+}) {
+  const editableItems = items.length > 0 ? items : [createEmptyEscalationActionItemInput()];
+
+  function updateItem(itemId: string, patch: Partial<EscalationActionItemInput>) {
+    onChange(
+      editableItems.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              ...patch
+            }
+          : item
+      )
+    );
+  }
+
+  function removeItem(itemId: string) {
+    const nextItems = editableItems.filter((item) => item.id !== itemId);
+
+    onChange(nextItems.length > 0 ? nextItems : [createEmptyEscalationActionItemInput()]);
+  }
+
+  return (
+    <div className="escalation-checklist-editor form-field-wide">
+      <div className="escalation-editor-heading">
+        <span>Action checklist</span>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => onChange([...editableItems, createEmptyEscalationActionItemInput()])}
+        >
+          <TegelIcon name="plus" size="16px" />
+          Add action
+        </button>
+      </div>
+      <div className="escalation-checklist-editor-list">
+        {editableItems.map((item) => (
+          <div className="escalation-checklist-editor-row" key={item.id}>
+            <input
+              checked={item.done}
+              type="checkbox"
+              aria-label={`Mark ${item.label || "action item"} done`}
+              onChange={(event) => updateItem(item.id, { done: event.currentTarget.checked })}
+            />
+            <input
+              value={item.label}
+              onChange={(event) => updateItem(item.id, { label: event.currentTarget.value })}
+              placeholder="Action item, owner, or follow-up"
+            />
+            <button
+              className="icon-button quiet danger-button"
+              type="button"
+              aria-label="Remove action item"
+              onClick={() => removeItem(item.id)}
+            >
+              <TegelIcon name="trash" size="16px" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EscalationPeopleEditor({
+  people,
+  onChange
+}: {
+  people: EscalationPersonInput[];
+  onChange: (people: EscalationPersonInput[]) => void;
+}) {
+  const editablePeople = people.length > 0 ? people : [createEmptyEscalationPersonInput()];
+
+  function updatePerson(personId: string, patch: Partial<EscalationPersonInput>) {
+    onChange(
+      editablePeople.map((person) =>
+        person.id === personId
+          ? {
+              ...person,
+              ...patch
+            }
+          : person
+      )
+    );
+  }
+
+  function removePerson(personId: string) {
+    const nextPeople = editablePeople.filter((person) => person.id !== personId);
+
+    onChange(nextPeople.length > 0 ? nextPeople : [createEmptyEscalationPersonInput()]);
+  }
+
+  return (
+    <div className="escalation-people-editor form-field-wide">
+      <div className="escalation-editor-heading">
+        <span>People involved</span>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => onChange([...editablePeople, createEmptyEscalationPersonInput()])}
+        >
+          <TegelIcon name="plus" size="16px" />
+          Add person
+        </button>
+      </div>
+      <div className="escalation-people-editor-list">
+        {editablePeople.map((person) => (
+          <div className="escalation-people-editor-row" key={person.id}>
+            <label className="form-field">
+              <span>Name</span>
+              <input
+                value={person.name}
+                onChange={(event) => updatePerson(person.id, { name: event.currentTarget.value })}
+                placeholder="Name"
+              />
+            </label>
+            <label className="form-field">
+              <span>Email</span>
+              <input
+                type="email"
+                value={person.email}
+                onChange={(event) => updatePerson(person.id, { email: event.currentTarget.value })}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="form-field">
+              <span>Role</span>
+              <input
+                value={person.role}
+                onChange={(event) => updatePerson(person.id, { role: event.currentTarget.value })}
+                placeholder="Manager, owner, architect"
+              />
+            </label>
+            <button
+              className="icon-button quiet danger-button"
+              type="button"
+              aria-label="Remove person"
+              onClick={() => removePerson(person.id)}
+            >
+              <TegelIcon name="trash" size="16px" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EscalationPeopleList({ people }: { people: EscalationPerson[] }) {
+  if (people.length === 0) {
+    return <p className="escalation-people-empty">No people added.</p>;
+  }
+
+  return (
+    <div className="escalation-people-list" aria-label="People involved">
+      {people.map((person) => (
+        <span className="escalation-person-chip" key={person.id}>
+          <strong>{person.name || person.email}</strong>
+          {person.role ? <small>{person.role}</small> : null}
+          {person.email ? <small>{person.email}</small> : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function EscalationPanel({
   ticket,
   expanded = false,
@@ -11002,7 +17276,8 @@ function EscalationPanel({
     ticketKey: string,
     escalationId: string,
     status: EscalationStatus,
-    decisionNote: string
+    decisionNote: string,
+    details?: EscalationStatusUpdateDetails
   ) => void;
 }) {
   const [newEscalation, setNewEscalation] = useState<NewEscalationInput>(() =>
@@ -11012,15 +17287,301 @@ function EscalationPanel({
   const [activeDecisionFormId, setActiveDecisionFormId] = useState<string | null>(null);
   const [statusDrafts, setStatusDrafts] = useState<Record<string, EscalationStatus>>({});
   const [decisionNotes, setDecisionNotes] = useState<Record<string, string>>({});
+  const [actionPlanDrafts, setActionPlanDrafts] = useState<Record<string, string>>({});
+  const [actionItemDrafts, setActionItemDrafts] = useState<Record<string, EscalationActionItemInput[]>>({});
+  const [meetingSeriesDrafts, setMeetingSeriesDrafts] = useState<Record<string, string>>({});
+  const [managerNameDrafts, setManagerNameDrafts] = useState<Record<string, string>>({});
+  const [managerEmailDrafts, setManagerEmailDrafts] = useState<Record<string, string>>({});
+  const [peopleDrafts, setPeopleDrafts] = useState<Record<string, EscalationPersonInput[]>>({});
+  const [managerInviteDrafts, setManagerInviteDrafts] = useState<Record<string, boolean>>({});
+  const [escalationStatusFilter, setEscalationStatusFilter] =
+    useState<(typeof escalationBoardColumns)[number]["id"]>("new");
+  const [escalationSearch, setEscalationSearch] = useState("");
   const canWrite = Boolean(role && (onCreateEscalation || onUpdateEscalationStatus));
+  const escalationColumns = escalationBoardColumns.map((column) => ({
+    ...column,
+    escalations: ticket.escalations.filter((escalation) => getEscalationStatusLane(escalation.status) === column.id)
+  }));
+  const selectedEscalationColumn =
+    escalationColumns.find((column) => column.id === escalationStatusFilter) ?? escalationColumns[0];
+  const selectedEscalationTotal = selectedEscalationColumn?.escalations.length ?? 0;
+  const activeEscalationCount = ticket.escalations.filter((escalation) => escalation.status !== "resolved").length;
+  const getManagerInviteStatusLabel = (status?: EscalationManagerInviteStatus) =>
+    status === "sent"
+      ? "Invite sent"
+      : status === "failed"
+        ? "Invite failed"
+        : status === "pending"
+        ? "Invite pending"
+        : "Not invited";
+  const normalizedEscalationSearch = escalationSearch.trim().toLowerCase();
+  const escalationRows = ticket.escalations
+    .filter((escalation) => getEscalationStatusLane(escalation.status) === escalationStatusFilter)
+    .filter((escalation) => {
+      if (!normalizedEscalationSearch) {
+        return true;
+      }
+
+      const searchableText = [
+        escalation.reason,
+        escalation.type,
+        escalation.severity,
+        getEscalationStatusLabel(escalation.status),
+        escalation.decisionMaker,
+        escalation.dueAt,
+        escalation.requestedAction,
+        escalation.impact,
+        escalation.actionPlan,
+        escalation.mitigationPlan,
+        escalation.meetingSeries,
+        escalation.managerName,
+        escalation.managerEmail,
+        ...(escalation.people ?? []).flatMap((person) => [person.name, person.email, person.role]),
+        ...(escalation.actionItems ?? []).map((item) => item.label),
+        escalation.statusNote
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return searchableText.includes(normalizedEscalationSearch);
+    })
+    .sort((left, right) => {
+      const leftTimestamp = parseTicketTimestamp(left.statusUpdatedAt ?? left.dueAt);
+      const rightTimestamp = parseTicketTimestamp(right.statusUpdatedAt ?? right.dueAt);
+
+      return rightTimestamp - leftTimestamp;
+    });
+
+  function openEscalationStatusForm(escalation: Ticket["escalations"][number]) {
+    if (activeDecisionFormId === escalation.id) {
+      setActiveDecisionFormId(null);
+      return;
+    }
+
+    setStatusDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: escalation.status
+    }));
+    setActionPlanDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: escalation.actionPlan || escalation.mitigationPlan || ""
+    }));
+    setActionItemDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: getEscalationActionItems(escalation)
+    }));
+    setMeetingSeriesDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: escalation.meetingSeries ?? ""
+    }));
+    setManagerNameDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: escalation.managerName ?? ""
+    }));
+    setManagerEmailDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: escalation.managerEmail ?? ""
+    }));
+    setPeopleDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: getEscalationPeople(escalation).map((person) => ({
+        id: person.id,
+        name: person.name,
+        email: person.email ?? "",
+        role: person.role ?? ""
+      }))
+    }));
+    setManagerInviteDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [escalation.id]: false
+    }));
+    setActiveDecisionFormId(escalation.id);
+  }
+
+  function renderEscalationStatusForm(escalation: Ticket["escalations"][number]) {
+    if (!expanded || !onUpdateEscalationStatus || activeDecisionFormId !== escalation.id) {
+      return null;
+    }
+
+    return (
+      <form
+        className="escalation-action-form admin-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const nextActionItems = actionItemDrafts[escalation.id] ?? getEscalationActionItems(escalation);
+          const nextPeople =
+            peopleDrafts[escalation.id] ??
+            getEscalationPeople(escalation).map((person) => ({
+              id: person.id,
+              name: person.name,
+              email: person.email ?? "",
+              role: person.role ?? ""
+            }));
+          const primaryPerson = getPrimaryEscalationPerson(normalizeEscalationPeople(nextPeople));
+          onUpdateEscalationStatus(
+            ticket.key,
+            escalation.id,
+            statusDrafts[escalation.id] ?? escalation.status,
+            decisionNotes[escalation.id] ?? "",
+            {
+              actionPlan:
+                formatEscalationActionItemsForStorage(normalizeEscalationActionItems(nextActionItems)) ||
+                actionPlanDrafts[escalation.id] ||
+                escalation.actionPlan ||
+                escalation.mitigationPlan,
+              actionItems: nextActionItems,
+              meetingSeries: meetingSeriesDrafts[escalation.id] ?? escalation.meetingSeries ?? "",
+              managerName: primaryPerson?.name ?? managerNameDrafts[escalation.id] ?? escalation.managerName ?? "",
+              managerEmail: primaryPerson?.email ?? managerEmailDrafts[escalation.id] ?? escalation.managerEmail ?? "",
+              people: nextPeople,
+              sendManagerInvite: managerInviteDrafts[escalation.id] ?? false
+            }
+          );
+          setDecisionNotes((currentNotes) => ({ ...currentNotes, [escalation.id]: "" }));
+          setManagerInviteDrafts((currentDrafts) => ({ ...currentDrafts, [escalation.id]: false }));
+          setActiveDecisionFormId(null);
+        }}
+      >
+        <div className="escalation-action-grid">
+          <label className="form-field">
+            <span>Status</span>
+            <select
+              value={statusDrafts[escalation.id] ?? escalation.status}
+              onChange={(event) =>
+                setStatusDrafts((currentDrafts) => ({
+                  ...currentDrafts,
+                  [escalation.id]: event.target.value as EscalationStatus
+                }))
+              }
+            >
+              {escalationStatusOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <RichTextEditor
+            label="Status update"
+            value={decisionNotes[escalation.id] ?? ""}
+            onChange={(value) =>
+              setDecisionNotes((currentNotes) => ({
+                ...currentNotes,
+                [escalation.id]: value
+              }))
+            }
+            placeholder="Capture decision, owner response, progress, blocker, or why it is done."
+            rows={3}
+          />
+          <EscalationActionChecklistEditor
+            items={actionItemDrafts[escalation.id] ?? getEscalationActionItems(escalation)}
+            onChange={(items) => {
+              setActionItemDrafts((currentDrafts) => ({
+                ...currentDrafts,
+                [escalation.id]: items
+              }));
+              setActionPlanDrafts((currentDrafts) => ({
+                ...currentDrafts,
+                [escalation.id]: formatEscalationActionItemsForStorage(normalizeEscalationActionItems(items))
+              }));
+            }}
+          />
+          <label className="form-field form-field-wide">
+            <span>Meeting series</span>
+            <textarea
+              value={meetingSeriesDrafts[escalation.id] ?? escalation.meetingSeries ?? ""}
+              onChange={(event) =>
+                setMeetingSeriesDrafts((currentDrafts) => ({
+                  ...currentDrafts,
+                  [escalation.id]: event.target.value
+                }))
+              }
+              placeholder="Cadence, invite text, meeting link, or recurring follow-up notes."
+              rows={3}
+            />
+          </label>
+          <EscalationPeopleEditor
+            people={
+              peopleDrafts[escalation.id] ??
+              getEscalationPeople(escalation).map((person) => ({
+                id: person.id,
+                name: person.name,
+                email: person.email ?? "",
+                role: person.role ?? ""
+              }))
+            }
+            onChange={(people) => {
+              const primaryPerson = getPrimaryEscalationPerson(normalizeEscalationPeople(people));
+              setPeopleDrafts((currentDrafts) => ({
+                ...currentDrafts,
+                [escalation.id]: people
+              }));
+              setManagerNameDrafts((currentDrafts) => ({
+                ...currentDrafts,
+                [escalation.id]: primaryPerson?.name ?? ""
+              }));
+              setManagerEmailDrafts((currentDrafts) => ({
+                ...currentDrafts,
+                [escalation.id]: primaryPerson?.email ?? ""
+              }));
+            }}
+          />
+          <div className="form-field form-field-wide">
+            <AdminCheckbox
+              checked={managerInviteDrafts[escalation.id] ?? false}
+              label="Invite primary person by email"
+              onChange={(checked) =>
+                setManagerInviteDrafts((currentDrafts) => ({
+                  ...currentDrafts,
+                  [escalation.id]: checked
+                }))
+              }
+            />
+          </div>
+        </div>
+        <div className="composer-actions">
+          <button className="secondary-button" type="button" onClick={() => setActiveDecisionFormId(null)}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            <TegelIcon name="save" size="16px" />
+            Save status
+          </button>
+        </div>
+      </form>
+    );
+  }
 
   return (
     <section className={embedded ? "embedded-section" : "panel escalation-panel"}>
       <PanelHeader
         title="Escalation management"
-        description="SLA, technical, business, and management escalation branches."
+        description={`${activeEscalationCount} active · ${ticket.escalations.length} total escalation${ticket.escalations.length === 1 ? "" : "s"}.`}
         iconName="warning"
       />
+      <div className="escalation-summary-strip" aria-label="Escalation status summary">
+        {escalationColumns.map((column) => (
+          <button
+            aria-label={`Show ${column.title.toLowerCase()} escalations, ${column.escalations.length} item${
+              column.escalations.length === 1 ? "" : "s"
+            }`}
+            aria-pressed={escalationStatusFilter === column.id}
+            className={`escalation-summary-item lane-${column.id} ${
+              escalationStatusFilter === column.id ? "is-active" : ""
+            }`}
+            key={column.id}
+            onClick={() => {
+              setEscalationStatusFilter(column.id);
+              setActiveDecisionFormId(null);
+            }}
+            type="button"
+          >
+            <b>{column.escalations.length}</b>
+            {column.title}
+          </button>
+        ))}
+      </div>
       {canWrite ? (
         <div className="escalation-toolbar">
           {onCreateEscalation ? (
@@ -11078,13 +17639,13 @@ function EscalationPanel({
               </select>
             </label>
             <label className="form-field">
-              <span>Decision maker</span>
+              <span>Escalation point</span>
               <input
                 value={newEscalation.decisionMaker}
                 onChange={(event) =>
                   setNewEscalation({ ...newEscalation, decisionMaker: event.target.value })
                 }
-                placeholder="Release manager or owner"
+                placeholder="Planner, owner, or release manager"
               />
             </label>
             <label className="form-field">
@@ -11125,13 +17686,48 @@ function EscalationPanel({
               placeholder="What decision or action is requested"
               rows={3}
             />
-            <RichTextEditor
-              label="Mitigation plan"
-              value={newEscalation.mitigationPlan}
-              onChange={(value) => setNewEscalation({ ...newEscalation, mitigationPlan: value })}
-              placeholder="Temporary workaround, risk reduction, or fallback plan"
-              rows={3}
+            <EscalationActionChecklistEditor
+              items={newEscalation.actionItems}
+              onChange={(items) => {
+                const actionPlan = formatEscalationActionItemsForStorage(normalizeEscalationActionItems(items));
+
+                setNewEscalation({
+                  ...newEscalation,
+                  actionItems: items,
+                  actionPlan,
+                  mitigationPlan: actionPlan
+                });
+              }}
             />
+            <label className="form-field form-field-wide">
+              <span>Meeting series</span>
+              <textarea
+                value={newEscalation.meetingSeries}
+                onChange={(event) => setNewEscalation({ ...newEscalation, meetingSeries: event.target.value })}
+                placeholder="Cadence, invite text, meeting link, or recurring follow-up notes."
+                rows={3}
+              />
+            </label>
+            <EscalationPeopleEditor
+              people={newEscalation.people}
+              onChange={(people) => {
+                const primaryPerson = getPrimaryEscalationPerson(normalizeEscalationPeople(people));
+
+                setNewEscalation({
+                  ...newEscalation,
+                  people,
+                  managerName: primaryPerson?.name ?? "",
+                  managerEmail: primaryPerson?.email ?? ""
+                });
+              }}
+            />
+            <div className="form-field form-field-wide">
+              <AdminCheckbox
+                checked={newEscalation.sendManagerInvite}
+                label="Invite primary person by email"
+                onChange={(checked) => setNewEscalation({ ...newEscalation, sendManagerInvite: checked })}
+              />
+            </div>
           </div>
           <div className="composer-actions">
             <button className="secondary-button" type="button" onClick={() => setIsCreateFormOpen(false)}>
@@ -11144,111 +17740,563 @@ function EscalationPanel({
           </div>
         </form>
       ) : null}
-      <div className={`escalation-list ${expanded ? "is-expanded" : ""}`}>
+      <div className="escalation-table-card">
+        <header>
+          <div>
+            <h3>{selectedEscalationColumn.title} escalations</h3>
+            <span>
+              {escalationRows.length} of {selectedEscalationTotal} shown
+            </span>
+          </div>
+          <label className="escalation-table-search">
+            <TegelIcon name="search" size="16px" />
+            <input
+              value={escalationSearch}
+              onChange={(event) => setEscalationSearch(event.target.value)}
+              placeholder={`Search ${selectedEscalationColumn.title.toLowerCase()} escalations, manager, plan`}
+            />
+          </label>
+        </header>
+        <div className="escalation-responsive-list" role="list" aria-label="Escalation cards">
+          {escalationRows.length === 0 ? (
+            <div className="escalation-table-empty" role="listitem">
+              {ticket.escalations.length === 0
+                ? "No escalations have been opened for this ticket."
+                : selectedEscalationTotal === 0
+                  ? selectedEscalationColumn.empty
+                  : "No escalations match the current search."}
+            </div>
+          ) : (
+            escalationRows.map((escalation) => {
+              const lane = getEscalationStatusLane(escalation.status);
+              const statusUpdatedAt = getEscalationStatusTimestampLabel(escalation.statusUpdatedAt);
+              const actionItems = getEscalationActionItems(escalation);
+              const people = getEscalationPeople(escalation);
+              const statusUpdates = [...(escalation.statusUpdates ?? [])].sort(
+                (left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt)
+              );
+              const latestUpdate = escalation.statusNote?.trim() || statusUpdates[0]?.note || "";
+
+              return (
+                <article
+                  className={`escalation-work-card severity-${escalation.severity} ${
+                    activeDecisionFormId === escalation.id ? "is-editing" : ""
+                  }`}
+                  key={escalation.id}
+                  role="listitem"
+                >
+                  <div className="escalation-work-card-header">
+                    <div>
+                      <span>{escalation.type} escalation</span>
+                      <h3>{escalation.reason}</h3>
+                    </div>
+                    <div className="escalation-work-card-badges">
+                      <strong className={`escalation-status-pill lane-${lane}`}>
+                        {getEscalationStatusLabel(escalation.status)}
+                      </strong>
+                      <span className={`escalation-severity-pill severity-${escalation.severity}`}>
+                        {escalation.severity}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="escalation-work-meta">
+                    <div>
+                      <span>Point / due</span>
+                      <strong>{escalation.decisionMaker || "Unassigned"}</strong>
+                      <small>{formatDateTimeDisplay(escalation.dueAt)}</small>
+                    </div>
+                    <div>
+                      <span>Updated</span>
+                      <strong>{statusUpdatedAt || "Not updated"}</strong>
+                      <small>{statusUpdates.length} update{statusUpdates.length === 1 ? "" : "s"}</small>
+                    </div>
+                  </div>
+                  <div className="escalation-work-section">
+                    <h4>Requested action</h4>
+                    <RichTextContent value={escalation.requestedAction} fallback="No target outcome provided." compact />
+                  </div>
+                  <div className="escalation-work-section">
+                    <h4>Action checklist</h4>
+                    <EscalationActionChecklist items={actionItems} />
+                  </div>
+                  <div className="escalation-work-section">
+                    <h4>People involved</h4>
+                    <EscalationPeopleList people={people} />
+                    {escalation.managerInviteStatus ? (
+                      <b className={`escalation-invite-status status-${escalation.managerInviteStatus}`}>
+                        {getManagerInviteStatusLabel(escalation.managerInviteStatus)}
+                      </b>
+                    ) : null}
+                  </div>
+                  {latestUpdate ? (
+                    <div className="escalation-work-section">
+                      <h4>Latest update</h4>
+                      <RichTextContent value={latestUpdate} fallback="" compact />
+                    </div>
+                  ) : null}
+                  <div className="escalation-card-actions">
+                    {expanded && onUpdateEscalationStatus ? (
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => openEscalationStatusForm(escalation)}
+                      >
+                        <TegelIcon name="edit" size="16px" />
+                        {activeDecisionFormId === escalation.id ? "Close update" : "Update"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {expanded && onUpdateEscalationStatus && activeDecisionFormId === escalation.id
+                    ? renderEscalationStatusForm(escalation)
+                    : null}
+                </article>
+              );
+            })
+          )}
+        </div>
+        <div className="escalation-table-scroll" role="region" aria-label="Escalations">
+          <table className="escalation-table">
+            <thead>
+              <tr>
+                <th scope="col">Escalation</th>
+                <th scope="col">Status</th>
+                <th scope="col">Severity</th>
+                <th scope="col">Point / due</th>
+                <th scope="col">Action plan</th>
+                <th scope="col">Meeting / manager</th>
+                <th scope="col">Updated</th>
+                <th scope="col">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {escalationRows.length === 0 ? (
+                <tr>
+                  <td className="escalation-table-empty" colSpan={8}>
+                    {ticket.escalations.length === 0
+                      ? "No escalations have been opened for this ticket."
+                      : selectedEscalationTotal === 0
+                        ? selectedEscalationColumn.empty
+                        : "No escalations match the current search."}
+                  </td>
+                </tr>
+              ) : (
+                escalationRows.flatMap((escalation) => {
+                  const lane = getEscalationStatusLane(escalation.status);
+                  const statusUpdatedAt = getEscalationStatusTimestampLabel(escalation.statusUpdatedAt);
+                  const actionPlan = escalation.actionPlan || escalation.mitigationPlan;
+                  const statusUpdates = [...(escalation.statusUpdates ?? [])].sort(
+                    (left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt)
+                  );
+                  const latestUpdate = escalation.statusNote?.trim() || statusUpdates[0]?.note || "";
+                  const managerContact = [escalation.managerName, escalation.managerEmail]
+                    .map((value) => value?.trim() ?? "")
+                    .filter(Boolean)
+                    .join(" · ");
+                  const row = (
+                    <tr className={activeDecisionFormId === escalation.id ? "is-editing" : ""} key={escalation.id}>
+                      <td className="escalation-table-primary">
+                        <strong>{escalation.reason}</strong>
+                        <span>{escalation.type} escalation</span>
+                        <RichTextContent value={escalation.requestedAction} fallback="No target outcome provided." compact />
+                      </td>
+                      <td>
+                        <strong className={`escalation-status-pill lane-${lane}`}>
+                          {getEscalationStatusLabel(escalation.status)}
+                        </strong>
+                      </td>
+                      <td>
+                        <span className={`escalation-severity-pill severity-${escalation.severity}`}>
+                          {escalation.severity}
+                        </span>
+                      </td>
+                      <td className="escalation-table-stack">
+                        <strong>{escalation.decisionMaker || "Unassigned"}</strong>
+                        <span>{formatDateTimeDisplay(escalation.dueAt)}</span>
+                      </td>
+                      <td>
+                        <RichTextContent value={actionPlan} fallback="No action plan." compact />
+                      </td>
+                      <td className="escalation-table-stack">
+                        <span>{escalation.meetingSeries || "No meeting series"}</span>
+                        <small>{managerContact || "No manager invited"}</small>
+                        {escalation.managerInviteStatus ? (
+                          <b className={`escalation-invite-status status-${escalation.managerInviteStatus}`}>
+                            {getManagerInviteStatusLabel(escalation.managerInviteStatus)}
+                          </b>
+                        ) : null}
+                      </td>
+                      <td className="escalation-table-stack">
+                        <strong>{statusUpdatedAt || "Not updated"}</strong>
+                        <span>{statusUpdates.length} update{statusUpdates.length === 1 ? "" : "s"}</span>
+                        {latestUpdate ? <RichTextContent value={latestUpdate} fallback="" compact /> : null}
+                      </td>
+                      <td className="escalation-table-actions">
+                        {expanded && onUpdateEscalationStatus ? (
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => openEscalationStatusForm(escalation)}
+                          >
+                            <TegelIcon name="edit" size="16px" />
+                            {activeDecisionFormId === escalation.id ? "Close" : "Update"}
+                          </button>
+                        ) : (
+                          <span>-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                  const formRow =
+                    expanded && onUpdateEscalationStatus && activeDecisionFormId === escalation.id ? (
+                      <tr className="escalation-table-form-row" key={`${escalation.id}-form`}>
+                        <td colSpan={8}>{renderEscalationStatusForm(escalation)}</td>
+                      </tr>
+                    ) : null;
+
+                  return formRow ? [row, formRow] : [row];
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className={`escalation-list escalation-board ${expanded ? "is-expanded" : ""}`} hidden>
         {ticket.escalations.length === 0 ? (
           <EmptyState
             title="No escalation active"
             body="Escalation matrices remain ready for SLA, technical, business, or management triggers."
           />
         ) : (
-          ticket.escalations.map((escalation) => (
-            <article className={`escalation-card severity-${escalation.severity}`} key={escalation.id}>
-              <div className="escalation-topline">
-                <span>{escalation.type} escalation</span>
-                <strong>{escalation.severity}</strong>
-              </div>
-              <h3>{escalation.reason}</h3>
-              <RichTextContent value={escalation.impact} fallback="No impact provided." compact />
-              <div className="escalation-meta">
-                <span>Due {escalation.dueAt}</span>
-                <span>{escalation.decisionMaker}</span>
-                <span>{escalation.status.replace("_", " ")}</span>
-              </div>
-              {expanded && onUpdateEscalationStatus ? (
-                <div className="escalation-card-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() =>
-                      setActiveDecisionFormId((currentId) =>
-                        currentId === escalation.id ? null : escalation.id
-                      )
-                    }
-                  >
-                    <TegelIcon name="edit" size="16px" />
-                    {activeDecisionFormId === escalation.id ? "Close decision" : "Update decision"}
-                  </button>
+          escalationColumns.map((column) => (
+            <section className={`escalation-column lane-${column.id}`} key={column.id}>
+              <div className="escalation-column-header">
+                <div>
+                  <strong>{column.title}</strong>
+                  <span>{column.statuses.map((status) => getEscalationStatusLabel(status)).join(" / ")}</span>
                 </div>
-              ) : null}
-              {expanded ? (
-                <div className="decision-block">
-                  <strong>Requested action</strong>
-                  <RichTextContent value={escalation.requestedAction} fallback="No requested action provided." compact />
-                  <strong>Mitigation</strong>
-                  <RichTextContent value={escalation.mitigationPlan} fallback="No mitigation plan provided." compact />
-                  <strong>Urgency</strong>
-                  <p>{escalation.urgency}</p>
-                </div>
-              ) : null}
-              {expanded && onUpdateEscalationStatus && activeDecisionFormId === escalation.id ? (
-                <form
-                  className="escalation-action-form admin-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    onUpdateEscalationStatus(
-                      ticket.key,
-                      escalation.id,
-                      statusDrafts[escalation.id] ?? escalation.status,
-                      decisionNotes[escalation.id] ?? ""
+                <b>{column.escalations.length}</b>
+              </div>
+              <div className="escalation-column-list">
+                {column.escalations.length === 0 ? (
+                  <div className="escalation-empty-lane">{column.empty}</div>
+                ) : (
+                  column.escalations.map((escalation) => {
+                    const lane = getEscalationStatusLane(escalation.status);
+                    const isClosed = escalation.status === "resolved";
+                    const statusUpdatedAt = getEscalationStatusTimestampLabel(escalation.statusUpdatedAt);
+                    const statusNote = escalation.statusNote?.trim() ?? "";
+                    const actionPlan = escalation.actionPlan || escalation.mitigationPlan;
+                    const planOrOutcome = isClosed ? statusNote || actionPlan : actionPlan;
+                    const statusUpdates = [...(escalation.statusUpdates ?? [])].sort(
+                      (left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt)
                     );
-                    setDecisionNotes((currentNotes) => ({ ...currentNotes, [escalation.id]: "" }));
-                    setActiveDecisionFormId(null);
-                  }}
-                >
-                  <div className="escalation-action-grid">
-                    <label className="form-field">
-                      <span>Decision status</span>
-                      <select
-                        value={statusDrafts[escalation.id] ?? escalation.status}
-                        onChange={(event) =>
-                          setStatusDrafts((currentDrafts) => ({
-                            ...currentDrafts,
-                            [escalation.id]: event.target.value as EscalationStatus
-                          }))
-                        }
-                      >
-                        {escalationStatusOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <RichTextEditor
-                      label="Decision note"
-                      value={decisionNotes[escalation.id] ?? ""}
-                      onChange={(value) =>
-                        setDecisionNotes((currentNotes) => ({
-                          ...currentNotes,
-                          [escalation.id]: value
-                        }))
-                      }
-                      placeholder="Capture decision, owner response, or next escalation action."
-                      rows={3}
-                    />
-                  </div>
-                  <div className="composer-actions">
-                    <button className="secondary-button" type="button" onClick={() => setActiveDecisionFormId(null)}>
-                      Cancel
-                    </button>
-                    <button className="primary-button" type="submit">
-                      <TegelIcon name="save" size="16px" />
-                      Save decision
-                    </button>
-                  </div>
-                </form>
-              ) : null}
-            </article>
+                    const managerContact = [escalation.managerName, escalation.managerEmail]
+                      .map((value) => value?.trim() ?? "")
+                      .filter(Boolean)
+                      .join(" · ");
+
+                    return (
+                      <article className={`escalation-card severity-${escalation.severity}`} key={escalation.id}>
+                        <div className="escalation-topline">
+                          <span>{escalation.type} escalation</span>
+                          <strong className={`escalation-status-pill lane-${lane}`}>
+                            {getEscalationStatusLabel(escalation.status)}
+                          </strong>
+                        </div>
+                        <h3>{escalation.reason}</h3>
+                        <div className="escalation-card-grid">
+                          <div className="escalation-field">
+                            <span>Escalation point</span>
+                            <strong>{escalation.decisionMaker || "Unassigned"}</strong>
+                          </div>
+                          <div className="escalation-field">
+                            <span>Due target</span>
+                            <strong>{formatDateTimeDisplay(escalation.dueAt)}</strong>
+                          </div>
+                          <div className="escalation-field">
+                            <span>Severity</span>
+                            <strong>{escalation.severity}</strong>
+                          </div>
+                        </div>
+                        <div className="escalation-field is-wide">
+                          <span>Target outcome</span>
+                          <RichTextContent value={escalation.requestedAction} fallback="No target outcome provided." compact />
+                        </div>
+                        {expanded ? (
+                          <div className="escalation-detail-stack">
+                            <div className="escalation-field is-wide">
+                              <span>Impact</span>
+                              <RichTextContent value={escalation.impact} fallback="No impact provided." compact />
+                            </div>
+                            <div className="escalation-field is-wide">
+                              <span>{isClosed ? "Fix / done" : "Action plan"}</span>
+                              <RichTextContent value={planOrOutcome} fallback="No plan provided." compact />
+                            </div>
+                            {escalation.meetingSeries ? (
+                              <div className="escalation-field is-wide">
+                                <span>Meeting series</span>
+                                <p>{escalation.meetingSeries}</p>
+                              </div>
+                            ) : null}
+                            {managerContact || escalation.managerInviteStatus ? (
+                              <div className="escalation-manager-strip">
+                                <div>
+                                  <span>Manager</span>
+                                  <strong>{managerContact || "No manager assigned"}</strong>
+                                  {escalation.managerInviteError ? <small>{escalation.managerInviteError}</small> : null}
+                                </div>
+                                <b className={`escalation-invite-status status-${escalation.managerInviteStatus ?? "not_sent"}`}>
+                                  {getManagerInviteStatusLabel(escalation.managerInviteStatus)}
+                                </b>
+                              </div>
+                            ) : null}
+                            {!isClosed && statusNote ? (
+                              <div className="escalation-field is-wide">
+                                <span>Latest update</span>
+                                <RichTextContent value={statusNote} fallback="No update provided." compact />
+                                {statusUpdatedAt ? <small>Updated {statusUpdatedAt}</small> : null}
+                              </div>
+                            ) : null}
+                            {statusUpdates.length > 0 ? (
+                              <div className="escalation-update-archive">
+                                <div className="escalation-update-archive-header">
+                                  <span>Status update archive</span>
+                                  <b>{statusUpdates.length}</b>
+                                </div>
+                                <div className="escalation-update-table-wrap" role="region" aria-label="Status update archive">
+                                  <table className="escalation-update-table">
+                                    <thead>
+                                      <tr>
+                                        <th scope="col">Time</th>
+                                        <th scope="col">Archive</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {statusUpdates.map((statusUpdate) => (
+                                        <tr key={statusUpdate.id}>
+                                          <td className="escalation-update-time-cell">
+                                            <strong>{formatClarificationTimestamp(statusUpdate.createdAt)}</strong>
+                                            <small>{getEscalationStatusLabel(statusUpdate.status)}</small>
+                                            <small>{statusUpdate.author}</small>
+                                          </td>
+                                          <td className="escalation-update-details-cell">
+                                            <div className="escalation-update-cell-block">
+                                              <b>Update</b>
+                                              <RichTextContent value={statusUpdate.note} fallback="-" compact />
+                                            </div>
+                                            {statusUpdate.actionPlan ? (
+                                              <div className="escalation-update-cell-block">
+                                                <b>Action plan</b>
+                                                <RichTextContent value={statusUpdate.actionPlan} fallback="-" compact />
+                                              </div>
+                                            ) : null}
+                                            {statusUpdate.meetingSeries ? (
+                                              <div className="escalation-update-cell-block">
+                                                <b>Meeting</b>
+                                                <p>{statusUpdate.meetingSeries}</p>
+                                              </div>
+                                            ) : null}
+                                            {statusUpdate.managerInvite ? (
+                                              <small>
+                                                {getManagerInviteStatusLabel(statusUpdate.managerInvite.status)} ·{" "}
+                                                {statusUpdate.managerInvite.email}
+                                              </small>
+                                            ) : null}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            ) : null}
+                            <div className="escalation-field is-wide">
+                              <span>Urgency</span>
+                              <p>{escalation.urgency || "No urgency provided."}</p>
+                            </div>
+                          </div>
+                        ) : null}
+                        {expanded && onUpdateEscalationStatus ? (
+                          <div className="escalation-card-actions">
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => {
+                                if (activeDecisionFormId === escalation.id) {
+                                  setActiveDecisionFormId(null);
+                                  return;
+                                }
+
+                                setStatusDrafts((currentDrafts) => ({
+                                  ...currentDrafts,
+                                  [escalation.id]: escalation.status
+                                }));
+                                setActionPlanDrafts((currentDrafts) => ({
+                                  ...currentDrafts,
+                                  [escalation.id]: escalation.actionPlan || escalation.mitigationPlan || ""
+                                }));
+                                setMeetingSeriesDrafts((currentDrafts) => ({
+                                  ...currentDrafts,
+                                  [escalation.id]: escalation.meetingSeries ?? ""
+                                }));
+                                setManagerNameDrafts((currentDrafts) => ({
+                                  ...currentDrafts,
+                                  [escalation.id]: escalation.managerName ?? ""
+                                }));
+                                setManagerEmailDrafts((currentDrafts) => ({
+                                  ...currentDrafts,
+                                  [escalation.id]: escalation.managerEmail ?? ""
+                                }));
+                                setManagerInviteDrafts((currentDrafts) => ({
+                                  ...currentDrafts,
+                                  [escalation.id]: false
+                                }));
+                                setActiveDecisionFormId(escalation.id);
+                              }}
+                            >
+                              <TegelIcon name="edit" size="16px" />
+                              {activeDecisionFormId === escalation.id ? "Close status update" : "Update status"}
+                            </button>
+                          </div>
+                        ) : null}
+                        {expanded && onUpdateEscalationStatus && activeDecisionFormId === escalation.id ? (
+                          <form
+                            className="escalation-action-form admin-form"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              onUpdateEscalationStatus(
+                                ticket.key,
+                                escalation.id,
+                                statusDrafts[escalation.id] ?? escalation.status,
+                                decisionNotes[escalation.id] ?? "",
+                                {
+                                  actionPlan: actionPlanDrafts[escalation.id] ?? escalation.actionPlan ?? escalation.mitigationPlan,
+                                  meetingSeries: meetingSeriesDrafts[escalation.id] ?? escalation.meetingSeries ?? "",
+                                  managerName: managerNameDrafts[escalation.id] ?? escalation.managerName ?? "",
+                                  managerEmail: managerEmailDrafts[escalation.id] ?? escalation.managerEmail ?? "",
+                                  sendManagerInvite: managerInviteDrafts[escalation.id] ?? false
+                                }
+                              );
+                              setDecisionNotes((currentNotes) => ({ ...currentNotes, [escalation.id]: "" }));
+                              setManagerInviteDrafts((currentDrafts) => ({ ...currentDrafts, [escalation.id]: false }));
+                              setActiveDecisionFormId(null);
+                            }}
+                          >
+                            <div className="escalation-action-grid">
+                              <label className="form-field">
+                                <span>Status</span>
+                                <select
+                                  value={statusDrafts[escalation.id] ?? escalation.status}
+                                  onChange={(event) =>
+                                    setStatusDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [escalation.id]: event.target.value as EscalationStatus
+                                    }))
+                                  }
+                                >
+                                  {escalationStatusOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <RichTextEditor
+                                label="Status update"
+                                value={decisionNotes[escalation.id] ?? ""}
+                                onChange={(value) =>
+                                  setDecisionNotes((currentNotes) => ({
+                                    ...currentNotes,
+                                    [escalation.id]: value
+                                  }))
+                                }
+                                placeholder="Capture decision, owner response, progress, blocker, or why it is done."
+                                rows={3}
+                              />
+                              <RichTextEditor
+                                label="Action plan"
+                                value={actionPlanDrafts[escalation.id] ?? escalation.actionPlan ?? escalation.mitigationPlan}
+                                onChange={(value) =>
+                                  setActionPlanDrafts((currentDrafts) => ({
+                                    ...currentDrafts,
+                                    [escalation.id]: value
+                                  }))
+                                }
+                                placeholder="Update next actions, owners, mitigation, or fallback plan."
+                                rows={3}
+                              />
+                              <label className="form-field form-field-wide">
+                                <span>Meeting series</span>
+                                <textarea
+                                  value={meetingSeriesDrafts[escalation.id] ?? escalation.meetingSeries ?? ""}
+                                  onChange={(event) =>
+                                    setMeetingSeriesDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [escalation.id]: event.target.value
+                                    }))
+                                  }
+                                  placeholder="Cadence, invite text, meeting link, or recurring follow-up notes."
+                                  rows={3}
+                                />
+                              </label>
+                              <label className="form-field">
+                                <span>Manager name</span>
+                                <input
+                                  value={managerNameDrafts[escalation.id] ?? escalation.managerName ?? ""}
+                                  onChange={(event) =>
+                                    setManagerNameDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [escalation.id]: event.target.value
+                                    }))
+                                  }
+                                  placeholder="Manager or decision owner"
+                                />
+                              </label>
+                              <label className="form-field">
+                                <span>Manager email</span>
+                                <input
+                                  type="email"
+                                  required={managerInviteDrafts[escalation.id] ?? false}
+                                  value={managerEmailDrafts[escalation.id] ?? escalation.managerEmail ?? ""}
+                                  onChange={(event) =>
+                                    setManagerEmailDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [escalation.id]: event.target.value
+                                    }))
+                                  }
+                                  placeholder="manager@example.com"
+                                />
+                              </label>
+                              <div className="form-field form-field-wide">
+                                <AdminCheckbox
+                                  checked={managerInviteDrafts[escalation.id] ?? false}
+                                  label="Invite manager by email"
+                                  onChange={(checked) =>
+                                    setManagerInviteDrafts((currentDrafts) => ({
+                                      ...currentDrafts,
+                                      [escalation.id]: checked
+                                    }))
+                                  }
+                                />
+                              </div>
+                            </div>
+                            <div className="composer-actions">
+                              <button className="secondary-button" type="button" onClick={() => setActiveDecisionFormId(null)}>
+                                Cancel
+                              </button>
+                              <button className="primary-button" type="submit">
+                                <TegelIcon name="save" size="16px" />
+                                Save status
+                              </button>
+                            </div>
+                          </form>
+                        ) : null}
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+            </section>
           ))
         )}
       </div>
@@ -11258,10 +18306,10 @@ function EscalationPanel({
 
 function NotificationCenter({
   items,
-  onOpenTicket
+  onOpenNotification
 }: {
   items: NotificationItem[];
-  onOpenTicket: (ticketKey: string) => void;
+  onOpenNotification: (notification: NotificationItem) => void;
 }) {
   return (
     <section className="panel notification-center">
@@ -11280,13 +18328,13 @@ function NotificationCenter({
               <strong>{item.title}</strong>
               <p>{item.body}</p>
               <span>
-                {item.ticketKey} · {item.createdAt}
+                {item.ticketKey} · {formatDateTimeDisplay(item.createdAt)}
               </span>
             </div>
             <button
               className="secondary-button"
               type="button"
-              onClick={() => onOpenTicket(item.ticketKey)}
+              onClick={() => onOpenNotification(item)}
             >
               {item.actionLabel}
               <TegelIcon name="chevron_right" size="17px" />
@@ -11324,7 +18372,7 @@ function AuditTimeline({
               <div>
                 <div className="audit-topline">
                   <strong>{entry.eventType}</strong>
-                  <span>{entry.createdAt}</span>
+                  <span>{formatDateTimeDisplay(entry.createdAt)}</span>
                 </div>
                 <div className="audit-reason">
                   <strong>{entry.actor}</strong>
@@ -12230,6 +19278,7 @@ function RequestOptionsManager({
               escalationPolicyId: defaultWorkflow?.escalationPolicyId,
               stepIds: defaultWorkflow?.steps.map((step) => step.id) ?? [],
               jiraCreatorStepId: "release-gate",
+              jiraCreatorStepIds: ["release-gate"],
               stepOverrides: {},
               active: option.active,
               updatedAt: new Date().toISOString()
@@ -12320,7 +19369,7 @@ function RequestOptionsManager({
             onConfigChange((current) => {
               const removedPriority = current.priorities.find((priority) => priority.id === optionId);
               const remainingPriorities = current.priorities.filter((priority) => priority.id !== optionId);
-              const fallbackPriority = remainingPriorities.find((priority) => priority.active)?.label ?? remainingPriorities[0]?.label ?? "Medium";
+              const fallbackPriority = remainingPriorities.find((priority) => priority.active)?.label ?? remainingPriorities[0]?.label ?? "2 - Medium";
 
               return {
                 ...current,
@@ -12488,7 +19537,7 @@ function RequestConfigOptionEditor({
           <input
             value={optionForm.label}
             onChange={(event) => setOptionForm({ ...optionForm, label: event.target.value })}
-            placeholder={title === "Request types" ? "Change Request" : "Medium"}
+            placeholder={title === "Request types" ? "Change Request" : title === "Priorities" ? "2 - Medium" : "Medium"}
           />
         </label>
         <div className="admin-form-grid two-columns">
@@ -12812,15 +19861,32 @@ function formatDatabaseCell(value: unknown): string {
   return String(value);
 }
 
+const defaultDatabaseConfigSql = "SELECT key, updated_at FROM app_config";
+
+function isLocalTestingHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+}
+
+function isLocalTicketCleanupVisible(): boolean {
+  return (
+    process.env.NODE_ENV !== "production" ||
+    process.env.NEXT_PUBLIC_NEXUS_ENABLE_LOCAL_TEST_TOOLS === "true" ||
+    (typeof window !== "undefined" && isLocalTestingHostname(window.location.hostname))
+  );
+}
+
 function DatabaseAdminPanel({ role }: { role: RoleKey }) {
   const [tables, setTables] = useState<DatabaseTableSummary[]>([]);
   const [databasePath, setDatabasePath] = useState("");
   const [selectedTableName, setSelectedTableName] = useState("");
-  const [sql, setSql] = useState("SELECT key, updated_at FROM app_config");
+  const [sql, setSql] = useState(defaultDatabaseConfigSql);
   const [queryResult, setQueryResult] = useState<DatabaseQueryResult | null>(null);
   const [error, setError] = useState("");
+  const [resetNotice, setResetNotice] = useState("");
   const [isLoadingTables, setIsLoadingTables] = useState(false);
   const [isRunningQuery, setIsRunningQuery] = useState(false);
+  const [isResettingDatabase, setIsResettingDatabase] = useState(false);
+  const isDevelopmentDatabaseToolsEnabled = isLocalTicketCleanupVisible();
   const selectedTable = tables.find((table) => table.name === selectedTableName) ?? tables[0];
   const totalRows = tables.reduce((count, table) => count + table.rowCount, 0);
 
@@ -12922,6 +19988,75 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
     setSql(`SELECT * FROM ${quoteSqlIdentifier(tableName)} LIMIT 20`);
     setQueryResult(null);
     setError("");
+    setResetNotice("");
+  }
+
+  async function cleanDevelopmentTickets() {
+    if (!isDevelopmentDatabaseToolsEnabled) {
+      setError("Local ticket cleaning is available only in development mode.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Clean local testing tickets? This deletes only tickets from the local database. Admin configuration and integration settings are kept."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsResettingDatabase(true);
+    setError("");
+    setResetNotice("");
+
+    try {
+      const response = await fetch("/api/database", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          role,
+          confirmation: "clean-local-tickets"
+        })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            data?: { tables?: DatabaseTableSummary[] };
+            meta?: { databasePath?: string };
+            error?: { message?: string };
+          }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error?.message ?? "Local ticket cleanup failed.");
+      }
+
+      const nextTables = payload?.data?.tables ?? [];
+
+      setTables(nextTables);
+      setSelectedTableName(nextTables[0]?.name ?? "");
+      setDatabasePath(payload?.meta?.databasePath ?? databasePath);
+      setSql(defaultDatabaseConfigSql);
+      setQueryResult(null);
+      setResetNotice("Local tickets cleaned. Reloading ticket state...");
+
+      try {
+        window.localStorage.removeItem(notificationReadStorageKey);
+        window.localStorage.removeItem(jiraCheckedStorageKey);
+        window.localStorage.removeItem(sentEmailNotificationStorageKey);
+      } catch (storageError) {
+        console.error("Failed to clean browser test state after database reset.", {
+          error: getErrorMessage(storageError)
+        });
+      }
+
+      window.location.reload();
+    } catch (resetError) {
+      setError(getErrorMessage(resetError));
+    } finally {
+      setIsResettingDatabase(false);
+    }
   }
 
   if (role !== "admin") {
@@ -12942,7 +20077,25 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
         <strong>Local database</strong>
         <span>{databasePath || "Loading database path..."}</span>
       </section>
+      {isDevelopmentDatabaseToolsEnabled ? (
+        <section className="database-reset-card">
+          <div>
+            <strong>Development testing</strong>
+            <span>Delete local testing tickets only. Admin configuration stays unchanged.</span>
+          </div>
+          <button
+            className="secondary-button danger-button"
+            disabled={isResettingDatabase}
+            onClick={cleanDevelopmentTickets}
+            type="button"
+          >
+            <TegelIcon name="trash" size="16px" />
+            {isResettingDatabase ? "Cleaning..." : "Clean tickets"}
+          </button>
+        </section>
+      ) : null}
       {error ? <p className="admin-form-error">{error}</p> : null}
+      {resetNotice ? <p className="admin-form-success">{resetNotice}</p> : null}
       <section className="database-query-panel panel">
         <PanelHeader
           title="SQL query"
@@ -12960,7 +20113,7 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
             />
           </label>
           <div className="database-query-actions">
-            <button className="secondary-button" type="button" onClick={() => setSql("SELECT key, updated_at FROM app_config")}>
+            <button className="secondary-button" type="button" onClick={() => setSql(defaultDatabaseConfigSql)}>
               Config rows
             </button>
             <button className="secondary-button" type="button" onClick={() => setSql("SELECT key, title, state, updated_at FROM tickets ORDER BY updated_at DESC LIMIT 50")}>
@@ -13191,7 +20344,7 @@ type WorkflowRouteFormState = {
   workflowTemplateId: string;
   escalationPolicyId: string;
   stepIds: string[];
-  jiraCreatorStepId: string;
+  jiraCreatorStepIds: string[];
   stepOverrides: Record<string, WorkflowStepFormState>;
   active: boolean;
 };
@@ -13213,6 +20366,7 @@ type TemplateFieldFormState = {
   required: boolean;
   helperText: string;
   optionsText: string;
+  optionSource: FormTemplateOptionSource;
   sortOrder: string;
 };
 
@@ -13288,6 +20442,11 @@ type JiraIssueStatusDetails = {
   resolutionName?: string | null;
 };
 
+type JiraAttachmentActionPayload = {
+  uploaded?: string[];
+  skipped?: string[];
+};
+
 type JiraCreateTaskPayload = IntegrationApiErrorPayload | {
   data?: {
     status?: string;
@@ -13296,6 +20455,10 @@ type JiraCreateTaskPayload = IntegrationApiErrorPayload | {
     jiraUrl?: string | null;
     self?: string | null;
     jiraStatus?: JiraIssueStatusDetails;
+    issueFields?: JiraSyncedIssueFieldsInput;
+    comment?: JiraSyncedCommentInput;
+    comments?: JiraSyncedCommentInput[];
+    attachments?: JiraAttachmentActionPayload;
     warnings?: string[];
   };
 };
@@ -13348,6 +20511,9 @@ const workflowRoleTypeOptions = [
   { value: "review", label: "Review level" },
   { value: "inform", label: "Inform only" }
 ] as const satisfies readonly { value: WorkflowRoleType; label: string }[];
+const workflowRoleTypeCompatibility: Partial<Record<RoleKey, readonly WorkflowRoleType[]>> = {
+  software_architect: ["approval", "review"]
+};
 const tagVariantOptions: TegelTagVariant[] = [
   "neutral",
   "information",
@@ -13383,6 +20549,28 @@ const defaultOptionsByFieldType: Partial<Record<FormFieldType, string[]>> = {
   multiSelect: ["Option A", "Option B"],
   yesNo: ["Yes", "No"]
 };
+
+const templateFieldOptionSourceOptions = [
+  { value: "manual", label: "Manual options" },
+  { value: "portalProducts", label: "Portal products" },
+  { value: "portalPrus", label: "Portal PRUs" },
+  { value: "portalModules", label: "Portal modules" },
+  { value: "jiraUnreleasedVersions", label: "Jira available versions" },
+  { value: "jiraVersions", label: "Jira all versions" },
+  { value: "jiraSprints", label: "Jira sprints" },
+  { value: "jiraComponents", label: "Jira components" },
+  { value: "jiraBoards", label: "Jira boards" },
+  { value: "jiraPriorities", label: "Jira priorities" }
+] as const satisfies readonly { value: FormTemplateOptionSource; label: string }[];
+
+const jiraTemplateOptionSources = new Set<FormTemplateOptionSource>([
+  "jiraUnreleasedVersions",
+  "jiraVersions",
+  "jiraSprints",
+  "jiraComponents",
+  "jiraBoards",
+  "jiraPriorities"
+]);
 
 const workflowStatusOverrideOptions = [
   { value: "active", label: "Start again / reopen" },
@@ -13425,14 +20613,20 @@ function getRoleWorkflowType(config: AdminConfig, role: RoleKey): WorkflowRoleTy
   );
 }
 
-function getWorkflowRoleOptions(config: AdminConfig, workflowType?: WorkflowRoleType) {
-  return getRoleOptions(config).filter((role) => {
-    if (!workflowType) {
-      return true;
-    }
+function roleCanOwnWorkflowType(config: AdminConfig, role: RoleKey, workflowType?: WorkflowRoleType): boolean {
+  if (!workflowType) {
+    return true;
+  }
 
-    return getRoleWorkflowType(config, role.key) === workflowType;
-  });
+  if (workflowRoleTypeCompatibility[role]?.includes(workflowType)) {
+    return true;
+  }
+
+  return getRoleWorkflowType(config, role) === workflowType;
+}
+
+function getWorkflowRoleOptions(config: AdminConfig, workflowType?: WorkflowRoleType) {
+  return getRoleOptions(config).filter((role) => roleCanOwnWorkflowType(config, role.key, workflowType));
 }
 
 function getWorkflowRoleOptionsForStep(
@@ -13449,6 +20643,10 @@ function getWorkflowRoleOptionsForStep(
   const selectedRole = getRoleOptions(config).find((role) => role.key === ownerRole);
 
   return selectedRole ? [selectedRole, ...matchingRoles] : matchingRoles;
+}
+
+function workflowStepCanCreateJira(config: AdminConfig, stepForm: WorkflowStepFormState): boolean {
+  return stepForm.workflowType !== "inform" && roleCanCreateJira(config, stepForm.ownerRole);
 }
 
 function getAllConfigPrus(config: AdminConfig): Array<ProductPruConfig & { productId: string; productName: string }> {
@@ -13657,6 +20855,25 @@ function createIntegrationActionError(
   return error;
 }
 
+function formatJiraAttachmentActionComment(attachments?: JiraAttachmentActionPayload): string {
+  const uploadedCount = attachments?.uploaded?.length ?? 0;
+  const skippedCount = attachments?.skipped?.length ?? 0;
+  const parts = [
+    uploadedCount > 0
+      ? `${uploadedCount} ticket attachment${uploadedCount === 1 ? "" : "s"} uploaded to Jira.`
+      : "",
+    skippedCount > 0
+      ? `${skippedCount} ticket attachment${skippedCount === 1 ? "" : "s"} skipped because Jira already had it or content was unavailable.`
+      : ""
+  ].filter(Boolean);
+
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
+function formatJiraActionWarningComment(warnings: string[]): string {
+  return warnings.length > 0 ? ` Jira warning: ${warnings.join(" ")}` : "";
+}
+
 function getIntegrationActionErrorCode(error: unknown): string {
   if (!error || typeof error !== "object" || !("code" in error)) {
     return "";
@@ -13802,7 +21019,7 @@ function sortConfigOptions<TOption extends ConfigOption>(options: TOption[]): TO
 }
 
 function buildSlaRuleForm(config: AdminConfig, rule?: SlaRule): SlaRuleFormState {
-  const defaultPriority = (config.priorities.find((priority) => priority.active)?.label ?? "Medium") as Ticket["priority"];
+  const defaultPriority = (config.priorities.find((priority) => priority.active)?.label ?? "2 - Medium") as Ticket["priority"];
 
   return {
     priority: rule?.priority ?? defaultPriority,
@@ -13813,7 +21030,7 @@ function buildSlaRuleForm(config: AdminConfig, rule?: SlaRule): SlaRuleFormState
 
 function buildEscalationPolicyForm(config: AdminConfig, policy?: SlaPolicy): EscalationPolicyFormState {
   const defaultPolicy = policy ?? config.escalationPolicies[0];
-  const defaultPriority = config.priorities.find((priority) => priority.active)?.label ?? "Medium";
+  const defaultPriority = config.priorities.find((priority) => priority.active)?.label ?? "2 - Medium";
 
   return {
     id: defaultPolicy?.id ?? "",
@@ -13878,24 +21095,32 @@ function buildWorkflowRouteForm(
   const firstTemplate = workflowTemplates[0];
   const template = getWorkflowTemplateById(workflow?.workflowTemplateId ?? "") ?? firstTemplate;
   const stepIds = workflow?.stepIds?.length ? workflow.stepIds : template.steps.map((step) => step.id);
+  const stepOverrides = Object.fromEntries(
+    stepIds.flatMap((stepId) => {
+      const templateStep = template.steps.find((step) => step.id === stepId);
+      const override = workflow?.stepOverrides?.[stepId];
+      const step = templateStep ?? buildDynamicWorkflowStepConfig(stepId, override);
+
+      return step ? ([[stepId, buildWorkflowStepForm(step, override)] as const]) : [];
+    })
+  );
+  const jiraCreatorStepIds = getJiraCreatorStepIds({
+    stepIds,
+    jiraCreatorStepId: workflow?.jiraCreatorStepId ?? "",
+    jiraCreatorStepIds: workflow?.jiraCreatorStepIds
+  }).filter((stepId) => {
+    const stepForm = stepOverrides[stepId];
+
+    return stepForm ? workflowStepCanCreateJira(config, stepForm) : false;
+  });
 
   return {
     ticketTypeId: workflow?.ticketTypeId ?? firstRequestType?.id ?? "",
     workflowTemplateId: template.id,
     escalationPolicyId: workflow?.escalationPolicyId ?? template.escalationPolicyId ?? config.escalationPolicies[0]?.id ?? "",
     stepIds,
-    jiraCreatorStepId: stepIds.includes(workflow?.jiraCreatorStepId ?? "")
-      ? workflow?.jiraCreatorStepId ?? ""
-      : stepIds[0] ?? "",
-    stepOverrides: Object.fromEntries(
-      stepIds.flatMap((stepId) => {
-        const templateStep = template.steps.find((step) => step.id === stepId);
-        const override = workflow?.stepOverrides?.[stepId];
-        const step = templateStep ?? buildDynamicWorkflowStepConfig(stepId, override);
-
-        return step ? ([[stepId, buildWorkflowStepForm(step, override)] as const]) : [];
-      })
-    ),
+    jiraCreatorStepIds,
+    stepOverrides,
     active: workflow?.active ?? true
   };
 }
@@ -13996,12 +21221,17 @@ function buildTemplateFieldForm(field?: FormTemplateField, nextSortOrder = 1): T
     required: field?.required ?? true,
     helperText: field?.helperText ?? "",
     optionsText: (field?.options ?? defaultOptionsByFieldType[type] ?? []).join(", "),
+    optionSource: field?.optionSource ?? "manual",
     sortOrder: String(field?.sortOrder ?? nextSortOrder)
   };
 }
 
 function buildTemplateFieldFromForm(form: TemplateFieldFormState, existingFieldIds: string[]): FormTemplateField {
   const id = form.id || getUniqueConfigId(existingFieldIds, normalizeId(form.label, "field"));
+  const fieldShape = { type: form.type, component: form.component };
+  const optionSource = isChoiceTemplateField(fieldShape) && form.optionSource !== "manual"
+    ? form.optionSource
+    : undefined;
 
   return {
     id,
@@ -14014,6 +21244,7 @@ function buildTemplateFieldFromForm(form: TemplateFieldFormState, existingFieldI
       .split(",")
       .map((option) => option.trim())
       .filter(Boolean),
+    optionSource,
     sortOrder: Number.parseInt(form.sortOrder, 10) || 1
   };
 }
@@ -14396,6 +21627,12 @@ function FormTemplateManager({
     editingTemplateId ?? "draft-template-preview",
     new Date().toISOString()
   );
+  const selectedTemplateProduct = getConfigProduct(config, templateForm.productName);
+  const jiraTemplateMetadata = useJiraTemplateFieldMetadata(
+    config,
+    templateHasJiraOptionSource(templateForm.fields) || isJiraTemplateOptionSource(fieldForm.optionSource),
+    selectedTemplateProduct?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey
+  );
 
   function resetTemplateForm() {
     setEditingTemplateId(null);
@@ -14550,7 +21787,10 @@ function FormTemplateManager({
                 <div className="template-field-pill" key={field.id}>
                   <span>
                     {field.label}
-                    <small>{field.component} / {field.required ? "required" : "optional"}</small>
+                    <small>
+                      {field.component} / {field.required ? "required" : "optional"} /{" "}
+                      {getTemplateOptionSourceLabel(field.optionSource)}
+                    </small>
                   </span>
                   <button
                     className="icon-button quiet"
@@ -14619,10 +21859,12 @@ function FormTemplateManager({
                   value={fieldForm.type}
                   onChange={(event) => {
                     const type = event.target.value as FormFieldType;
+                    const nextComponent = getDefaultComponentForFieldType(type);
                     setFieldForm({
                       ...fieldForm,
                       type,
-                      component: getDefaultComponentForFieldType(type),
+                      component: nextComponent,
+                      optionSource: isChoiceTemplateField({ type, component: nextComponent }) ? fieldForm.optionSource : "manual",
                       optionsText: (defaultOptionsByFieldType[type] ?? []).join(", ")
                     });
                   }}
@@ -14638,7 +21880,17 @@ function FormTemplateManager({
                 <span>Component</span>
                 <select
                   value={fieldForm.component}
-                  onChange={(event) => setFieldForm({ ...fieldForm, component: event.target.value as FormComponentType })}
+                  onChange={(event) => {
+                    const component = event.target.value as FormComponentType;
+
+                    setFieldForm({
+                      ...fieldForm,
+                      component,
+                      optionSource: isChoiceTemplateField({ type: fieldForm.type, component })
+                        ? fieldForm.optionSource
+                        : "manual"
+                    });
+                  }}
                 >
                   {formComponentTypes.map((component) => (
                     <option key={component.value} value={component.value}>
@@ -14647,6 +21899,26 @@ function FormTemplateManager({
                   ))}
                 </select>
               </label>
+              {isChoiceTemplateField(fieldForm) ? (
+                <label className="form-field">
+                  <span>Option source</span>
+                  <select
+                    value={fieldForm.optionSource}
+                    onChange={(event) =>
+                      setFieldForm({
+                        ...fieldForm,
+                        optionSource: event.target.value as FormTemplateOptionSource
+                      })
+                    }
+                  >
+                    {templateFieldOptionSourceOptions.map((source) => (
+                      <option key={source.value} value={source.value}>
+                        {source.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <label className="form-field">
                 <span>Sort order</span>
                 <input
@@ -14665,12 +21937,25 @@ function FormTemplateManager({
                 />
               </label>
               <label className="form-field form-field-wide">
-                <span>Options</span>
+                <span>{fieldForm.optionSource === "manual" ? "Options" : "Fallback options"}</span>
                 <input
                   value={fieldForm.optionsText}
                   onChange={(event) => setFieldForm({ ...fieldForm, optionsText: event.target.value })}
-                  placeholder="Comma separated values for dropdowns, radios, and checkbox groups"
+                  disabled={!isChoiceTemplateField(fieldForm)}
+                  placeholder={
+                    fieldForm.optionSource === "manual"
+                      ? "Comma separated values for dropdowns, radios, and checkbox groups"
+                      : "Optional fallback if the dynamic source has no values"
+                  }
                 />
+                {fieldForm.optionSource !== "manual" ? (
+                  <small>
+                    Uses {getTemplateOptionSourceLabel(fieldForm.optionSource)}
+                    {isJiraTemplateOptionSource(fieldForm.optionSource) && jiraTemplateMetadata.message
+                      ? ` - ${jiraTemplateMetadata.message}`
+                      : "."}
+                  </small>
+                ) : null}
               </label>
             </div>
             <AdminCheckbox
@@ -14686,7 +21971,7 @@ function FormTemplateManager({
             </div>
           </form>
 
-          <FormTemplatePreview template={previewTemplate} config={config} />
+          <FormTemplatePreview template={previewTemplate} config={config} jiraFieldMetadata={jiraTemplateMetadata} />
 
           <div className="admin-editable-list">
             {config.formTemplates.map((template) => (
@@ -14737,7 +22022,15 @@ function FormTemplateManager({
   );
 }
 
-function FormTemplatePreview({ template, config }: { template: ProductFormTemplate; config: AdminConfig }) {
+function FormTemplatePreview({
+  template,
+  config,
+  jiraFieldMetadata
+}: {
+  template: ProductFormTemplate;
+  config: AdminConfig;
+  jiraFieldMetadata?: JiraFieldMetadata;
+}) {
   return (
     <section className="form-template-preview" aria-label="Form template preview">
       <div className="preview-topline">
@@ -14753,16 +22046,29 @@ function FormTemplatePreview({ template, config }: { template: ProductFormTempla
         {template.fields.length === 0 ? (
           <EmptyState title="Preview is empty" body="Add fields to see how this intake template will render." />
         ) : (
-          template.fields.map((field) => <PreviewField field={field} key={field.id} />)
+          template.fields.map((field) => (
+            <PreviewField config={config} field={field} jiraFieldMetadata={jiraFieldMetadata} key={field.id} />
+          ))
         )}
       </div>
     </section>
   );
 }
 
-function PreviewField({ field }: { field: FormTemplateField }) {
+function PreviewField({
+  config,
+  field,
+  jiraFieldMetadata
+}: {
+  config: AdminConfig;
+  field: FormTemplateField;
+  jiraFieldMetadata?: JiraFieldMetadata;
+}) {
   const label = `${field.label}${field.required ? " *" : ""}`;
-  const options = field.options.length > 0 ? field.options : defaultOptionsByFieldType[field.type] ?? [];
+  const options = getTemplateFieldOptions(field, config, { jiraFieldMetadata });
+  const optionSourceLabel = field.optionSource && field.optionSource !== "manual"
+    ? getTemplateOptionSourceLabel(field.optionSource)
+    : "";
 
   if (field.component === "textArea") {
     return (
@@ -14780,7 +22086,7 @@ function PreviewField({ field }: { field: FormTemplateField }) {
         <span>{label}</span>
         <select defaultValue="">
           <option value="" disabled>
-            Select option
+            {options.length ? "Select option" : "No options available"}
           </option>
           {options.map((option) => (
             <option key={option} value={option}>
@@ -14788,7 +22094,9 @@ function PreviewField({ field }: { field: FormTemplateField }) {
             </option>
           ))}
         </select>
-        {field.helperText ? <small>{field.helperText}</small> : null}
+        {field.helperText || optionSourceLabel ? (
+          <small>{[field.helperText, optionSourceLabel].filter(Boolean).join(" · ")}</small>
+        ) : null}
       </label>
     );
   }
@@ -14803,7 +22111,10 @@ function PreviewField({ field }: { field: FormTemplateField }) {
             <span>{option}</span>
           </label>
         ))}
-        {field.helperText ? <small>{field.helperText}</small> : null}
+        {!options.length ? <p>No options available.</p> : null}
+        {field.helperText || optionSourceLabel ? (
+          <small>{[field.helperText, optionSourceLabel].filter(Boolean).join(" · ")}</small>
+        ) : null}
       </fieldset>
     );
   }
@@ -15409,6 +22720,7 @@ function AdminMasterDataManager({
               workflowTemplateId: defaultWorkflow?.id ?? "standard-governance",
               stepIds: defaultWorkflow?.steps.map((step) => step.id) ?? [],
               jiraCreatorStepId: "release-gate",
+              jiraCreatorStepIds: ["release-gate"],
               stepOverrides: {},
               active: ticketType.active,
               updatedAt: new Date().toISOString()
@@ -16264,6 +23576,28 @@ function TicketWorkflowManager({
     })
   );
   const availableWorkflowRoles = getWorkflowRoleOptions(config).filter((role) => !selectedOwnerRoles.has(role.key));
+  const selectedJiraCreatorSteps = selectedSteps.filter((step) => workflowForm.jiraCreatorStepIds.includes(step.id));
+  const selectedJiraCreatorLabels = selectedJiraCreatorSteps.map(
+    (step) => workflowForm.stepOverrides[step.id]?.label || step.label
+  );
+
+  function getEligibleJiraCreatorStepIds(stepIds: string[], stepOverrides: Record<string, WorkflowStepFormState>): string[] {
+    return stepIds.filter((stepId) => {
+      const stepForm = stepOverrides[stepId];
+
+      return stepForm ? workflowStepCanCreateJira(config, stepForm) : false;
+    });
+  }
+
+  function normalizeJiraCreatorStepIds(
+    stepIds: string[],
+    stepOverrides: Record<string, WorkflowStepFormState>,
+    selectedStepIds: string[]
+  ): string[] {
+    const eligibleStepIds = new Set(getEligibleJiraCreatorStepIds(stepIds, stepOverrides));
+
+    return Array.from(new Set(selectedStepIds.filter((stepId) => eligibleStepIds.has(stepId))));
+  }
 
   function resetWorkflowForm() {
     setEditingWorkflowId(null);
@@ -16275,16 +23609,22 @@ function TicketWorkflowManager({
     const nextTemplate = getWorkflowTemplateById(templateId) ?? workflowTemplates[0];
     const nextStepIds = nextTemplate.steps.map((step) => step.id);
     const releaseGate = nextTemplate.steps.find((step) => step.id === "release-gate")?.id;
+    const nextStepOverrides = Object.fromEntries(
+      nextTemplate.steps.map((step) => [step.id, buildWorkflowStepForm(step)])
+    );
+    const eligibleCreatorStepIds = getEligibleJiraCreatorStepIds(nextStepIds, nextStepOverrides);
+    const nextJiraCreatorStepId =
+      releaseGate && eligibleCreatorStepIds.includes(releaseGate)
+        ? releaseGate
+        : eligibleCreatorStepIds[0] ?? "";
 
     setWorkflowForm({
       ...workflowForm,
       workflowTemplateId: nextTemplate.id,
       escalationPolicyId: nextTemplate.escalationPolicyId ?? config.escalationPolicies[0]?.id ?? "",
       stepIds: nextStepIds,
-      jiraCreatorStepId: releaseGate ?? nextStepIds[0] ?? "",
-      stepOverrides: Object.fromEntries(
-        nextTemplate.steps.map((step) => [step.id, buildWorkflowStepForm(step)])
-      )
+      jiraCreatorStepIds: nextJiraCreatorStepId ? [nextJiraCreatorStepId] : [],
+      stepOverrides: nextStepOverrides
     });
     setWorkflowError("");
   }
@@ -16300,7 +23640,6 @@ function TicketWorkflowManager({
     setWorkflowForm({
       ...workflowForm,
       stepIds: nextStepIds,
-      jiraCreatorStepId: workflowForm.jiraCreatorStepId || stepId,
       stepOverrides: {
         ...workflowForm.stepOverrides,
         [stepId]: workflowForm.stepOverrides[stepId] ?? buildWorkflowStepForm(templateStep)
@@ -16343,7 +23682,6 @@ function TicketWorkflowManager({
     setWorkflowForm({
       ...workflowForm,
       stepIds: [...workflowForm.stepIds, stepId],
-      jiraCreatorStepId: workflowForm.jiraCreatorStepId || stepId,
       stepOverrides: {
         ...workflowForm.stepOverrides,
         [stepId]: nextStepForm
@@ -16358,9 +23696,9 @@ function TicketWorkflowManager({
     setWorkflowForm({
       ...workflowForm,
       stepIds: nextStepIds,
-      jiraCreatorStepId: nextStepIds.includes(workflowForm.jiraCreatorStepId)
-        ? workflowForm.jiraCreatorStepId
-        : nextStepIds[0] ?? ""
+      jiraCreatorStepIds: workflowForm.jiraCreatorStepIds.filter((creatorStepId) =>
+        nextStepIds.includes(creatorStepId)
+      )
     });
     setWorkflowError("");
   }
@@ -16411,15 +23749,44 @@ function TicketWorkflowManager({
       return;
     }
 
+    const nextStepOverrides = {
+      ...workflowForm.stepOverrides,
+      [stepId]: {
+        ...stepForm,
+        ...patch
+      }
+    };
+
     setWorkflowForm({
       ...workflowForm,
-      stepOverrides: {
-        ...workflowForm.stepOverrides,
-        [stepId]: {
-          ...stepForm,
-          ...patch
-        }
-      }
+      jiraCreatorStepIds: normalizeJiraCreatorStepIds(
+        workflowForm.stepIds,
+        nextStepOverrides,
+        workflowForm.jiraCreatorStepIds
+      ),
+      stepOverrides: nextStepOverrides
+    });
+    setWorkflowError("");
+  }
+
+  function toggleJiraCreatorStep(stepId: string, checked: boolean) {
+    const stepForm = workflowForm.stepOverrides[stepId];
+
+    if (!stepForm || !workflowStepCanCreateJira(config, stepForm)) {
+      return;
+    }
+
+    const nextCreatorStepIds = checked
+      ? [...workflowForm.jiraCreatorStepIds, stepId]
+      : workflowForm.jiraCreatorStepIds.filter((creatorStepId) => creatorStepId !== stepId);
+
+    setWorkflowForm({
+      ...workflowForm,
+      jiraCreatorStepIds: normalizeJiraCreatorStepIds(
+        workflowForm.stepIds,
+        workflowForm.stepOverrides,
+        nextCreatorStepIds
+      )
     });
     setWorkflowError("");
   }
@@ -16442,8 +23809,14 @@ function TicketWorkflowManager({
       return;
     }
 
-    if (!workflowForm.jiraCreatorStepId || !workflowForm.stepIds.includes(workflowForm.jiraCreatorStepId)) {
-      setWorkflowError("Select a Jira creator step that is included in this route.");
+    const jiraCreatorStepIds = normalizeJiraCreatorStepIds(
+      workflowForm.stepIds,
+      workflowForm.stepOverrides,
+      workflowForm.jiraCreatorStepIds
+    );
+
+    if (!jiraCreatorStepIds.length) {
+      setWorkflowError("Select at least one IT-domain approval or review step as Jira creator.");
       return;
     }
 
@@ -16468,7 +23841,8 @@ function TicketWorkflowManager({
       workflowTemplateId: selectedTemplate.id,
       escalationPolicyId: workflowForm.escalationPolicyId,
       stepIds: workflowForm.stepIds,
-      jiraCreatorStepId: workflowForm.jiraCreatorStepId,
+      jiraCreatorStepId: jiraCreatorStepIds[0],
+      jiraCreatorStepIds,
       stepOverrides: buildWorkflowStepOverridesFromForm(workflowForm, selectedTemplate),
       active: workflowForm.active,
       updatedAt: new Date().toISOString()
@@ -16550,19 +23924,11 @@ function TicketWorkflowManager({
                 ))}
               </select>
             </label>
-            <label className="form-field">
-              <span>Jira creator step</span>
-              <select
-                value={workflowForm.jiraCreatorStepId}
-                onChange={(event) => setWorkflowForm({ ...workflowForm, jiraCreatorStepId: event.target.value })}
-              >
-                {selectedSteps.map((step) => (
-                  <option key={step.id} value={step.id}>
-                    {workflowForm.stepOverrides[step.id]?.label || step.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="form-field workflow-jira-summary">
+              <span>Jira creators</span>
+              <strong>{selectedJiraCreatorLabels.length ? selectedJiraCreatorLabels.join(", ") : "Select IT steps below"}</strong>
+              <small>Only IT-domain approval or review levels can create Jira tickets.</small>
+            </div>
             <div className="workflow-route-toggle-cell">
               <AdminCheckbox
                 checked={workflowForm.active}
@@ -16582,7 +23948,8 @@ function TicketWorkflowManager({
               <div className="workflow-level-list">
                 {selectedSteps.map((step, index) => {
                   const stepForm = workflowForm.stepOverrides[step.id] ?? buildWorkflowStepForm(step);
-                  const isJiraCreator = workflowForm.jiraCreatorStepId === step.id;
+                  const isJiraCreator = workflowForm.jiraCreatorStepIds.includes(step.id);
+                  const canStepCreateJira = workflowStepCanCreateJira(config, stepForm);
                   const ownerRoleOptions = getWorkflowRoleOptionsForStep(
                     config,
                     stepForm.workflowType,
@@ -16597,15 +23964,18 @@ function TicketWorkflowManager({
                           <strong>Level {index + 1}</strong>
                           <small>{step.id}</small>
                         </div>
-                        <label className="workflow-jira-radio">
-                          <input
-                            checked={isJiraCreator}
-                            name="workflow-jira-creator-step"
-                            onChange={() => setWorkflowForm({ ...workflowForm, jiraCreatorStepId: step.id })}
-                            type="radio"
-                          />
-                          Jira creator
-                        </label>
+                        {canStepCreateJira ? (
+                          <label className="workflow-jira-radio">
+                            <input
+                              checked={isJiraCreator}
+                              onChange={(event) => toggleJiraCreatorStep(step.id, event.target.checked)}
+                              type="checkbox"
+                            />
+                            Jira creator
+                          </label>
+                        ) : (
+                          <span className="workflow-jira-domain-note">Not IT domain</span>
+                        )}
                       </div>
                       <div className="workflow-level-field-grid">
                         <label className="form-field">
@@ -16757,7 +24127,7 @@ function TicketWorkflowManager({
                   const nextStepForm = nextStep ? workflowForm.stepOverrides[nextStep.id] ?? buildWorkflowStepForm(nextStep) : undefined;
                   const ownerLabel = getConfigRoleLabel(config, stepForm.ownerRole);
                   const nextOwnerLabel = nextStepForm ? getConfigRoleLabel(config, nextStepForm.ownerRole) : "Jira draft";
-                  const isJiraCreator = workflowForm.jiraCreatorStepId === step.id;
+                  const isJiraCreator = workflowForm.jiraCreatorStepIds.includes(step.id);
                   const workflowTypeLabel = getWorkflowRoleTypeLabel(stepForm.workflowType);
                   const waitingAction =
                     stepForm.workflowType === "inform"
@@ -16813,7 +24183,8 @@ function TicketWorkflowManager({
           {config.ticketTypeWorkflows.map((workflow) => {
             const template = getWorkflowTemplateById(workflow.workflowTemplateId);
             const configuredSteps = getConfiguredWorkflowStepsForRoute(workflow, config);
-            const jiraCreatorStep = configuredSteps.find((step) => step.id === workflow.jiraCreatorStepId);
+            const jiraCreatorStepIds = getJiraCreatorStepIds(workflow);
+            const jiraCreatorSteps = configuredSteps.filter((step) => jiraCreatorStepIds.includes(step.id));
             const escalationPolicy = config.escalationPolicies.find((policy) =>
               policy.id === (workflow.escalationPolicyId ?? template?.escalationPolicyId)
             );
@@ -16824,7 +24195,7 @@ function TicketWorkflowManager({
                   <div>
                     <strong>{getConfigTicketTypeLabel(config, workflow.ticketTypeId)}</strong>
                     <span>
-                      {template?.name ?? workflow.workflowTemplateId} - {escalationPolicy?.name ?? "No escalation policy"} - Jira creator: {jiraCreatorStep?.label ?? "Not set"}
+                      {template?.name ?? workflow.workflowTemplateId} - {escalationPolicy?.name ?? "No escalation policy"} - Jira creators: {jiraCreatorSteps.length ? jiraCreatorSteps.map((step) => step.label).join(", ") : "Not set"}
                     </span>
                   </div>
                   <AdminStatusPill active={workflow.active} />
@@ -16899,7 +24270,7 @@ function SlaRulesManager({
   onConfigChange: AdminConfigUpdater;
 }) {
   const [slaForm, setSlaForm] = useState<SlaRuleFormState>(() =>
-    buildSlaRuleForm(config, config.slaRules.find((rule) => rule.priority === "Medium") ?? config.slaRules[0])
+    buildSlaRuleForm(config, config.slaRules.find((rule) => rule.priority === "2 - Medium") ?? config.slaRules[0])
   );
   const [slaError, setSlaError] = useState("");
   const [editingEscalationPolicyId, setEditingEscalationPolicyId] = useState<string | null>(
@@ -17036,7 +24407,7 @@ function SlaRulesManager({
     setEscalationPolicyForm({
       id: "",
       name: "",
-      priority: activePriorities[0]?.label ?? "Medium",
+      priority: activePriorities[0]?.label ?? "2 - Medium",
       responseHours: "24",
       resolutionHours: "120",
       escalationMatrixId: "standard"
@@ -19149,48 +26520,399 @@ function AnalyticsPanel({
   config: AdminConfig;
   selectedPersona: RolePersonaOption;
 }) {
-  const stateCounts = [
-    { label: "Approval", value: tickets.filter((ticket) => ticket.state === "approval").length },
-    {
-      label: "Clarification",
-      value: tickets.filter((ticket) => ticket.state === "clarification").length
-    },
-    { label: "Jira draft", value: tickets.filter((ticket) => ticket.state === "jira_draft").length },
-    { label: "Escalated", value: tickets.filter((ticket) => ticket.state === "escalated").length }
-  ];
-  const max = Math.max(...stateCounts.map((item) => item.value), 1);
-  const roleActionableGates = getApprovalQueueItems(tickets, config, selectedPersona).filter(
+  const [filters, setFilters] = useState<AnalyticsReportFilters>(() => ({ ...emptyAnalyticsReportFilters }));
+  const [reportSnapshot, setReportSnapshot] = useState<AnalyticsReportSnapshot | null>(null);
+
+  const regionOptions = useMemo(
+    () =>
+      buildReportOptions(
+        [
+          ...config.regionSites.filter((site) => site.active).map((site) => site.region),
+          ...tickets.map((ticket) => getReportRegionForTicket(config, ticket))
+        ],
+        "All regions"
+      ),
+    [config, tickets]
+  );
+  const siteOptions = useMemo(
+    () =>
+      buildReportOptions(
+        [
+          ...config.regionSites.filter((site) => site.active).map((site) => site.site),
+          ...tickets.map((ticket) => ticket.site)
+        ],
+        "All sites"
+      ),
+    [config.regionSites, tickets]
+  );
+  const productOptions = useMemo(
+    () =>
+      buildReportOptions(
+        [
+          ...config.products.filter((product) => product.active).map((product) => product.productName),
+          ...tickets.map((ticket) => ticket.product)
+        ],
+        "All products"
+      ),
+    [config.products, tickets]
+  );
+  const pruOptions = useMemo(
+    () =>
+      buildReportOptions(
+        [
+          ...config.products.flatMap((product) =>
+            product.prus.filter((pru) => product.active && pru.active).map((pru) => pru.name)
+          ),
+          ...tickets.map((ticket) => ticket.pru)
+        ],
+        "All PRUs"
+      ),
+    [config.products, tickets]
+  );
+  const typeOptions = useMemo(() => {
+    const configuredTypes = config.requestTypes
+      .filter((type) => type.active)
+      .map((type) => ({ value: type.id, label: type.label }));
+    const configuredTypeIds = new Set(configuredTypes.map((type) => type.value));
+    const ticketTypesInUse = new Map<string, string>();
+
+    for (const ticket of tickets) {
+      if (!configuredTypeIds.has(ticket.typeId)) {
+        ticketTypesInUse.set(ticket.typeId, getReportTicketTypeLabel(config, ticket));
+      }
+    }
+
+    return [
+      { value: REPORT_ALL_VALUE, label: "All types" },
+      ...configuredTypes,
+      ...Array.from(ticketTypesInUse.entries())
+        .sort((left, right) => left[1].localeCompare(right[1]))
+        .map(([value, label]) => ({ value, label }))
+    ];
+  }, [config, tickets]);
+  const stateOptions = useMemo(
+    () => [
+      { value: REPORT_ALL_VALUE, label: "All workflow states" },
+      ...ticketStateOptions.map((option) => ({ value: option.value, label: option.label }))
+    ],
+    []
+  );
+  const priorityOptions = useMemo(
+    () =>
+      buildReportOptions(
+        [
+          ...config.priorities.filter((priority) => priority.active).map((priority) => priority.label),
+          ...tickets.map((ticket) => ticket.priority)
+        ],
+        "All priorities"
+      ),
+    [config.priorities, tickets]
+  );
+  const slaStateOptions = useMemo(
+    () => [
+      { value: REPORT_ALL_VALUE, label: "All SLA states" },
+      ...(["healthy", "watch", "breach", "paused"] as const satisfies readonly SlaState[]).map((state) => ({
+        value: state,
+        label: getSlaLabel(state)
+      }))
+    ],
+    []
+  );
+
+  const reportFilters = reportSnapshot?.filters ?? filters;
+  const previewTickets = useMemo(
+    () => filterAnalyticsReportTickets(tickets, config, filters),
+    [config, filters, tickets]
+  );
+  const reportTickets = useMemo(
+    () => filterAnalyticsReportTickets(tickets, config, reportFilters),
+    [config, reportFilters, tickets]
+  );
+  const reportIsStale = reportSnapshot ? !analyticsReportFiltersMatch(reportSnapshot.filters, filters) : false;
+  const roleActionableGates = getApprovalQueueItems(reportTickets, config, selectedPersona).filter(
     (item) => item.actionable && item.step.status !== "blocked"
   ).length;
-  const slaBreaches = tickets.filter((ticket) => ticket.slaState === "breach").length;
+  const bugTickets = reportTickets.filter((ticket) => isBugReportTicket(config, ticket)).length;
+  const openTickets = reportTickets.filter((ticket) => ticket.state !== "closed").length;
+  const slaBreaches = reportTickets.filter((ticket) => ticket.slaState === "breach").length;
+  const typeBuckets = useMemo(
+    () => buildReportBuckets(reportTickets, (ticket) => getReportTicketTypeLabel(config, ticket)),
+    [config, reportTickets]
+  );
+  const reportFilterTags = [
+    reportFilters.region !== REPORT_ALL_VALUE ? `Region: ${getReportFilterLabel(regionOptions, reportFilters.region)}` : "",
+    reportFilters.site !== REPORT_ALL_VALUE ? `Site: ${getReportFilterLabel(siteOptions, reportFilters.site)}` : "",
+    reportFilters.product !== REPORT_ALL_VALUE
+      ? `Product: ${getReportFilterLabel(productOptions, reportFilters.product)}`
+      : "",
+    reportFilters.pru !== REPORT_ALL_VALUE ? `PRU: ${getReportFilterLabel(pruOptions, reportFilters.pru)}` : "",
+    reportFilters.typeId !== REPORT_ALL_VALUE ? `Type: ${getReportFilterLabel(typeOptions, reportFilters.typeId)}` : "",
+    reportFilters.state !== REPORT_ALL_VALUE ? `State: ${getReportFilterLabel(stateOptions, reportFilters.state)}` : "",
+    reportFilters.priority !== REPORT_ALL_VALUE
+      ? `Priority: ${getReportFilterLabel(priorityOptions, reportFilters.priority)}`
+      : "",
+    reportFilters.slaState !== REPORT_ALL_VALUE
+      ? `SLA: ${getReportFilterLabel(slaStateOptions, reportFilters.slaState)}`
+      : ""
+  ].filter(Boolean);
+
+  function updateFilter(key: keyof AnalyticsReportFilters, value: string) {
+    setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function createReport() {
+    setReportSnapshot({
+      filters: { ...filters },
+      generatedAt: new Date().toISOString()
+    });
+  }
+
+  function resetReportFilters() {
+    setFilters({ ...emptyAnalyticsReportFilters });
+    setReportSnapshot(null);
+  }
 
   return (
-    <section className="panel analytics-panel">
+    <section className={`panel analytics-panel ${expanded ? "is-expanded" : ""}`}>
       <PanelHeader
         title="Reporting and analytics"
-        description="Role-scoped ticket distribution, SLA health, and workflow throughput."
+        description="Filter-driven ticket counts by region, site, product, PRU, type, workflow, and SLA."
         iconName="report"
       />
-      <div className={`chart-list ${expanded ? "is-expanded" : ""}`}>
-        {stateCounts.map((item) => (
-          <div className="chart-row" key={item.label}>
-            <span>{item.label}</span>
-            <div>
-              <span style={{ width: `${(item.value / max) * 100}%` }} />
+      <form
+        className="report-filter-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          createReport();
+        }}
+      >
+        <div className="report-filter-grid">
+          <ReportFilterSelect
+            label="Region"
+            value={filters.region}
+            options={regionOptions}
+            onChange={(value) => updateFilter("region", value)}
+          />
+          <ReportFilterSelect
+            label="Site"
+            value={filters.site}
+            options={siteOptions}
+            onChange={(value) => updateFilter("site", value)}
+          />
+          <ReportFilterSelect
+            label="Product"
+            value={filters.product}
+            options={productOptions}
+            onChange={(value) => updateFilter("product", value)}
+          />
+          <ReportFilterSelect
+            label="PRU"
+            value={filters.pru}
+            options={pruOptions}
+            onChange={(value) => updateFilter("pru", value)}
+          />
+          <ReportFilterSelect
+            label="Ticket type"
+            value={filters.typeId}
+            options={typeOptions}
+            onChange={(value) => updateFilter("typeId", value)}
+          />
+          <ReportFilterSelect
+            label="Workflow state"
+            value={filters.state}
+            options={stateOptions}
+            onChange={(value) => updateFilter("state", value)}
+          />
+          <ReportFilterSelect
+            label="Priority"
+            value={filters.priority}
+            options={priorityOptions}
+            onChange={(value) => updateFilter("priority", value)}
+          />
+          <ReportFilterSelect
+            label="SLA"
+            value={filters.slaState}
+            options={slaStateOptions}
+            onChange={(value) => updateFilter("slaState", value)}
+          />
+        </div>
+        <div className="report-action-row">
+          <button className="primary-button" type="submit">
+            <TegelIcon name="report" size="16px" />
+            Create report
+          </button>
+          <button className="secondary-button" type="button" onClick={resetReportFilters}>
+            Reset filters
+          </button>
+          <span className={`report-generation-status ${reportIsStale ? "is-stale" : ""}`}>
+            {reportSnapshot
+              ? `Created ${formatLocalDateTime(new Date(reportSnapshot.generatedAt))}`
+              : "Live preview"}
+          </span>
+        </div>
+      </form>
+
+      {reportIsStale ? (
+        <p className="report-filter-note">
+          Current filters match {formatCount(previewTickets.length)} tickets. Create report to refresh the charts.
+        </p>
+      ) : null}
+
+      <div className="report-filter-tags" aria-label="Report scope">
+        {reportFilterTags.length > 0 ? (
+          reportFilterTags.map((tag) => (
+            <span key={tag}>{tag}</span>
+          ))
+        ) : (
+          <span>All visible tickets</span>
+        )}
+      </div>
+
+      <div className="report-summary-grid">
+        <ReportSummaryMetric label="Tickets" value={reportTickets.length} />
+        <ReportSummaryMetric label="Bugs" value={bugTickets} />
+        <ReportSummaryMetric label="Open" value={openTickets} />
+        <ReportSummaryMetric label="Approval gates" value={roleActionableGates} />
+        <ReportSummaryMetric label="SLA breaches" value={slaBreaches} />
+      </div>
+
+      {reportTickets.length === 0 ? (
+        <EmptyState title="No report data" body="No visible tickets match the selected filters." />
+      ) : (
+        <div className="report-visual-stack">
+          <div className="report-visual-grid">
+            <ReportBarChart
+              title="Tickets by region"
+              buckets={buildReportBuckets(reportTickets, (ticket) => getReportRegionForTicket(config, ticket))}
+            />
+            <ReportBarChart
+              title="Tickets by site"
+              buckets={buildReportBuckets(reportTickets, (ticket) => getReportValue(ticket.site, "Unassigned site"))}
+            />
+            <ReportPieChart title="Ticket type mix" buckets={typeBuckets} />
+          </div>
+          <div className="report-visual-grid">
+            <ReportBarChart
+              title="Tickets by product"
+              buckets={buildReportBuckets(reportTickets, (ticket) => getReportValue(ticket.product, "Unassigned product"))}
+            />
+            <ReportBarChart
+              title="Tickets by PRU"
+              buckets={buildReportBuckets(reportTickets, (ticket) => getReportValue(ticket.pru, "Unassigned PRU"))}
+            />
+            <ReportBarChart
+              title="Tickets by workflow state"
+              buckets={buildReportBuckets(reportTickets, (ticket) => getTicketStateLabel(ticket.state))}
+            />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReportFilterSelect({
+  label,
+  value,
+  options,
+  onChange
+}: {
+  label: string;
+  value: string;
+  options: ReportOption[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="report-filter-field">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={`${label}-${option.value}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ReportSummaryMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <article className="report-summary-metric">
+      <span>{label}</span>
+      <strong>{formatCount(value)}</strong>
+    </article>
+  );
+}
+
+function ReportBarChart({ title, buckets }: { title: string; buckets: ReportBucket[] }) {
+  const total = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+  const max = Math.max(...buckets.map((bucket) => bucket.value), 1);
+
+  return (
+    <article className="report-chart-block">
+      <header>
+        <h3>{title}</h3>
+        <span>{formatCount(total)}</span>
+      </header>
+      <div className="report-bar-list">
+        {buckets.length === 0 ? (
+          <p className="report-empty-chart">No matching tickets</p>
+        ) : null}
+        {buckets.map((bucket) => (
+          <div className="report-bar-row" key={`${title}-${bucket.label}`}>
+            <div className="report-bar-label">
+              <span>{bucket.label}</span>
+              <strong>{formatCount(bucket.value)}</strong>
             </div>
-            <strong>{item.value}</strong>
+            <div className="report-bar-track" aria-label={`${bucket.label}: ${bucket.value} tickets`}>
+              <span
+                style={{
+                  backgroundColor: bucket.color,
+                  width: `${(bucket.value / max) * 100}%`
+                }}
+              />
+            </div>
+            <small>{Math.round(bucket.percentage)}%</small>
           </div>
         ))}
       </div>
-      <div className="analytics-summary">
-        <span>Visible tickets</span>
-        <strong>{formatCount(tickets.length)}</strong>
-        <span>Role action gates</span>
-        <strong>{formatCount(roleActionableGates)}</strong>
-        <span>SLA breaches</span>
-        <strong>{formatCount(slaBreaches)}</strong>
+    </article>
+  );
+}
+
+function ReportPieChart({ title, buckets }: { title: string; buckets: ReportBucket[] }) {
+  const total = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+
+  return (
+    <article className="report-chart-block report-pie-block">
+      <header>
+        <h3>{title}</h3>
+        <span>{formatCount(total)}</span>
+      </header>
+      <div className="report-pie-layout">
+        <div
+          aria-label={`${title}: ${formatCount(total)} tickets`}
+          className="report-pie"
+          role="img"
+          style={{ background: getReportPieGradient(buckets) }}
+        />
+        <div className="report-pie-legend">
+          {buckets.length === 0 ? (
+            <p className="report-empty-chart">No matching tickets</p>
+          ) : null}
+          {buckets.map((bucket) => (
+            <div className="report-pie-legend-row" key={`${title}-${bucket.label}`}>
+              <span style={{ backgroundColor: bucket.color }} />
+              <strong>{bucket.label}</strong>
+              <small>
+                {formatCount(bucket.value)} / {Math.round(bucket.percentage)}%
+              </small>
+            </div>
+          ))}
+        </div>
       </div>
-    </section>
+    </article>
   );
 }
 
@@ -19276,7 +26998,11 @@ function CommentPanel({
                   {comment.role} · {comment.source}
                 </span>
               </div>
-              <RichTextContent value={comment.body} fallback="No comment body." compact />
+              {comment.source === "jira" ? (
+                <JiraCommentContent value={comment.body} fallback="No comment body." />
+              ) : (
+                <RichTextContent value={comment.body} fallback="No comment body." compact />
+              )}
             </article>
           ))
         )}

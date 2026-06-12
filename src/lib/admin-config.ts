@@ -117,6 +117,7 @@ export type NotificationEventType =
   | "decisionMade"
   | "ticketApproved"
   | "ticketRejected"
+  | "jiraReadyToCreate"
   | "jiraCreated"
   | "slaBreach"
   | "escalationTriggered"
@@ -152,6 +153,18 @@ export type FormComponentType =
   | "checkbox"
   | "checkboxGroup";
 
+export type FormTemplateOptionSource =
+  | "manual"
+  | "portalProducts"
+  | "portalPrus"
+  | "portalModules"
+  | "jiraUnreleasedVersions"
+  | "jiraVersions"
+  | "jiraSprints"
+  | "jiraComponents"
+  | "jiraBoards"
+  | "jiraPriorities";
+
 export interface FormTemplateField {
   id: string;
   label: string;
@@ -160,6 +173,7 @@ export interface FormTemplateField {
   required: boolean;
   helperText?: string;
   options: string[];
+  optionSource?: FormTemplateOptionSource;
   sortOrder: number;
 }
 
@@ -181,6 +195,7 @@ export interface TicketTypeWorkflowConfig {
   escalationPolicyId?: string;
   stepIds: string[];
   jiraCreatorStepId: string;
+  jiraCreatorStepIds?: string[];
   stepOverrides?: Record<
     string,
     Partial<Pick<
@@ -588,11 +603,49 @@ export const requestTypeOptions: ConfigOption[] = ticketTypes.map((ticketType, i
 }));
 
 export const priorityOptions: ConfigOption<Ticket["priority"]>[] = [
-  { id: "priority-low", label: "Low", color: "neutral", active: true, sortOrder: 1 },
-  { id: "priority-medium", label: "Medium", color: "information", active: true, sortOrder: 2 },
-  { id: "priority-high", label: "High", color: "warning", active: true, sortOrder: 3 },
-  { id: "priority-critical", label: "Critical", color: "error", active: true, sortOrder: 4 }
+  { id: "priority-0-highest", label: "0 - Highest", color: "error", active: true, sortOrder: 0 },
+  { id: "priority-1-high", label: "1 - High", color: "warning", active: true, sortOrder: 1 },
+  { id: "priority-2-medium", label: "2 - Medium", color: "information", active: true, sortOrder: 2 },
+  { id: "priority-3-low", label: "3 - Low", color: "neutral", active: true, sortOrder: 3 },
+  { id: "priority-4-lowest", label: "4 - Lowest", color: "success", active: true, sortOrder: 4 }
 ];
+
+const legacyDefaultPriorityLabels = ["low", "medium", "high", "critical"];
+const legacyDefaultPriorityLabelSet = new Set(legacyDefaultPriorityLabels);
+const legacyPriorityLabelMigration: Record<string, Ticket["priority"]> = {
+  critical: "0 - Highest",
+  highest: "0 - Highest",
+  high: "1 - High",
+  medium: "2 - Medium",
+  low: "3 - Low",
+  lowest: "4 - Lowest",
+  "very low": "4 - Lowest"
+};
+
+export function isLegacyDefaultPriorityConfig(priorities: ConfigOption[]): boolean {
+  if (priorities.length !== legacyDefaultPriorityLabels.length) {
+    return false;
+  }
+
+  return priorities.every((priority) => legacyDefaultPriorityLabelSet.has(priority.label.trim().toLowerCase()));
+}
+
+export function getJiraPriorityOptions(): ConfigOption<Ticket["priority"]>[] {
+  return priorityOptions.map((priority) => ({ ...priority }));
+}
+
+export function migrateLegacyPriorityLabel(priority: string): Ticket["priority"] {
+  const normalizedPriority = priority.trim().toLowerCase();
+
+  return legacyPriorityLabelMigration[normalizedPriority] ?? priority;
+}
+
+export function migrateLegacyPriorityReferences<TItem extends { priority: string }>(items: TItem[]): TItem[] {
+  return items.map((item) => ({
+    ...item,
+    priority: migrateLegacyPriorityLabel(item.priority)
+  }));
+}
 
 export const riskOptions: ConfigOption<Ticket["risk"]>[] = [
   { id: "risk-low", label: "Low", color: "success", active: true, sortOrder: 1 },
@@ -608,10 +661,11 @@ export const statusColorOptions: StatusColorConfig[] = [
   { status: "Pending", color: "warning" },
   { status: "Waiting", color: "warning" },
   { status: "Review", color: "information" },
+  { status: "Planning", color: "information" },
   { status: "Ready to create", color: "new" },
   { status: "Jira created", color: "success" },
-  { status: "IT test", color: "warning" },
-  { status: "Business test", color: "warning" },
+  { status: "IT Test", color: "warning" },
+  { status: "Business Test", color: "warning" },
   { status: "Blocked", color: "error" },
   { status: "Done", color: "success" },
   { status: "Completed close", color: "success" },
@@ -636,10 +690,11 @@ export const requestCategories = [
 ];
 
 export const slaRules: SlaRule[] = [
-  { id: "sla-low", priority: "Low", targetHours: 15 * 24, warningHours: 10 * 24 },
-  { id: "sla-medium", priority: "Medium", targetHours: 10 * 24, warningHours: 7 * 24 },
-  { id: "sla-high", priority: "High", targetHours: 5 * 24, warningHours: 3 * 24 },
-  { id: "sla-critical", priority: "Critical", targetHours: 2 * 24, warningHours: 24 }
+  { id: "sla-0-highest", priority: "0 - Highest", targetHours: 2 * 24, warningHours: 24 },
+  { id: "sla-1-high", priority: "1 - High", targetHours: 5 * 24, warningHours: 3 * 24 },
+  { id: "sla-2-medium", priority: "2 - Medium", targetHours: 10 * 24, warningHours: 7 * 24 },
+  { id: "sla-3-low", priority: "3 - Low", targetHours: 15 * 24, warningHours: 10 * 24 },
+  { id: "sla-4-lowest", priority: "4 - Lowest", targetHours: 20 * 24, warningHours: 15 * 24 }
 ];
 
 export const notificationTemplates: NotificationTemplate[] = [
@@ -684,6 +739,25 @@ This request may delay implementation or approval until updated information is p
     severity: "warning",
     active: true,
     enabledRoles: ["requester", "developer", "business_architect", "software_architect"]
+  },
+  {
+    id: "tpl-jira-ready-to-create",
+    eventType: "jiraReadyToCreate",
+    subject: "Jira creation ready for {{ticketKey}} - {{ticketTitle}}",
+    body: `Hello {{participantName}},
+
+The portal workflow is complete and this ticket is ready for Jira creation.
+
+Portal Ticket: {{ticketKey}}
+Title: {{ticketTitle}}
+Priority: {{priority}}
+Release version: {{releaseVersion}}
+
+Please open the Support Portal and create the linked Jira issue.`,
+    deliveryMode: "inAppAndEmail",
+    severity: "warning",
+    active: true,
+    enabledRoles: ["software_architect", "release_manager"]
   },
   {
     id: "tpl-jira-created",
@@ -754,12 +828,13 @@ export const formTemplates: ProductFormTemplate[] = [
     fields: [
       {
         id: "field-release-train",
-        label: "Target release train",
-        type: "shortText",
-        component: "textField",
+        label: "Target release version",
+        type: "singleSelect",
+        component: "dropdown",
         required: true,
-        helperText: "Use the release train name agreed with release management.",
+        helperText: "Select an available version from Jira.",
         options: [],
+        optionSource: "jiraUnreleasedVersions",
         sortOrder: 1
       },
       {
@@ -825,6 +900,7 @@ export const ticketTypeWorkflows: TicketTypeWorkflowConfig[] = ticketTypes.map((
     escalationPolicyId: template.escalationPolicyId,
     stepIds: template.steps.map((step) => step.id),
     jiraCreatorStepId: "release-gate",
+    jiraCreatorStepIds: ["release-gate"],
     stepOverrides: {},
     active: ticketType.enabled,
     updatedAt

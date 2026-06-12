@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 import { isValidEmail, type SmtpActionConfig } from "@/lib/integration-actions";
+import {
+  claimNotificationDelivery,
+  markNotificationDeliveryFailed,
+  markNotificationDeliverySent
+} from "@/lib/local-database";
 
 export const runtime = "nodejs";
 
@@ -11,10 +16,12 @@ type EmailRecipient = {
 
 type SendNotificationEmailPayload = {
   config?: SmtpActionConfig;
+  idempotencyKey?: string;
   message?: {
     to?: EmailRecipient[];
     subject?: string;
     body?: string;
+    htmlBody?: string;
   };
 };
 
@@ -83,6 +90,18 @@ function validatePayload(payload: SendNotificationEmailPayload): string[] {
     errors.push("SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP.");
   }
 
+  if (payload.idempotencyKey !== undefined) {
+    const idempotencyKey = payload.idempotencyKey.trim();
+
+    if (!idempotencyKey) {
+      errors.push("Notification idempotency key cannot be empty when provided.");
+    }
+
+    if (idempotencyKey.length > 512) {
+      errors.push("Notification idempotency key must be 512 characters or fewer.");
+    }
+  }
+
   return errors;
 }
 
@@ -107,6 +126,59 @@ export async function POST(request: NextRequest) {
       address: recipient.email?.trim() ?? ""
     }))
     .filter((recipient) => recipient.address);
+  const idempotencyKey = payload.idempotencyKey?.trim() || "";
+
+  if (idempotencyKey) {
+    let deliveryClaim: ReturnType<typeof claimNotificationDelivery>;
+
+    try {
+      deliveryClaim = claimNotificationDelivery(idempotencyKey, recipients.length);
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : "Unknown notification delivery claim failure.";
+
+      console.error(
+        JSON.stringify({
+          event: "smtp_notification_email_claim_failed",
+          idempotencyKey,
+          message: messageText
+        })
+      );
+
+      return errorResponse(
+        "notification_delivery_claim_failed",
+        "Could not reserve notification delivery before sending email.",
+        [messageText],
+        500
+      );
+    }
+
+    if (deliveryClaim.status === "duplicate") {
+      console.info(
+        JSON.stringify({
+          event: "smtp_notification_email_duplicate",
+          idempotencyKey,
+          deliveryStatus: deliveryClaim.deliveryStatus,
+          recipientCount: recipients.length
+        })
+      );
+
+      return NextResponse.json({
+        data: {
+          status: "duplicate",
+          deduplicated: true,
+          deliveryStatus: deliveryClaim.deliveryStatus,
+          messageId: deliveryClaim.messageId,
+          accepted: [],
+          rejected: [],
+          response:
+            deliveryClaim.response ??
+            `Notification delivery already ${deliveryClaim.deliveryStatus === "sent" ? "sent" : "in progress"}.`,
+          updatedAt: deliveryClaim.updatedAt
+        }
+      });
+    }
+  }
+
   const auth =
     config.username?.trim() && config.password?.trim()
       ? {
@@ -148,8 +220,28 @@ export async function POST(request: NextRequest) {
       },
       to: recipients,
       subject: message.subject.trim(),
-      text: message.body.trim()
+      text: message.body.trim(),
+      html: message.htmlBody?.trim() || undefined
     });
+
+    if (idempotencyKey) {
+      try {
+        markNotificationDeliverySent(idempotencyKey, {
+          messageId: result.messageId,
+          acceptedCount: result.accepted.length,
+          rejectedCount: result.rejected.length,
+          response: result.response
+        });
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "smtp_notification_delivery_mark_sent_failed",
+            idempotencyKey,
+            message: error instanceof Error ? error.message : "Unknown delivery mark-sent failure."
+          })
+        );
+      }
+    }
 
     console.info(
       JSON.stringify({
@@ -171,6 +263,20 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const messageText = error instanceof Error ? error.message : "Unknown SMTP send failure.";
+
+    if (idempotencyKey) {
+      try {
+        markNotificationDeliveryFailed(idempotencyKey, messageText);
+      } catch (markError) {
+        console.error(
+          JSON.stringify({
+            event: "smtp_notification_delivery_mark_failed_failed",
+            idempotencyKey,
+            message: markError instanceof Error ? markError.message : "Unknown delivery mark-failed failure."
+          })
+        );
+      }
+    }
 
     console.error(
       JSON.stringify({
