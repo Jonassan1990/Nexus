@@ -216,6 +216,7 @@ export interface TicketTypeWorkflowConfig {
 
 export type JiraApiVersion = "rest/api/2" | "rest/api/3";
 export type JiraAuthMode = "personalAccessToken" | "emailApiToken" | "oauth2ClientCredentials";
+export type AiProvider = "openai";
 
 export interface JiraIntegrationConfig {
   enabled: boolean;
@@ -245,6 +246,43 @@ export interface SmtpConfig {
   updatedAt: string;
 }
 
+export interface AiIntegrationConfig {
+  enabled: boolean;
+  provider: AiProvider;
+  model: string;
+  apiKeyConfigured: boolean;
+  apiKeyLastFour?: string;
+  apiKeyUpdatedAt?: string;
+  updatedAt: string;
+}
+
+export interface GitLabProductRepositoryMapping {
+  productId: string;
+  productName: string;
+  groupId?: number;
+  groupName?: string;
+  groupFullPath?: string;
+  groupWebUrl?: string;
+  projectId: number;
+  projectName: string;
+  projectPathWithNamespace: string;
+  projectWebUrl: string;
+  defaultBranch: string;
+  ref: string;
+  updatedAt: string;
+}
+
+export interface GitLabIntegrationConfig {
+  enabled: boolean;
+  apiBaseUrl: string;
+  tokenConfigured: boolean;
+  tokenLastFour?: string;
+  tokenUpdatedAt?: string;
+  defaultRef: string;
+  productRepositoryMappings: GitLabProductRepositoryMapping[];
+  updatedAt: string;
+}
+
 export interface AdminConfig {
   users: AdminUser[];
   customRoles?: RoleDefinition[];
@@ -266,6 +304,8 @@ export interface AdminConfig {
   integrations: {
     jira: JiraIntegrationConfig;
     smtp: SmtpConfig;
+    ai: AiIntegrationConfig;
+    gitlab: GitLabIntegrationConfig;
   };
 }
 
@@ -933,6 +973,25 @@ export const smtpConfig: SmtpConfig = {
   updatedAt
 };
 
+export const aiIntegration: AiIntegrationConfig = {
+  enabled: false,
+  provider: "openai",
+  model: "gpt-5.5",
+  apiKeyConfigured: false,
+  updatedAt
+};
+
+export const defaultGitLabBaseUrl = "https://gitlab.scania.com";
+
+export const gitlabIntegration: GitLabIntegrationConfig = {
+  enabled: false,
+  apiBaseUrl: defaultGitLabBaseUrl,
+  tokenConfigured: false,
+  defaultRef: "main",
+  productRepositoryMappings: [],
+  updatedAt
+};
+
 export const adminConfig: AdminConfig = {
   users: adminUsers,
   customRoles: [],
@@ -953,7 +1012,9 @@ export const adminConfig: AdminConfig = {
   ticketTypeWorkflows,
   integrations: {
     jira: jiraIntegration,
-    smtp: smtpConfig
+    smtp: smtpConfig,
+    ai: aiIntegration,
+    gitlab: gitlabIntegration
   }
 };
 

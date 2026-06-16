@@ -13,6 +13,7 @@ import {
   uploadJiraIssueAttachments,
   type JiraIssueAttachmentInput
 } from "@/lib/jira-attachments";
+import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 
 export const runtime = "nodejs";
@@ -27,6 +28,9 @@ type UpdateJiraTaskPayload = {
     labels?: string[];
     components?: string[];
     fixVersion?: string;
+    board?: string;
+    sprint?: string;
+    backlog?: string;
     priority?: string;
     estimateHours?: number;
     attachments?: JiraIssueAttachmentInput[];
@@ -186,23 +190,30 @@ export async function POST(request: NextRequest) {
       })
     );
 
+    const placementResult = await placeJiraIssueInSprintOrBacklog(config, jiraKey, {
+      board: payload.issue?.board,
+      sprint: payload.issue?.sprint
+    });
     const issueStatusResult = await fetchJiraIssueStatus(config, jiraKey);
     const attachmentResult = await uploadJiraIssueAttachments(config, jiraKey, payload.issue?.attachments ?? []);
     const warnings = issueStatusResult.ok
-      ? [...attachmentResult.warnings]
+      ? [...placementResult.warnings, ...attachmentResult.warnings]
       : [
+          ...placementResult.warnings,
           `Jira issue was updated, but status sync failed: ${issueStatusResult.details.join(" ")}`,
           ...attachmentResult.warnings
         ];
 
-    if (attachmentResult.warnings.length > 0) {
+    if (warnings.length > 0) {
       console.warn(
         JSON.stringify({
-          event: "jira_task_update_attachment_warnings",
+          event: "jira_task_update_warnings",
           jiraKey,
+          placementTarget: placementResult.target,
+          placementMoved: placementResult.moved,
           uploadedCount: attachmentResult.uploaded.length,
           skippedCount: attachmentResult.skipped.length,
-          warningCount: attachmentResult.warnings.length
+          warningCount: warnings.length
         })
       );
     }
@@ -218,6 +229,12 @@ export async function POST(request: NextRequest) {
         attachments: {
           uploaded: attachmentResult.uploaded,
           skipped: attachmentResult.skipped
+        },
+        placement: {
+          target: placementResult.target,
+          moved: placementResult.moved,
+          sprintId: placementResult.sprintId,
+          sprintName: placementResult.sprintName
         },
         warnings
       }

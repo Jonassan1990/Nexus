@@ -51,6 +51,14 @@ function validateAdminConfig(value: unknown): string[] {
     if (!isRecord(value.integrations.smtp)) {
       errors.push("integrations.smtp must be an object.");
     }
+
+    if (!isRecord(value.integrations.ai)) {
+      errors.push("integrations.ai must be an object.");
+    }
+
+    if (!isRecord(value.integrations.gitlab)) {
+      errors.push("integrations.gitlab must be an object.");
+    }
   }
 
   return errors;

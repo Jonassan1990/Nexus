@@ -74,6 +74,13 @@ export function extractJiraProjectKey(value?: string): string {
     return normalizedValue;
   }
 
+  const queryProjectKeyMatch =
+    /(?:^|[?&#])(?:projectKey|projectKeyOrId|project)=([A-Z][A-Z0-9_]{1,15})(?:$|[&#])/i.exec(trimmedValue);
+
+  if (queryProjectKeyMatch) {
+    return queryProjectKeyMatch[1].toUpperCase();
+  }
+
   const issueKeyMatch = /^([A-Z][A-Z0-9_]{1,15})-\d+$/i.exec(trimmedValue);
 
   if (issueKeyMatch) {
@@ -89,6 +96,15 @@ export function extractJiraProjectKey(value?: string): string {
       const projectKey = pathSegments[projectSegmentIndex + 1]?.toUpperCase() ?? "";
 
       return /^[A-Z][A-Z0-9_]{1,15}$/.test(projectKey) ? projectKey : "";
+    }
+
+    const queryProjectKey =
+      parsedUrl.searchParams.get("projectKey") ??
+      parsedUrl.searchParams.get("projectKeyOrId") ??
+      parsedUrl.searchParams.get("project");
+
+    if (queryProjectKey && /^[A-Z][A-Z0-9_]{1,15}$/i.test(queryProjectKey)) {
+      return queryProjectKey.toUpperCase();
     }
 
     const browseSegmentIndex = pathSegments.findIndex((segment) => segment.toLowerCase() === "browse");

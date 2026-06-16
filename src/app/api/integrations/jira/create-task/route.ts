@@ -12,6 +12,7 @@ import {
   uploadJiraIssueAttachments,
   type JiraIssueAttachmentInput
 } from "@/lib/jira-attachments";
+import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 
 export const runtime = "nodejs";
@@ -25,6 +26,9 @@ type CreateJiraTaskPayload = {
     labels?: string[];
     components?: string[];
     fixVersion?: string;
+    board?: string;
+    sprint?: string;
+    backlog?: string;
     priority?: string;
     estimateHours?: number;
     attachments?: JiraIssueAttachmentInput[];
@@ -170,20 +174,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const placementResult = await placeJiraIssueInSprintOrBacklog(config, validationResult.data.jiraKey, {
+      board: payload.issue?.board,
+      sprint: payload.issue?.sprint
+    });
     const attachmentResult = await uploadJiraIssueAttachments(
       config,
       validationResult.data.jiraKey,
       payload.issue?.attachments ?? []
     );
+    const warnings = [...placementResult.warnings, ...attachmentResult.warnings];
 
-    if (attachmentResult.warnings.length > 0) {
+    if (warnings.length > 0) {
       console.warn(
         JSON.stringify({
-          event: "jira_task_create_attachment_warnings",
+          event: "jira_task_create_warnings",
           jiraKey: validationResult.data.jiraKey,
+          placementTarget: placementResult.target,
+          placementMoved: placementResult.moved,
           uploadedCount: attachmentResult.uploaded.length,
           skippedCount: attachmentResult.skipped.length,
-          warningCount: attachmentResult.warnings.length
+          warningCount: warnings.length
         })
       );
     }
@@ -209,7 +220,13 @@ export async function POST(request: NextRequest) {
           uploaded: attachmentResult.uploaded,
           skipped: attachmentResult.skipped
         },
-        warnings: attachmentResult.warnings
+        placement: {
+          target: placementResult.target,
+          moved: placementResult.moved,
+          sprintId: placementResult.sprintId,
+          sprintName: placementResult.sprintName
+        },
+        warnings
       }
     });
   } catch (error) {

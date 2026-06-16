@@ -3,7 +3,9 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import {
+  aiIntegration,
   getJiraPriorityOptions,
+  gitlabIntegration,
   isLegacyDefaultPriorityConfig,
   jiraIntegration,
   migrateLegacyPriorityReferences,
@@ -11,7 +13,7 @@ import {
   smtpConfig,
   statusColorOptions
 } from "./admin-config";
-import type { AdminConfig, StatusColorConfig } from "./admin-config";
+import type { AdminConfig, GitLabIntegrationConfig, StatusColorConfig } from "./admin-config";
 import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actions";
 import type { Ticket } from "./types";
 
@@ -119,7 +121,9 @@ const emptyAdminConfig: AdminConfig = {
   ticketTypeWorkflows: [],
   integrations: {
     jira: jiraIntegration,
-    smtp: smtpConfig
+    smtp: smtpConfig,
+    ai: aiIntegration,
+    gitlab: gitlabIntegration
   }
 };
 
@@ -168,6 +172,27 @@ function normalizeStoredJiraIntegration(
     apiBaseUrl,
     defaultProjectKey,
     projectUrl: getJiraProjectUrl(mergedConfig.projectUrl || apiBaseUrl, defaultProjectKey) || mergedConfig.projectUrl
+  };
+}
+
+function normalizeStoredGitLabIntegration(
+  config: Partial<GitLabIntegrationConfig> | undefined
+): GitLabIntegrationConfig {
+  const productRepositoryMappings = Array.isArray(config?.productRepositoryMappings)
+    ? config.productRepositoryMappings
+    : [];
+  const apiBaseUrl = config?.apiBaseUrl?.trim();
+  const isUnsavedLegacyDefault =
+    apiBaseUrl === "https://gitlab.com" &&
+    !config?.tokenConfigured &&
+    !config?.tokenLastFour &&
+    productRepositoryMappings.length === 0;
+
+  return {
+    ...gitlabIntegration,
+    ...(config ?? {}),
+    apiBaseUrl: !apiBaseUrl || isUnsavedLegacyDefault ? gitlabIntegration.apiBaseUrl : apiBaseUrl ?? gitlabIntegration.apiBaseUrl,
+    productRepositoryMappings
   };
 }
 
@@ -323,7 +348,12 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
       smtp: {
         ...smtpConfig,
         ...(config.integrations?.smtp ?? {})
-      }
+      },
+      ai: {
+        ...aiIntegration,
+        ...(config.integrations?.ai ?? {})
+      },
+      gitlab: normalizeStoredGitLabIntegration(config.integrations?.gitlab)
     }
   };
 }

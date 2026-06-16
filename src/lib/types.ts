@@ -177,6 +177,18 @@ export interface Escalation {
   statusUpdatedAt?: string;
   actionPlan?: string;
   meetingSeries?: string;
+  meetingType?: "single" | "series";
+  meetingStartAt?: string;
+  meetingEndAt?: string;
+  meetingDurationMinutes?: number;
+  meetingTimeZone?: string;
+  meetingRecurrenceFrequency?: "none" | "daily" | "weekly" | "biweekly" | "monthly";
+  meetingRecurrenceInterval?: number;
+  meetingRecurrenceDays?: string[];
+  meetingRecurrenceUntil?: string;
+  meetingAvailabilityStatus?: "not_checked" | "ready_for_outlook" | "checked_externally";
+  meetingAvailabilityCheckedAt?: string;
+  meetingAvailabilityNote?: string;
   managerName?: string;
   managerEmail?: string;
   managerInviteStatus?: "not_sent" | "pending" | "sent" | "failed";
@@ -209,6 +221,18 @@ export interface EscalationStatusUpdate {
   actionPlan?: string;
   actionItems?: EscalationActionItem[];
   meetingSeries?: string;
+  meetingType?: Escalation["meetingType"];
+  meetingStartAt?: string;
+  meetingEndAt?: string;
+  meetingDurationMinutes?: number;
+  meetingTimeZone?: string;
+  meetingRecurrenceFrequency?: Escalation["meetingRecurrenceFrequency"];
+  meetingRecurrenceInterval?: number;
+  meetingRecurrenceDays?: string[];
+  meetingRecurrenceUntil?: string;
+  meetingAvailabilityStatus?: Escalation["meetingAvailabilityStatus"];
+  meetingAvailabilityCheckedAt?: string;
+  meetingAvailabilityNote?: string;
   people?: EscalationPerson[];
   createdAt: string;
   managerInvite?: {
