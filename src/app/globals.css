@@ -497,6 +497,45 @@ tds-icon {
   gap: 8px;
 }
 
+.tegel-profile-settings {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.tegel-profile-settings-header {
+  display: grid;
+  gap: 3px;
+  padding: 0 4px;
+}
+
+.tegel-profile-settings-header strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.tegel-profile-settings-header small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.tegel-profile-settings-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 4px 4px;
+}
+
+.tegel-profile-settings-hint {
+  margin: 0;
+  padding: 0 4px 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .tegel-attention-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -8351,6 +8390,45 @@ tds-side-menu-item[selected] .tegel-side-menu-button::before {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
+}
+
+.notification-preference-editor {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.notification-preference-editor-header {
+  display: grid;
+  gap: 4px;
+}
+
+.notification-preference-editor-header span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.notification-preference-editor-header small {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.notification-preference-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 0 8px;
+  border: 0;
+}
+
+.notification-preference-list.is-disabled {
+  opacity: 0.56;
 }
 
 .admin-hint {

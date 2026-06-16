@@ -9,6 +9,7 @@ import {
   isLegacyDefaultPriorityConfig,
   jiraIntegration,
   migrateLegacyPriorityReferences,
+  normalizeAdminUser,
   normalizeProductConfig,
   smtpConfig,
   statusColorOptions
@@ -313,7 +314,7 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
   return {
     ...emptyAdminConfig,
     ...config,
-    users: Array.isArray(config.users) ? config.users : [],
+    users: Array.isArray(config.users) ? config.users.map((user) => normalizeAdminUser(user)) : [],
     customRoles: Array.isArray(config.customRoles) ? config.customRoles : [],
     roleDomains,
     deletedRoleKeys: Array.isArray(config.deletedRoleKeys) ? config.deletedRoleKeys : [],

@@ -13,6 +13,18 @@ export type TegelTagVariant = "success" | "warning" | "new" | "neutral" | "infor
 
 export type RoleDomain = "Business" | "IT" | "Admin";
 
+export type UserEmailNotificationEventType = "approvalRequested" | "jiraReadyToCreate";
+
+export const userEmailNotificationEventTypes = [
+  "approvalRequested",
+  "jiraReadyToCreate"
+] as const satisfies readonly UserEmailNotificationEventType[];
+
+export interface AdminUserNotificationPreferences {
+  emailEnabled: boolean;
+  emailEventTypes: UserEmailNotificationEventType[];
+}
+
 export interface AdminUser {
   id: string;
   displayName: string;
@@ -24,6 +36,53 @@ export interface AdminUser {
   productIds: string[];
   pruNames: string[];
   active: boolean;
+  notificationPreferences: AdminUserNotificationPreferences;
+}
+
+type AdminUserConfigInput = Omit<AdminUser, "notificationPreferences"> & {
+  notificationPreferences?: Partial<AdminUserNotificationPreferences>;
+};
+
+function isUserEmailNotificationEventType(value: string): value is UserEmailNotificationEventType {
+  return userEmailNotificationEventTypes.some((eventType) => eventType === value);
+}
+
+export function getDefaultAdminUserNotificationPreferences(): AdminUserNotificationPreferences {
+  return {
+    emailEnabled: true,
+    emailEventTypes: [...userEmailNotificationEventTypes]
+  };
+}
+
+export function normalizeAdminUserNotificationPreferences(
+  preferences?: Partial<AdminUserNotificationPreferences>
+): AdminUserNotificationPreferences {
+  const defaultPreferences = getDefaultAdminUserNotificationPreferences();
+  const emailEventTypes = Array.isArray(preferences?.emailEventTypes)
+    ? Array.from(
+        new Set(
+          preferences.emailEventTypes.filter((eventType): eventType is UserEmailNotificationEventType =>
+            isUserEmailNotificationEventType(eventType)
+          )
+        )
+      )
+    : defaultPreferences.emailEventTypes;
+
+  return {
+    emailEnabled: preferences?.emailEnabled ?? defaultPreferences.emailEnabled,
+    emailEventTypes
+  };
+}
+
+export function normalizeAdminUser(user: AdminUserConfigInput): AdminUser {
+  return {
+    ...user,
+    actionRoles: Array.isArray(user.actionRoles) ? user.actionRoles : [],
+    productIds: Array.isArray(user.productIds) ? user.productIds : [],
+    pruNames: Array.isArray(user.pruNames) ? user.pruNames : [],
+    active: user.active ?? true,
+    notificationPreferences: normalizeAdminUserNotificationPreferences(user.notificationPreferences)
+  };
 }
 
 export interface RoleDomainConfig {
@@ -342,7 +401,7 @@ export function normalizeProductConfig(product: ProductConfig): ProductConfig {
 
 const updatedAt = "2026-05-18T00:00:00.000Z";
 
-export const adminUsers: AdminUser[] = [
+const rawAdminUsers: AdminUserConfigInput[] = [
   {
     id: "user-maja-lind",
     displayName: "Maja Lind",
@@ -440,6 +499,8 @@ export const adminUsers: AdminUser[] = [
     active: true
   }
 ];
+
+export const adminUsers: AdminUser[] = rawAdminUsers.map((user) => normalizeAdminUser(user));
 
 export const roleDomains: RoleDomainConfig[] = roles.map((role) => ({
   role: role.key,

@@ -34,9 +34,11 @@ import {
   adminConfig,
   defaultGitLabBaseUrl,
   getAdminRoleLabel,
+  getDefaultAdminUserNotificationPreferences,
   getJiraPriorityOptions,
   isLegacyDefaultPriorityConfig,
   migrateLegacyPriorityReferences,
+  normalizeAdminUser,
   normalizeProductConfig,
   notificationTemplates as defaultNotificationTemplates,
   statusColorOptions
@@ -71,7 +73,8 @@ import type {
   SmtpConfig,
   StatusColorConfig,
   TegelTagVariant,
-  TicketTypeWorkflowConfig
+  TicketTypeWorkflowConfig,
+  UserEmailNotificationEventType
 } from "@/lib/admin-config";
 import { canView, filterVisible } from "@/lib/rbac";
 import type {
@@ -1667,11 +1670,51 @@ const notificationEventOptions = [
   { value: "escalationTriggered", label: "Escalation triggered" },
   { value: "participantAdded", label: "Participant added" }
 ] as const satisfies readonly { value: NotificationEventType; label: string }[];
+const userEmailNotificationEventOptions = [
+  { value: "approvalRequested", label: "Approval requested" },
+  { value: "jiraReadyToCreate", label: "Jira ready to create" }
+] as const satisfies readonly { value: UserEmailNotificationEventType; label: string }[];
 const notificationDeliveryModeOptions = [
   { value: "inAppOnly", label: "In-app only" },
   { value: "emailOnly", label: "Email only" },
   { value: "inAppAndEmail", label: "In-app and email" }
 ] as const satisfies readonly { value: NotificationDeliveryMode; label: string }[];
+
+function toggleUserEmailNotificationEventSelection(
+  currentEventTypes: UserEmailNotificationEventType[],
+  eventType: UserEmailNotificationEventType,
+  enabled: boolean
+): UserEmailNotificationEventType[] {
+  const selectedEventTypes = new Set(currentEventTypes);
+
+  if (enabled) {
+    selectedEventTypes.add(eventType);
+  } else {
+    selectedEventTypes.delete(eventType);
+  }
+
+  return userEmailNotificationEventOptions
+    .map((option) => option.value)
+    .filter((value) => selectedEventTypes.has(value));
+}
+
+function getUserEmailNotificationEventLabel(eventType: UserEmailNotificationEventType): string {
+  return userEmailNotificationEventOptions.find((option) => option.value === eventType)?.label ?? eventType;
+}
+
+function getAdminUserEmailNotificationSummary(user: AdminUser): string {
+  const { notificationPreferences } = user;
+
+  if (!notificationPreferences.emailEnabled) {
+    return "Email: Off";
+  }
+
+  if (!notificationPreferences.emailEventTypes.length) {
+    return "Email: No automatic events";
+  }
+
+  return `Email: ${notificationPreferences.emailEventTypes.map(getUserEmailNotificationEventLabel).join(", ")}`;
+}
 const notificationSeverityOptions = [
   { value: "info", label: "INFO" },
   { value: "warning", label: "WARNING" },
@@ -1967,7 +2010,7 @@ function normalizeAdminConfig(config: AdminConfig): AdminConfig {
   return {
     ...emptyConfig,
     ...config,
-    users: Array.isArray(config.users) ? config.users : [],
+    users: Array.isArray(config.users) ? config.users.map((user) => normalizeAdminUser(user)) : [],
     customRoles: Array.isArray(config.customRoles) ? config.customRoles : [],
     roleDomains,
     regionSites,
@@ -4013,6 +4056,13 @@ function getAdminUserScopeScore(user: AdminUser, ticket: TicketScope, config: Ad
   );
 }
 
+function adminUserReceivesEmailNotification(user: AdminUser, eventType: UserEmailNotificationEventType): boolean {
+  return (
+    user.notificationPreferences.emailEnabled &&
+    user.notificationPreferences.emailEventTypes.includes(eventType)
+  );
+}
+
 function getMappedWorkflowOwnerName(
   config: AdminConfig,
   ticket: TicketScope,
@@ -4820,7 +4870,8 @@ function renderNotificationEmailHtmlBody(
 function getWorkflowStepEmailRecipients(
   config: AdminConfig,
   ticket: Ticket,
-  step: Ticket["workflow"][number]
+  step: Ticket["workflow"][number],
+  eventType: UserEmailNotificationEventType
 ): NotificationEmailRecipient[] {
   const specificRecipients = new Map<string, NotificationEmailRecipient>();
   const fallbackRecipients = new Map<string, NotificationEmailRecipient>();
@@ -4829,7 +4880,7 @@ function getWorkflowStepEmailRecipients(
   function addUser(target: Map<string, NotificationEmailRecipient>, user?: AdminUser) {
     const email = user?.email.trim();
 
-    if (!user?.active || !email || !isValidEmailAddress(email)) {
+    if (!user?.active || !adminUserReceivesEmailNotification(user, eventType) || !email || !isValidEmailAddress(email)) {
       return;
     }
 
@@ -4887,7 +4938,7 @@ function getJiraReadyToCreateEmailRecipients(
   function addUser(user: AdminUser) {
     const email = user.email.trim();
 
-    if (!user.active || !email || !isValidEmailAddress(email)) {
+    if (!user.active || !adminUserReceivesEmailNotification(user, "jiraReadyToCreate") || !email || !isValidEmailAddress(email)) {
       return;
     }
 
@@ -5027,7 +5078,7 @@ function buildApprovalRequestedEmailEnvelopes(
           return [];
         }
 
-        const recipients = getWorkflowStepEmailRecipients(config, ticket, step);
+        const recipients = getWorkflowStepEmailRecipients(config, ticket, step, "approvalRequested");
 
         if (!recipients.length) {
           console.warn("No email recipients found for active approval gate.", {
@@ -11836,12 +11887,14 @@ function openNotificationItem(notification: NotificationItem) {
     <div className="app-frame scania">
       <TopBar
         attentionItems={headerAttentionItems}
+        config={config}
         rolePersonaOptions={rolePersonaOptions}
         selectedPersona={selectedPersona}
         selectedPersonaId={selectedPersona.id}
         ticketSearchOptions={ticketListTickets}
         ticketSearchQuery={query}
         onGoDashboard={goToDashboard}
+        onConfigChange={setConfig}
         onPersonaChange={changePersona}
         onOpenModule={openModule}
         onOpenNotifications={() => setActiveModule("notifications")}
@@ -12017,6 +12070,7 @@ function Sidebar({
 
 function TopBar({
   attentionItems,
+  config,
   rolePersonaOptions,
   selectedPersona,
   selectedPersonaId,
@@ -12025,6 +12079,7 @@ function TopBar({
   notificationCount,
   isMounted,
   onGoDashboard,
+  onConfigChange,
   onPersonaChange,
   onOpenModule,
   onTicketSearchChange,
@@ -12033,6 +12088,7 @@ function TopBar({
   onOpenNotifications
 }: {
   attentionItems: HeaderAttentionItem[];
+  config: AdminConfig;
   rolePersonaOptions: RolePersonaOption[];
   selectedPersona: RolePersonaOption;
   selectedPersonaId: string;
@@ -12041,6 +12097,7 @@ function TopBar({
   notificationCount: number;
   isMounted: boolean;
   onGoDashboard: () => void;
+  onConfigChange: Dispatch<SetStateAction<AdminConfig>>;
   onPersonaChange: (personaId: string) => void;
   onOpenModule: (module: ModuleKey) => void;
   onTicketSearchChange: (query: string) => void;
@@ -12053,6 +12110,12 @@ function TopBar({
   const [activeTicketSearchIndex, setActiveTicketSearchIndex] = useState(0);
   const ticketSearchListId = useId();
   const attentionTotal = attentionItems.reduce((total, item) => total + item.count, 0);
+  const selectedUser = useMemo(
+    () => (selectedPersona.userId ? config.users.find((user) => user.id === selectedPersona.userId) : undefined),
+    [config.users, selectedPersona.userId]
+  );
+  const selectedUserNotificationPreferences =
+    selectedUser?.notificationPreferences ?? getDefaultAdminUserNotificationPreferences();
   const normalizedTicketSearchQuery = ticketSearchQuery.trim().toLowerCase();
   const visibleTicketSearchOptions = useMemo(() => {
     const source = normalizedTicketSearchQuery
@@ -12086,6 +12149,26 @@ function TopBar({
     setIsTicketSearchOpen(false);
     onTicketSearchChange(ticket.key);
     onTicketSearchSubmit(ticket.key);
+  }
+
+  function updateSelectedUserNotificationPreferences(
+    updater: (current: AdminUser["notificationPreferences"]) => AdminUser["notificationPreferences"]
+  ) {
+    if (!selectedUser) {
+      return;
+    }
+
+    onConfigChange((current) => ({
+      ...current,
+      users: current.users.map((user) =>
+        user.id === selectedUser.id
+          ? normalizeAdminUser({
+              ...user,
+              notificationPreferences: updater(user.notificationPreferences)
+            })
+          : user
+      )
+    }));
   }
 
   if (!isMounted) {
@@ -12324,6 +12407,52 @@ function TopBar({
           ) : (
             <p>No visible modules require attention for this role.</p>
           )}
+          <section className="tegel-profile-settings" aria-label="Email notification settings">
+            <div className="tegel-profile-settings-header">
+              <strong>Email notifications</strong>
+              <small>Choose which automatic email actions this user receives.</small>
+            </div>
+            {selectedUser ? (
+              <div className="tegel-profile-settings-body">
+                <AdminCheckbox
+                  checked={selectedUserNotificationPreferences.emailEnabled}
+                  label="Allow automatic email notifications"
+                  onChange={(emailEnabled) =>
+                    updateSelectedUserNotificationPreferences((current) => ({
+                      ...current,
+                      emailEnabled
+                    }))
+                  }
+                />
+                <fieldset
+                  className={`notification-preference-list ${selectedUserNotificationPreferences.emailEnabled ? "" : "is-disabled"}`}
+                  disabled={!selectedUserNotificationPreferences.emailEnabled}
+                >
+                  {userEmailNotificationEventOptions.map((option) => (
+                    <AdminCheckbox
+                      checked={selectedUserNotificationPreferences.emailEventTypes.includes(option.value)}
+                      key={option.value}
+                      label={option.label}
+                      onChange={(checked) =>
+                        updateSelectedUserNotificationPreferences((current) => ({
+                          ...current,
+                          emailEventTypes: toggleUserEmailNotificationEventSelection(
+                            current.emailEventTypes,
+                            option.value,
+                            checked
+                          )
+                        }))
+                      }
+                    />
+                  ))}
+                </fieldset>
+              </div>
+            ) : (
+              <p className="tegel-profile-settings-hint">
+                Switch to a named user persona to manage profile email notifications.
+              </p>
+            )}
+          </section>
         </section>
       ) : null}
     </div>
@@ -15064,47 +15193,92 @@ function DashboardOverview({
     ticketKey: string;
     module: ModuleKey;
     tab?: DetailTab;
-  }> = [
-    ...tickets
-      .filter((ticket) => ticket.slaState === "breach")
-      .map((ticket) => ({
-        id: `sla-${ticket.key}`,
-        tone: "critical" as const,
-        title: "SLA breach",
-        detail: `${ticket.key} - ${ticket.title}`,
-        meta: ticket.slaLabel,
+  }> = (() => {
+    const candidates: Array<{
+      id: string;
+      tone: "critical" | "warning" | "info";
+      title: string;
+      detail: string;
+      meta: string;
+      ticketKey: string;
+      module: ModuleKey;
+      tab?: DetailTab;
+      priority: number;
+      sortTime: number;
+    }> = [
+      ...tickets
+        .filter((ticket) => ticket.slaState === "breach")
+        .map((ticket) => ({
+          id: `sla-${ticket.key}`,
+          tone: "critical" as const,
+          title: "SLA breach",
+          detail: `${ticket.key} - ${ticket.title}`,
+          meta: ticket.slaLabel,
+          ticketKey: ticket.key,
+          module: "tickets" as ModuleKey,
+          tab: "Overview" as DetailTab,
+          priority: 0,
+          sortTime: parseTicketTimestamp(ticket.updatedAt)
+        })),
+      ...clarificationItems.map(({ ticket, thread }) => ({
+        id: `clarification-${ticket.key}-${thread.id}`,
+        tone: "warning" as const,
+        title: "Clarification needed",
+        detail: `${ticket.key} - ${thread.question}`,
+        meta: thread.assignedTo,
         ticketKey: ticket.key,
-        module: "tickets" as ModuleKey,
-        tab: "Overview" as DetailTab
+        module: "clarifications" as ModuleKey,
+        priority: 1,
+        sortTime: parseTicketTimestamp(ticket.updatedAt)
       })),
-    ...clarificationItems.map(({ ticket, thread }) => ({
-      id: `clarification-${ticket.key}-${thread.id}`,
-      tone: "warning" as const,
-      title: "Clarification needed",
-      detail: `${ticket.key} - ${thread.question}`,
-      meta: thread.assignedTo,
-      ticketKey: ticket.key,
-      module: "clarifications" as ModuleKey
-    })),
-    ...approvalItems.map((item) => ({
-      id: `approval-${item.ticket.key}-${item.step.id}`,
-      tone: "info" as const,
-      title: "Approval action",
-      detail: `${item.ticket.key} - ${item.step.label}`,
-      meta: item.step.ownerName,
-      ticketKey: item.ticket.key,
-      module: "approvals" as ModuleKey
-    })),
-    ...jiraAttentionTickets.map((ticket) => ({
-      id: `jira-${ticket.key}`,
-      tone: "info" as const,
-      title: "Jira follow-up",
-      detail: `${ticket.key} - ${ticket.title}`,
-      meta: getJiraFollowUpStatusLabel(getTicketJiraFollowUpStatus(ticket)),
-      ticketKey: ticket.key,
-      module: "jira" as ModuleKey
-    }))
-  ].slice(0, 8);
+      ...approvalItems.map((item) => ({
+        id: `approval-${item.ticket.key}-${item.step.id}`,
+        tone: "info" as const,
+        title: "Approval action",
+        detail: `${item.ticket.key} - ${item.step.label}`,
+        meta: item.step.ownerName,
+        ticketKey: item.ticket.key,
+        module: "approvals" as ModuleKey,
+        priority: 2,
+        sortTime: parseTicketTimestamp(item.step.statusUpdatedAt ?? item.step.dueAt ?? item.ticket.updatedAt)
+      })),
+      ...jiraAttentionTickets.map((ticket) => ({
+        id: `jira-${ticket.key}`,
+        tone: "info" as const,
+        title: "Jira follow-up",
+        detail: `${ticket.key} - ${ticket.title}`,
+        meta: getJiraFollowUpStatusLabel(getTicketJiraFollowUpStatus(ticket)),
+        ticketKey: ticket.key,
+        module: "jira" as ModuleKey,
+        priority: 3,
+        sortTime: parseTicketTimestamp(ticket.jiraDraft.followUpUpdatedAt ?? ticket.updatedAt)
+      }))
+    ];
+
+    const seenTicketKeys = new Set<string>();
+
+    return candidates
+      .sort((left, right) => left.priority - right.priority || right.sortTime - left.sortTime)
+      .filter((item) => {
+        if (seenTicketKeys.has(item.ticketKey)) {
+          return false;
+        }
+
+        seenTicketKeys.add(item.ticketKey);
+        return true;
+      })
+      .slice(0, 8)
+      .map((item) => ({
+        id: item.id,
+        tone: item.tone,
+        title: item.title,
+        detail: item.detail,
+        meta: item.meta,
+        ticketKey: item.ticketKey,
+        module: item.module,
+        tab: item.tab
+      }));
+  })();
   const overviewMetrics = [
     {
       label: role === "requester" ? "My tickets" : "Visible tickets",
@@ -15239,7 +15413,7 @@ function DashboardOverview({
                 <button
                   className={`dashboard-attention-row tone-${item.tone}`}
                   key={item.id}
-                  onClick={() => onOpenTicketModule(item.ticketKey, "tickets", "Overview")}
+                  onClick={() => onOpenTicketModule(item.ticketKey, item.module, item.tab)}
                   type="button"
                 >
                   <span>{item.title}</span>
@@ -25240,6 +25414,8 @@ type UserFormState = {
   productIds: string[];
   pruNames: string[];
   active: boolean;
+  emailNotificationsEnabled: boolean;
+  emailNotificationEventTypes: UserEmailNotificationEventType[];
 };
 
 type RoleFormState = {
@@ -26078,6 +26254,7 @@ function writeLocalIntegrationSecrets(secrets: LocalIntegrationSecrets): void {
 
 function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
   const firstSite = config.regionSites.find((site) => site.active) ?? config.regionSites[0];
+  const notificationPreferences = user?.notificationPreferences ?? getDefaultAdminUserNotificationPreferences();
 
   return {
     displayName: user?.displayName ?? "",
@@ -26088,7 +26265,9 @@ function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
     site: user?.site ?? firstSite?.site ?? "Global",
     productIds: user?.productIds ?? [],
     pruNames: user?.pruNames ?? [],
-    active: user?.active ?? true
+    active: user?.active ?? true,
+    emailNotificationsEnabled: notificationPreferences.emailEnabled,
+    emailNotificationEventTypes: notificationPreferences.emailEventTypes
   };
 }
 
@@ -27514,7 +27693,7 @@ function AdminMasterDataManager({
         config.users.map((user) => user.id),
         normalizeId(displayName, "user")
       );
-    const user: AdminUser = {
+    const user = normalizeAdminUser({
       id,
       displayName,
       email,
@@ -27524,8 +27703,12 @@ function AdminMasterDataManager({
       site: userForm.site.trim(),
       productIds: userForm.productIds,
       pruNames: userForm.pruNames,
-      active: userForm.active
-    };
+      active: userForm.active,
+      notificationPreferences: {
+        emailEnabled: userForm.emailNotificationsEnabled,
+        emailEventTypes: userForm.emailNotificationEventTypes
+      }
+    });
 
     onConfigChange((current) => ({
       ...current,
@@ -28107,6 +28290,41 @@ function AdminMasterDataManager({
                 ))}
               </select>
             </label>
+            <div className="notification-preference-editor">
+              <div className="notification-preference-editor-header">
+                <span>Email notifications</span>
+                <small>These preferences apply to the automatic notification emails this user can receive.</small>
+              </div>
+              <AdminCheckbox
+                checked={userForm.emailNotificationsEnabled}
+                label="Allow automatic email notifications"
+                onChange={(emailNotificationsEnabled) =>
+                  setUserForm({ ...userForm, emailNotificationsEnabled })
+                }
+              />
+              <fieldset
+                className={`notification-preference-list ${userForm.emailNotificationsEnabled ? "" : "is-disabled"}`}
+                disabled={!userForm.emailNotificationsEnabled}
+              >
+                {userEmailNotificationEventOptions.map((option) => (
+                  <AdminCheckbox
+                    checked={userForm.emailNotificationEventTypes.includes(option.value)}
+                    key={option.value}
+                    label={option.label}
+                    onChange={(checked) =>
+                      setUserForm({
+                        ...userForm,
+                        emailNotificationEventTypes: toggleUserEmailNotificationEventSelection(
+                          userForm.emailNotificationEventTypes,
+                          option.value,
+                          checked
+                        )
+                      })
+                    }
+                  />
+                ))}
+              </fieldset>
+            </div>
             <AdminCheckbox
               checked={userForm.active}
               label="Active user"
@@ -28124,7 +28342,8 @@ function AdminMasterDataManager({
                 tags={[
                   ...user.actionRoles.map((role) => `Acting: ${getConfigRoleLabel(config, role)}`),
                   formatScopedCount(user.productIds, "product", "products"),
-                  formatScopedCount(user.pruNames, "PRU", "PRUs")
+                  formatScopedCount(user.pruNames, "PRU", "PRUs"),
+                  getAdminUserEmailNotificationSummary(user)
                 ]}
                 onEdit={() => {
                   setEditingUserId(user.id);
