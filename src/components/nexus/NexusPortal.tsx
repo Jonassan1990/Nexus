@@ -33,12 +33,17 @@ import {
 import {
   adminConfig,
   defaultGitLabBaseUrl,
+  defaultLeadTimeStatusRules,
+  defaultLeadTimeTransitionRules,
   getAdminRoleLabel,
   getDefaultAdminUserNotificationPreferences,
   getJiraPriorityOptions,
   isLegacyDefaultPriorityConfig,
+  leadTimeOwnershipOptions,
   migrateLegacyPriorityReferences,
   normalizeAdminUser,
+  normalizeLeadTimeStatusRules,
+  normalizeLeadTimeTransitionRules,
   normalizeProductConfig,
   notificationTemplates as defaultNotificationTemplates,
   statusColorOptions
@@ -57,6 +62,9 @@ import type {
   JiraApiVersion,
   JiraAuthMode,
   JiraIntegrationConfig,
+  LeadTimeOwnership,
+  LeadTimeStatusRule,
+  LeadTimeTransitionRule,
   NotificationDeliveryMode,
   NotificationEventType,
   NotificationSeverity,
@@ -82,6 +90,11 @@ import type {
   EscalationActionItem,
   EscalationPerson,
   JiraFollowUpStatus,
+  GlobalLpoApprovalDecision,
+  GlobalLpoApprovalOutcome,
+  GlobalLpoApprovalRequest,
+  GlobalLpoApprovalResponse,
+  GlobalLpoApprovalTarget,
   NotificationItem,
   RoleKey,
   SlaPolicy,
@@ -109,6 +122,10 @@ import {
 } from "@/lib/gitlab-integration";
 import type { JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { nextActionLabel, summarizeWorkflowHealth } from "@/lib/workflow-engine";
+import {
+  createOutlookMeeting,
+  type CreateOutlookMeetingResult
+} from "@/lib/microsoft-graph-client";
 import { TegelIcon } from "./TegelIcon";
 import type { TegelIconName } from "./TegelIcon";
 
@@ -233,6 +250,7 @@ interface RolePersonaOption {
   userId?: string;
   role: RoleKey;
   roleLabel: string;
+  actionRoles: RoleKey[];
   displayName: string;
   email: string;
   initials: string;
@@ -260,18 +278,12 @@ function getPersonaInitials(displayName: string): string {
   return `${parts[0][0] ?? ""}${parts[parts.length - 1][0] ?? ""}`.toUpperCase();
 }
 
-function getUserRolesForPersonas(user: AdminUser): { role: RoleKey; assignment: RolePersonaAssignment }[] {
-  const roleAssignments = new Map<RoleKey, RolePersonaAssignment>();
+function getPersonaRoleKeys(persona: Pick<RolePersonaOption, "role" | "actionRoles">): RoleKey[] {
+  return Array.from(new Set([persona.role, ...persona.actionRoles]));
+}
 
-  roleAssignments.set(user.primaryRole, "primary");
-
-  for (const actionRole of user.actionRoles) {
-    if (!roleAssignments.has(actionRole)) {
-      roleAssignments.set(actionRole, "acting");
-    }
-  }
-
-  return Array.from(roleAssignments, ([role, assignment]) => ({ role, assignment }));
+function personaHasRole(persona: Pick<RolePersonaOption, "role" | "actionRoles">, role: RoleKey): boolean {
+  return getPersonaRoleKeys(persona).includes(role);
 }
 
 function createFallbackRolePersona(role: { key: RoleKey; label: string }): RolePersonaOption {
@@ -279,6 +291,7 @@ function createFallbackRolePersona(role: { key: RoleKey; label: string }): RoleP
     id: `${role.key}:role`,
     role: role.key,
     roleLabel: role.label,
+    actionRoles: [],
     displayName: role.label,
     email: "",
     initials: getPersonaInitials(role.label),
@@ -294,56 +307,62 @@ function buildRolePersonaOptions(config: AdminConfig): RolePersonaOption[] {
   const roleOptions = getRoleOptions(config);
   const roleOptionMap = new Map(roleOptions.map((role) => [role.key, role]));
   const activeUsers = config.users.filter((user) => user.active);
-  const personasByRole = new Map<RoleKey, RolePersonaOption[]>();
+  const coveredRoleKeys = new Set<RoleKey>();
+  const userPersonas = activeUsers
+    .flatMap((user): RolePersonaOption[] => {
+      const primaryRoleOption = roleOptionMap.get(user.primaryRole);
 
-  for (const user of activeUsers) {
-    for (const assignment of getUserRolesForPersonas(user)) {
-      const roleOption = roleOptionMap.get(assignment.role);
-
-      if (!roleOption) {
-        continue;
+      if (!primaryRoleOption) {
+        return [];
       }
 
-      const persona: RolePersonaOption = {
-        id: `${assignment.role}:${user.id}:${assignment.assignment}`,
+      const actionRoles = getUniqueRoleKeys(user.actionRoles.filter((actionRole) => roleOptionMap.has(actionRole) && actionRole !== user.primaryRole));
+
+      coveredRoleKeys.add(user.primaryRole);
+      actionRoles.forEach((actionRole) => coveredRoleKeys.add(actionRole));
+
+      return [{
+        id: `user:${user.id}`,
         userId: user.id,
-        role: assignment.role,
-        roleLabel: roleOption.label,
+        role: user.primaryRole,
+        roleLabel: primaryRoleOption.label,
+        actionRoles,
         displayName: user.displayName,
         email: user.email,
         initials: getPersonaInitials(user.displayName),
-        assignment: assignment.assignment,
+        assignment: "primary",
         region: user.region,
         site: user.site,
         productIds: [...user.productIds],
         pruNames: [...user.pruNames]
-      };
-
-      personasByRole.set(assignment.role, [...(personasByRole.get(assignment.role) ?? []), persona]);
-    }
-  }
-
-  return roleOptions.flatMap((roleOption) => {
-    const rolePersonas = (personasByRole.get(roleOption.key) ?? []).sort((left, right) => {
-      if (left.assignment !== right.assignment) {
-        return left.assignment === "primary" ? -1 : 1;
-      }
-
-      return left.displayName.localeCompare(right.displayName);
+      }];
     });
+  const fallbackPersonas = roleOptions
+    .filter((roleOption) => !coveredRoleKeys.has(roleOption.key))
+    .map((roleOption) => createFallbackRolePersona(roleOption));
 
-    return rolePersonas.length ? rolePersonas : [createFallbackRolePersona(roleOption)];
-  });
+  return [
+    ...userPersonas.sort((left, right) => left.displayName.localeCompare(right.displayName)),
+    ...fallbackPersonas
+  ];
 }
 
 function formatPersonaOptionLabel(persona: RolePersonaOption): string {
-  const actingSuffix = persona.assignment === "acting" ? " (acting)" : "";
+  if (persona.assignment === "fallback") {
+    return persona.roleLabel;
+  }
 
-  return `${persona.displayName} - ${persona.roleLabel}${actingSuffix}`;
+  return `${persona.displayName} - ${persona.roleLabel}`;
 }
 
 function formatPersonaAuditActor(persona: RolePersonaOption): string {
   return `${persona.displayName} (${persona.roleLabel})`;
+}
+
+function formatPersonaSecondaryRoles(config: AdminConfig, persona: RolePersonaOption): string {
+  const secondaryRoles = persona.actionRoles.map((role) => getConfigRoleLabel(config, role));
+
+  return secondaryRoles.length ? secondaryRoles.join(", ") : "None";
 }
 
 const navItems = [
@@ -392,7 +411,24 @@ type ApprovalQueueItem = {
   step: Ticket["workflow"][number];
   stepIndex: number;
   actionable: boolean;
+  deviationAssignment?: WorkflowDeviationAssignment;
 };
+
+interface WorkflowDeviationAssignment {
+  unassignedStep: Ticket["workflow"][number];
+  unassignedStepIndex: number;
+  coveringStep: Ticket["workflow"][number];
+  coveringStepIndex: number;
+}
+
+interface GlobalLpoApprovalItem {
+  id: string;
+  ticket: Ticket;
+  request: GlobalLpoApprovalRequest;
+  currentResponse?: GlobalLpoApprovalResponse;
+  needsResponse: boolean;
+  canClose: boolean;
+}
 
 interface ApprovalClarificationRequest {
   question: string;
@@ -459,11 +495,43 @@ type AnalyticsReportSnapshot = {
   filters: AnalyticsReportFilters;
   generatedAt: string;
 };
-type ReportsPanelTab = "analytics" | "jiraInsights";
+type ReportsPanelTab = "analytics" | "leadTime" | "jiraInsights";
 type JiraInsightsView = "overview" | "sla" | "teams" | "releases" | "sync";
 type ReportOption = {
   value: string;
   label: string;
+};
+type LeadTimeOwnershipBucket = LeadTimeOwnership | "unclassified";
+type LeadTimeRuleKind = "transition" | "status" | "none";
+type LeadTimeStatusEvent = {
+  status: string;
+  atMs: number;
+  source: string;
+  oldStatus?: string;
+};
+type LeadTimeSegment = {
+  fromStatus: string;
+  toStatus: string;
+  startMs: number;
+  endMs: number;
+  hours: number;
+  ownership: LeadTimeOwnershipBucket;
+  ruleKind: LeadTimeRuleKind;
+  ruleLabel: string;
+};
+type TicketLeadTimeMetrics = {
+  ticket: Ticket;
+  currentStatus: string;
+  startedAtMs: number;
+  endedAtMs: number;
+  isOpen: boolean;
+  totalHours: number;
+  businessHours: number;
+  itHours: number;
+  processHours: number;
+  unclassifiedHours: number;
+  mixedHours: number;
+  segments: LeadTimeSegment[];
 };
 type ReleasePlanProductOption = ReportOption;
 type ReportBucket = {
@@ -583,6 +651,41 @@ function canAccessModule(role: RoleKey, moduleKey: ModuleKey): boolean {
   return item ? roleCanAccessNavItem(role, item) : false;
 }
 
+function personaCanAccessNavItem(persona: RolePersonaOption, item: NavItem): boolean {
+  return getPersonaRoleKeys(persona).some((role) => roleCanAccessNavItem(role, item));
+}
+
+function personaCanAccessModule(persona: RolePersonaOption, moduleKey: ModuleKey): boolean {
+  const item = navItems.find((candidate) => candidate.key === moduleKey);
+
+  return item ? personaCanAccessNavItem(persona, item) : false;
+}
+
+function getPersonaRoleForModule(persona: RolePersonaOption, moduleKey: ModuleKey): RoleKey | undefined {
+  if (canAccessModule(persona.role, moduleKey)) {
+    return persona.role;
+  }
+
+  return persona.actionRoles.find((actionRole) => canAccessModule(actionRole, moduleKey));
+}
+
+function firstAccessibleModuleForPersona(persona: RolePersonaOption): ModuleKey {
+  return navItems.find((item) => personaCanAccessNavItem(persona, item))?.key ?? "dashboard";
+}
+
+function getPersonaForRole(config: AdminConfig, persona: RolePersonaOption, role: RoleKey): RolePersonaOption {
+  if (persona.role === role || !personaHasRole(persona, role)) {
+    return persona;
+  }
+
+  return {
+    ...persona,
+    role,
+    roleLabel: getConfigRoleLabel(config, role),
+    assignment: "acting"
+  };
+}
+
 function canOperateJira(role?: RoleKey): boolean {
   return role ? canAccessModule(role, "jira") : false;
 }
@@ -664,18 +767,19 @@ function getJiraCreatorRolesForTicket(config: AdminConfig, ticket: Ticket): Role
 }
 
 function canManageJiraForTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
-  if (!canOperateJira(persona.role)) {
+  const jiraRoles = getPersonaRoleKeys(persona).filter((role) => canOperateJira(role));
+
+  if (!jiraRoles.length) {
     return false;
   }
 
-  if (persona.role === "admin") {
+  if (jiraRoles.includes("admin")) {
     return true;
   }
 
   if (
     canCreateJiraForTicket(ticket) &&
-    isJiraReadyToCreateNotificationRole(persona.role) &&
-    roleHasTicketAccess(ticket, persona.role, config)
+    jiraRoles.some((role) => isJiraReadyToCreateNotificationRole(role) && roleHasTicketAccess(ticket, role, config))
   ) {
     return true;
   }
@@ -683,8 +787,7 @@ function canManageJiraForTicket(config: AdminConfig, persona: RolePersonaOption,
   const jiraCreatorRoles = getJiraCreatorRolesForTicket(config, ticket);
 
   return Boolean(
-    jiraCreatorRoles.includes(persona.role) &&
-      personaCanActOnTicket(persona, ticket, config)
+    jiraRoles.some((role) => jiraCreatorRoles.includes(role) && personaCanActOnTicketAsRole(persona, ticket, config, role))
   );
 }
 
@@ -694,10 +797,11 @@ function canCommentOnJiraForTicket(config: AdminConfig, persona: RolePersonaOpti
   }
 
   return (
-    persona.role === "admin" ||
+    personaHasRole(persona, "admin") ||
     ticketWasSubmittedByPersona(ticket, persona) ||
-    personaCanActOnTicket(persona, ticket, config) ||
-    roleHasTicketAccess(ticket, persona.role, config)
+    getPersonaRoleKeys(persona).some(
+      (role) => personaCanActOnTicketAsRole(persona, ticket, config, role) || roleHasTicketAccess(ticket, role, config)
+    )
   );
 }
 
@@ -712,10 +816,6 @@ function getTicketSearchText(ticket: Ticket, config: AdminConfig): string {
   ]
     .join(" ")
     .toLowerCase();
-}
-
-function firstAccessibleModule(role: RoleKey): ModuleKey {
-  return navItems.find((item) => roleCanAccessNavItem(role, item))?.key ?? "dashboard";
 }
 
 function parseStringListRecord(value: string | null): Record<string, string[]> {
@@ -787,27 +887,29 @@ function getJiraAttentionIds(tickets: Ticket[]): string[] {
 }
 
 function buildHeaderAttentionItems({
+  approvalScopeTickets,
   config,
   checkedJiraItemIds,
-  role,
   selectedPersona,
   tickets,
   visibleNotifications
 }: {
+  approvalScopeTickets: Ticket[];
   config: AdminConfig;
   checkedJiraItemIds: Set<string>;
-  role: RoleKey;
   selectedPersona: RolePersonaOption;
   tickets: Ticket[];
   visibleNotifications: NotificationItem[];
 }): HeaderAttentionItem[] {
-  const canShow = (module: ModuleKey) => canAccessModule(role, module);
+  const canShow = (module: ModuleKey) => personaCanAccessModule(selectedPersona, module);
   const items: HeaderAttentionItem[] = [];
   const unreadNotifications = visibleNotifications.filter((item) => item.unread).length;
-  const approvalTickets = getApprovalQueueItems(tickets, config, selectedPersona).filter(
+  const workflowApprovalCount = getApprovalQueueItems(approvalScopeTickets, config, selectedPersona).filter(
     (item) => item.actionable && item.step.status !== "blocked"
   ).length;
-  const clarificationAttentionCount = getClarificationAttentionCount(tickets, role);
+  const globalLpoApprovalCount = getGlobalLpoApprovalAttentionCount(approvalScopeTickets, config, selectedPersona);
+  const approvalCount = workflowApprovalCount + globalLpoApprovalCount;
+  const clarificationAttentionCount = getClarificationAttentionCountForPersona(tickets, selectedPersona);
   const escalationTickets = tickets.filter((ticket) => canAccessEscalationsForTicket(config, selectedPersona, ticket));
   const openEscalations = escalationTickets.flatMap((ticket) => ticket.escalations).filter(
     (escalation) => escalation.status !== "resolved"
@@ -826,13 +928,13 @@ function buildHeaderAttentionItems({
     });
   }
 
-  if (approvalTickets > 0 && canShow("approvals")) {
+  if (approvalCount > 0 && canShow("approvals")) {
     items.push({
       id: "approvals",
       module: "approvals",
       title: "Approval actions",
-      meta: "Workflow gates owned by this role",
-      count: approvalTickets,
+      meta: globalLpoApprovalCount > 0 ? "Workflow gates and LPO group requests" : "Workflow gates owned by this role",
+      count: approvalCount,
       tone: "warning"
     });
   }
@@ -1097,6 +1199,30 @@ type EscalationMeetingSeriesInput = {
   statusUpdates?: Ticket["escalations"][number]["statusUpdates"];
 };
 
+interface OutlookMeetingFormState {
+  title: string;
+  attendees: string;
+  startDateTime: string;
+  endDateTime: string;
+  description: string;
+  createTeamsMeeting: boolean;
+  relatedTicketId: string;
+  escalationPriority: string;
+}
+
+interface LeadTimeStatusRuleFormState {
+  status: string;
+  ownership: LeadTimeOwnership;
+  active: boolean;
+}
+
+interface LeadTimeTransitionRuleFormState {
+  fromStatus: string;
+  toStatus: string;
+  ownership: LeadTimeOwnership;
+  active: boolean;
+}
+
 interface JiraDraftUpdateInput {
   summary?: string;
   description?: string;
@@ -1187,6 +1313,19 @@ type UpdateJiraIssueHandler = (ticketKey: string, draftUpdate?: JiraDraftUpdateI
 type UpdateJiraLinkHandler = (ticketKey: string, jiraKey: string) => Promise<void>;
 type PostJiraCommentHandler = (ticketKey: string, body: string) => Promise<void>;
 type UpdateJiraStatusHandler = (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
+type CreateGlobalLpoApprovalRequestHandler = (ticketKey: string, sourceStepId: string, question: string) => void;
+type RespondGlobalLpoApprovalRequestHandler = (
+  ticketKey: string,
+  requestId: string,
+  decision: GlobalLpoApprovalDecision,
+  note: string
+) => void;
+type CloseGlobalLpoApprovalRequestHandler = (
+  ticketKey: string,
+  requestId: string,
+  outcome: GlobalLpoApprovalOutcome,
+  note: string
+) => void;
 type SyncJiraActivityHandler = (
   ticketKey: string,
   status: JiraFollowUpStatus,
@@ -1299,6 +1438,8 @@ const sentEmailNotificationStorageKey = "nexus-email-notification-sent-v1";
 const persistenceDebounceMs = 400;
 const defaultAiTestPrompt = "Tell me about yourself.";
 const legacyAiTestPrompt = "Write a short Jira handoff summary for a production support request.";
+const entraRequiredScopes = ["User.Read", "Calendars.ReadWrite", "OnlineMeetings.ReadWrite"] as const;
+const microsoftGraphEventEndpoint = "https://graph.microsoft.com/v1.0/me/events";
 const ticketStateOptions = [
   { value: "intake", label: "Intake" },
   { value: "clarification", label: "Clarification" },
@@ -1386,15 +1527,19 @@ function normalizeTicketUpdateOptionValue(value: string, currentValue: string, a
 }
 
 function canEditTicketForPersona(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
-  if (!(ticketEditorRoles as readonly RoleKey[]).includes(persona.role)) {
+  const editorRoles = getPersonaRoleKeys(persona).filter((role) => (ticketEditorRoles as readonly RoleKey[]).includes(role));
+
+  if (!editorRoles.length) {
     return false;
   }
 
-  if (persona.role === "admin") {
+  if (editorRoles.includes("admin")) {
     return true;
   }
 
-  return personaCanActOnTicket(persona, ticket, config) || roleHasTicketAccess(ticket, persona.role, config);
+  return editorRoles.some(
+    (role) => personaCanActOnTicketAsRole(persona, ticket, config, role) || roleHasTicketAccess(ticket, role, config)
+  );
 }
 
 function buildTicketUpdateForm(ticket: Ticket): TicketUpdateInput {
@@ -1652,6 +1797,27 @@ const jiraPortalStatusTimelineOptions = [
   label: string;
   tone: "info" | "warning" | "critical" | "success" | "neutral";
 }[];
+const leadTimeSuggestedStatusLabels = [
+  "New request",
+  "Review",
+  "Planning",
+  "In progress",
+  "IT Test",
+  "Business Test",
+  "Close",
+  "Done",
+  "Planned release",
+  ...ticketStateOptions.map((option) => option.label),
+  ...jiraPortalStatusTimelineOptions.map((option) => option.label),
+  "Waiting for clarification",
+  "In project",
+  "Review",
+  "Architecture review",
+  "Business review",
+  "IT review",
+  "Approval",
+  "Closed"
+] as const;
 const jiraReadyToCreateNotificationRoles = ["software_architect", "release_manager"] as const satisfies readonly RoleKey[];
 function isJiraReadyToCreateNotificationRole(role: RoleKey): boolean {
   return jiraReadyToCreateNotificationRoles.some((candidate) => candidate === role);
@@ -1668,22 +1834,109 @@ const notificationEventOptions = [
   { value: "jiraCreated", label: "Jira created" },
   { value: "slaBreach", label: "SLA breach" },
   { value: "escalationTriggered", label: "Escalation triggered" },
+  { value: "workflowDeviation", label: "Workflow deviation" },
   { value: "participantAdded", label: "Participant added" }
 ] as const satisfies readonly { value: NotificationEventType; label: string }[];
-const userEmailNotificationEventOptions = [
-  { value: "approvalRequested", label: "Approval requested" },
-  { value: "jiraReadyToCreate", label: "Jira ready to create" }
-] as const satisfies readonly { value: UserEmailNotificationEventType; label: string }[];
+const supportedUserEmailNotificationEventTypes = [
+  "approvalRequested",
+  "clarificationRequested",
+  "clarificationAnswered",
+  "jiraReadyToCreate",
+  "jiraCreated",
+  "slaBreach",
+  "workflowDeviation",
+  "participantAdded"
+] as const satisfies readonly UserEmailNotificationEventType[];
+
+type UserEmailNotificationEventOption = {
+  value: UserEmailNotificationEventType;
+  label: string;
+};
+
 const notificationDeliveryModeOptions = [
   { value: "inAppOnly", label: "In-app only" },
   { value: "emailOnly", label: "Email only" },
   { value: "inAppAndEmail", label: "In-app and email" }
 ] as const satisfies readonly { value: NotificationDeliveryMode; label: string }[];
 
+function isSupportedUserEmailNotificationEventType(eventType: UserEmailNotificationEventType): boolean {
+  return supportedUserEmailNotificationEventTypes.some((candidate) => candidate === eventType);
+}
+
+function getEmailCapableUserNotificationEventOptions(config: AdminConfig): UserEmailNotificationEventOption[] {
+  const emailTemplateEventTypes = new Set(
+    config.notificationTemplates
+      .filter((template) => template.active && notificationDeliveryModeSendsEmail(template.deliveryMode))
+      .map((template) => template.eventType as UserEmailNotificationEventType)
+      .filter(isSupportedUserEmailNotificationEventType)
+  );
+
+  return notificationEventOptions
+    .filter((option) => emailTemplateEventTypes.has(option.value as UserEmailNotificationEventType))
+    .map((option) => ({
+      value: option.value as UserEmailNotificationEventType,
+      label: option.label
+    }));
+}
+
+function getUserNotificationRoleKeys(user: Pick<AdminUser, "primaryRole" | "actionRoles">): RoleKey[] {
+  return Array.from(new Set([user.primaryRole, ...user.actionRoles]));
+}
+
+function roleHasEmailNotificationTemplate(
+  config: AdminConfig,
+  role: RoleKey,
+  eventType: UserEmailNotificationEventType
+): boolean {
+  return config.notificationTemplates.some(
+    (template) =>
+      template.active &&
+      template.eventType === eventType &&
+      notificationDeliveryModeSendsEmail(template.deliveryMode) &&
+      template.enabledRoles.includes(role)
+  );
+}
+
+function userRoleCanReceiveEmailEvent(
+  config: AdminConfig,
+  role: RoleKey,
+  eventType: UserEmailNotificationEventType
+): boolean {
+  if (!roleHasEmailNotificationTemplate(config, role, eventType)) {
+    return false;
+  }
+
+  if (eventType === "approvalRequested") {
+    return getRoleWorkflowType(config, role) !== "inform";
+  }
+
+  if (eventType === "jiraReadyToCreate") {
+    return isJiraReadyToCreateNotificationRole(role);
+  }
+
+  if (eventType === "workflowDeviation") {
+    return role === "admin";
+  }
+
+  return true;
+}
+
+function getRelevantUserEmailNotificationEventOptions(
+  config: AdminConfig,
+  user: Pick<AdminUser, "primaryRole" | "actionRoles">
+): UserEmailNotificationEventOption[] {
+  const roleKeys = getUserNotificationRoleKeys(user);
+
+  return getEmailCapableUserNotificationEventOptions(config).filter((option) =>
+    roleKeys.some((role) => userRoleCanReceiveEmailEvent(config, role, option.value))
+  );
+}
+
 function toggleUserEmailNotificationEventSelection(
   currentEventTypes: UserEmailNotificationEventType[],
   eventType: UserEmailNotificationEventType,
-  enabled: boolean
+  enabled: boolean,
+  allowedEventTypes: UserEmailNotificationEventType[]
 ): UserEmailNotificationEventType[] {
   const selectedEventTypes = new Set(currentEventTypes);
 
@@ -1693,27 +1946,33 @@ function toggleUserEmailNotificationEventSelection(
     selectedEventTypes.delete(eventType);
   }
 
-  return userEmailNotificationEventOptions
-    .map((option) => option.value)
-    .filter((value) => selectedEventTypes.has(value));
+  return allowedEventTypes.filter((value) => selectedEventTypes.has(value));
 }
 
 function getUserEmailNotificationEventLabel(eventType: UserEmailNotificationEventType): string {
-  return userEmailNotificationEventOptions.find((option) => option.value === eventType)?.label ?? eventType;
+  return notificationEventOptions.find((option) => option.value === eventType)?.label ?? eventType;
 }
 
-function getAdminUserEmailNotificationSummary(user: AdminUser): string {
+function getAdminUserEmailNotificationSummary(config: AdminConfig, user: AdminUser): string {
   const { notificationPreferences } = user;
+  const relevantEventTypes = getRelevantUserEmailNotificationEventOptions(config, user).map((option) => option.value);
+  const selectedRelevantEventTypes = notificationPreferences.emailEventTypes.filter((eventType) =>
+    relevantEventTypes.includes(eventType)
+  );
 
   if (!notificationPreferences.emailEnabled) {
     return "Email: Off";
   }
 
-  if (!notificationPreferences.emailEventTypes.length) {
+  if (!relevantEventTypes.length) {
+    return "Email: No role-based events";
+  }
+
+  if (!selectedRelevantEventTypes.length) {
     return "Email: No automatic events";
   }
 
-  return `Email: ${notificationPreferences.emailEventTypes.map(getUserEmailNotificationEventLabel).join(", ")}`;
+  return `Email: ${selectedRelevantEventTypes.map(getUserEmailNotificationEventLabel).join(", ")}`;
 }
 const notificationSeverityOptions = [
   { value: "info", label: "INFO" },
@@ -1734,6 +1993,9 @@ const notificationTokenSamples = {
   dueDate: "2026-06-05 16:00",
   releaseVersion: "2026.06",
   requestedByRole: "Release Manager",
+  deviationGate: "Local Product Owner Approval",
+  deviationRole: "Local Product Owner",
+  deviationCoveringOwner: "Global Product Owner",
   portalHomeUrl: "https://support.scania.com",
   portalUrl: "https://support.scania.com/?ticket=SUP-1042",
   ticketUrl: "https://support.scania.com/?ticket=SUP-1042"
@@ -1761,6 +2023,11 @@ const legacyNotificationTemplateDefaults: Record<
   "tpl-sla-breach": {
     subject: "SLA breach: {{ticketKey}}",
     body: "{{ticketKey}} has breached its configured SLA rule and needs escalation review.",
+    deliveryMode: "inAppAndEmail"
+  },
+  "tpl-workflow-deviation": {
+    subject: "Workflow deviation: {{ticketKey}}",
+    body: "{{ticketKey}} has an active approval gate without an assigned owner.",
     deliveryMode: "inAppAndEmail"
   },
   "tpl-participant-added": {
@@ -1808,6 +2075,8 @@ function createEmptyAdminConfig(): AdminConfig {
     requestCategories: [],
     slaRules: [],
     escalationPolicies: [],
+    leadTimeStatusRules: defaultLeadTimeStatusRules,
+    leadTimeTransitionRules: defaultLeadTimeTransitionRules,
     notificationTemplates: [],
     formTemplates: [],
     ticketTypeWorkflows: [],
@@ -1896,7 +2165,7 @@ function getDefaultNotificationSeverity(eventType: NotificationEventType): Notif
     return "success";
   }
 
-  if (eventType === "slaBreach" || eventType === "escalationTriggered") {
+  if (eventType === "slaBreach" || eventType === "escalationTriggered" || eventType === "workflowDeviation") {
     return "critical";
   }
 
@@ -2032,6 +2301,8 @@ function normalizeAdminConfig(config: AdminConfig): AdminConfig {
       : Array.isArray(config.escalationPolicies)
         ? config.escalationPolicies
         : [],
+    leadTimeStatusRules: normalizeLeadTimeStatusRules(config.leadTimeStatusRules),
+    leadTimeTransitionRules: normalizeLeadTimeTransitionRules(config.leadTimeTransitionRules),
     notificationTemplates: normalizeNotificationTemplates(
       Array.isArray(config.notificationTemplates) ? config.notificationTemplates : []
     ),
@@ -2850,6 +3121,69 @@ function createDefaultEscalationInput(): NewEscalationInput {
     people: [createEmptyEscalationPersonInput()],
     sendManagerInvite: false,
     dueAt: formatDateTimeLocalValue(new Date(Date.now() + 24 * 60 * 60 * 1000))
+  };
+}
+
+function getOutlookMeetingAttendeeText(escalation?: Ticket["escalations"][number]): string {
+  if (!escalation) {
+    return "";
+  }
+
+  const attendeeEmails = new Set<string>();
+
+  for (const person of getEscalationPeople(escalation)) {
+    const email = normalizeEmailAddressInput(person.email ?? "");
+
+    if (email && isValidEmailAddress(email)) {
+      attendeeEmails.add(email);
+    }
+  }
+
+  return Array.from(attendeeEmails).join(", ");
+}
+
+function buildOutlookMeetingDescription(ticket: Ticket, escalation?: Ticket["escalations"][number]): string {
+  const productContext = [ticket.product, ticket.pru, ticket.module].filter(Boolean).join(" / ");
+  const parts = [
+    `${ticket.key}: ${ticket.title}`,
+    productContext ? `Product / PRU / Module: ${productContext}` : "",
+    ticket.slaLabel ? `SLA: ${ticket.slaLabel}` : "",
+    escalation ? `Escalation: ${escalation.reason}` : "",
+    escalation ? `Status: ${getEscalationStatusLabel(escalation.status)}` : "",
+    escalation ? `Priority: ${escalation.severity}` : "",
+    escalation?.requestedAction
+      ? `Requested action:\n${htmlToPlainTextFallback(escalation.requestedAction).trim()}`
+      : "",
+    escalation?.meetingSeries ? `Meeting notes:\n${escalation.meetingSeries}` : ""
+  ];
+
+  return parts.filter(Boolean).join("\n\n");
+}
+
+function buildOutlookMeetingInitialForm(
+  ticket: Ticket,
+  escalation?: Ticket["escalations"][number]
+): OutlookMeetingFormState {
+  const defaultMeetingStart = formatLocalDateTimeForInput(new Date(Date.now() + 60 * 60 * 1000));
+  const meetingStartAt = escalation?.meetingStartAt?.trim() || defaultMeetingStart;
+  const meetingDurationMinutes = normalizeEscalationMeetingDurationMinutes(
+    escalation?.meetingDurationMinutes ?? defaultEscalationMeetingDurationMinutes
+  );
+  const meetingEndAt =
+    (escalation ? getEscalationMeetingEndAt(escalation) : "") ||
+    addMinutesToDateTimeLocal(meetingStartAt, meetingDurationMinutes);
+
+  return {
+    title: escalation
+      ? `Escalation follow-up: ${ticket.key} - ${escalation.reason || ticket.title}`
+      : `Escalation follow-up: ${ticket.key} - ${ticket.title}`,
+    attendees: getOutlookMeetingAttendeeText(escalation),
+    startDateTime: meetingStartAt,
+    endDateTime: meetingEndAt,
+    description: buildOutlookMeetingDescription(ticket, escalation),
+    createTeamsMeeting: true,
+    relatedTicketId: ticket.key,
+    escalationPriority: escalation?.severity ?? ""
   };
 }
 
@@ -4127,7 +4461,8 @@ function personaDirectScopeMatchesTicket(
 function personaMappingScopeMatchesTicket(
   persona: RolePersonaOption,
   ticket: Ticket,
-  config: AdminConfig
+  config: AdminConfig,
+  role: RoleKey = persona.role
 ): boolean {
   if (!persona.userId) {
     return false;
@@ -4137,23 +4472,24 @@ function personaMappingScopeMatchesTicket(
     (mapping) =>
       mapping.active &&
       mapping.userIds.includes(persona.userId as string) &&
-      getResponsibilityMappingRoles(mapping).includes(persona.role) &&
+      getResponsibilityMappingRoles(mapping).includes(role) &&
       responsibilityMappingMatchesTicket(mapping, ticket, config)
   );
 }
 
-function personaCanActOnTicket(
+function personaCanActOnTicketAsRole(
   persona: RolePersonaOption,
   ticket: Ticket,
-  config: AdminConfig
+  config: AdminConfig,
+  role: RoleKey
 ): boolean {
-  if (persona.role === "admin" || persona.assignment === "fallback") {
+  if (role === "admin" || persona.assignment === "fallback") {
     return true;
   }
 
   return (
     personaDirectScopeMatchesTicket(persona, ticket, config) ||
-    personaMappingScopeMatchesTicket(persona, ticket, config)
+    personaMappingScopeMatchesTicket(persona, ticket, config, role)
   );
 }
 
@@ -4210,7 +4546,7 @@ function roleHasTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig)
 }
 
 function personaCanViewTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
-  if (persona.role === "admin" || persona.assignment === "fallback") {
+  if (personaHasRole(persona, "admin") || persona.assignment === "fallback") {
     return true;
   }
 
@@ -4218,7 +4554,9 @@ function personaCanViewTicket(config: AdminConfig, persona: RolePersonaOption, t
     return true;
   }
 
-  return roleHasTicketAccess(ticket, persona.role, config) && personaCanActOnTicket(persona, ticket, config);
+  return getPersonaRoleKeys(persona).some(
+    (role) => roleHasTicketAccess(ticket, role, config) && personaCanActOnTicketAsRole(persona, ticket, config, role)
+  );
 }
 
 function getPersonaScopedTickets(
@@ -4234,7 +4572,9 @@ function canAccessEscalationsForTicket(
   persona: RolePersonaOption,
   ticket: Ticket
 ): boolean {
-  return canAccessModule(persona.role, "escalations") && personaCanActOnTicket(persona, ticket, config);
+  return getPersonaRoleKeys(persona).some(
+    (role) => canAccessModule(role, "escalations") && personaCanActOnTicketAsRole(persona, ticket, config, role)
+  );
 }
 
 function getEscalationScopedTickets(
@@ -4242,7 +4582,7 @@ function getEscalationScopedTickets(
   config: AdminConfig,
   persona: RolePersonaOption
 ): Ticket[] {
-  if (!canAccessModule(persona.role, "escalations")) {
+  if (!personaCanAccessModule(persona, "escalations")) {
     return [];
   }
 
@@ -4639,6 +4979,20 @@ function getClarificationAttentionCount(tickets: Ticket[], role: RoleKey): numbe
   );
 }
 
+function getClarificationAttentionCountForPersona(tickets: Ticket[], persona: RolePersonaOption): number {
+  const roleKeys = getPersonaRoleKeys(persona);
+
+  return tickets.reduce(
+    (count, ticket) =>
+      count + buildClarificationThreadGroups(ticket).filter((group) =>
+        group.threads.some((clarification) =>
+          roleKeys.some((role) => clarificationNeedsRoleAttention(clarification, role))
+        )
+      ).length,
+    0
+  );
+}
+
 function clarificationNotificationTargetsRole(
   thread: Ticket["clarifications"][number],
   role: RoleKey
@@ -4668,20 +5022,21 @@ function personaCanReceiveClarificationNotification(
   ticket: Ticket,
   thread: Ticket["clarifications"][number]
 ): boolean {
-  if (!clarificationNotificationTargetsRole(thread, persona.role)) {
+  const targetRole = getPersonaRoleKeys(persona).find((role) => clarificationNotificationTargetsRole(thread, role));
+
+  if (!targetRole) {
     return false;
   }
 
-  if (persona.role === "requester" || persona.role === "admin") {
+  if (targetRole === "requester" || targetRole === "admin") {
     return true;
   }
 
-  return personaCanActOnTicket(persona, ticket, config);
+  return personaCanActOnTicketAsRole(persona, ticket, config, targetRole);
 }
 
 function buildClarificationNotifications(
   tickets: Ticket[],
-  role: RoleKey,
   selectedPersona: RolePersonaOption,
   config: AdminConfig
 ): NotificationItem[] {
@@ -4696,8 +5051,11 @@ function buildClarificationNotifications(
         }
 
         const messageRoleMatchesCurrentRole =
-          normalizeClarificationRoleText(latestMessage.role) ===
-          normalizeClarificationRoleText(getConfigRoleLabel(config, role));
+          getPersonaRoleKeys(selectedPersona).some(
+            (role) =>
+              normalizeClarificationRoleText(latestMessage.role) ===
+              normalizeClarificationRoleText(getConfigRoleLabel(config, role))
+          );
 
         if (messageRoleMatchesCurrentRole) {
           return [];
@@ -4737,9 +5095,10 @@ function personaCanReceiveJiraReadyNotification(
   persona: RolePersonaOption,
   ticket: Ticket
 ): boolean {
-  return (
-    isJiraReadyToCreateNotificationRole(persona.role) &&
-    roleHasTicketAccess(ticket, persona.role, config)
+  return getPersonaRoleKeys(persona).some(
+    (role) =>
+      isJiraReadyToCreateNotificationRole(role) &&
+      roleHasTicketAccess(ticket, role, config)
   );
 }
 
@@ -4972,14 +5331,53 @@ function getJiraReadyToCreateEmailRecipients(
   return Array.from(recipients.values());
 }
 
+function getWorkflowDeviationEmailRecipients(config: AdminConfig): NotificationEmailRecipient[] {
+  const recipients = new Map<string, NotificationEmailRecipient>();
+
+  for (const user of config.users) {
+    const email = user.email.trim();
+
+    if (
+      !user.active ||
+      !adminUserHasRole(user, "admin") ||
+      !adminUserReceivesEmailNotification(user, "workflowDeviation") ||
+      !email ||
+      !isValidEmailAddress(email)
+    ) {
+      continue;
+    }
+
+    recipients.set(email.toLowerCase(), {
+      name: user.displayName,
+      email
+    });
+  }
+
+  return Array.from(recipients.values());
+}
+
+function getWorkflowDeviationAssignments(config: AdminConfig, ticket: Ticket): WorkflowDeviationAssignment[] {
+  if (ticket.state === "closed") {
+    return [];
+  }
+
+  return ticket.workflow.flatMap((step, stepIndex) => {
+    const assignment = getWorkflowDeviationAssignmentForStep(config, ticket, stepIndex);
+
+    return assignment ? [assignment] : [];
+  });
+}
+
 function buildNotificationTemplateContext({
   config,
+  deviationAssignment,
   participantName,
   portalOrigin,
   step,
   ticket
 }: {
   config: AdminConfig;
+  deviationAssignment?: WorkflowDeviationAssignment;
   participantName: string;
   portalOrigin: string;
   step?: Ticket["workflow"][number];
@@ -5012,6 +5410,11 @@ function buildNotificationTemplateContext({
     dueDate: dueDateLabel,
     releaseVersion: ticket.jiraDraft.fixVersion ?? "Not selected",
     requestedByRole,
+    deviationGate: deviationAssignment?.unassignedStep.label ?? "",
+    deviationRole: deviationAssignment ? getConfigRoleLabel(config, deviationAssignment.unassignedStep.ownerRole) : "",
+    deviationCoveringOwner: deviationAssignment
+      ? `${deviationAssignment.coveringStep.ownerName} (${getConfigRoleLabel(config, deviationAssignment.coveringStep.ownerRole)})`
+      : "",
     portalHomeUrl,
     portalUrl: ticketUrl,
     ticketUrl
@@ -5040,6 +5443,174 @@ function dedupeNotificationEmailEnvelopes(envelopes: NotificationEmailEnvelope[]
     seenEnvelopeIds.add(envelope.id);
     return true;
   });
+}
+
+function getActiveEmailNotificationTemplate(
+  config: AdminConfig,
+  eventType: UserEmailNotificationEventType
+): NotificationTemplate | undefined {
+  return config.notificationTemplates.find(
+    (candidate) =>
+      candidate.active &&
+      candidate.eventType === eventType &&
+      notificationDeliveryModeSendsEmail(candidate.deliveryMode)
+  );
+}
+
+function userIdentityMatchesText(user: AdminUser, value: string): boolean {
+  const normalizedValue = normalizeRoleText(value);
+
+  if (!normalizedValue) {
+    return false;
+  }
+
+  return [user.displayName, user.email, user.id].some((candidate) => normalizeRoleText(candidate) === normalizedValue);
+}
+
+function getConfigRoleKeyByLabel(config: AdminConfig, label: string): RoleKey | undefined {
+  const normalizedLabel = normalizeRoleText(label);
+
+  if (!normalizedLabel) {
+    return undefined;
+  }
+
+  return getRoleOptions(config).find(
+    (role) => normalizeRoleText(role.label) === normalizedLabel || normalizeRoleText(role.key) === normalizedLabel
+  )?.key;
+}
+
+function addNotificationEmailRecipient(
+  recipients: Map<string, NotificationEmailRecipient>,
+  user: AdminUser | undefined,
+  eventType: UserEmailNotificationEventType
+) {
+  const email = user?.email.trim();
+
+  if (!user?.active || !adminUserReceivesEmailNotification(user, eventType) || !email || !isValidEmailAddress(email)) {
+    return;
+  }
+
+  recipients.set(email.toLowerCase(), {
+    name: user.displayName,
+    email
+  });
+}
+
+function getRoleNotificationEmailRecipients(
+  config: AdminConfig,
+  ticket: Ticket,
+  eventType: UserEmailNotificationEventType,
+  roles: readonly RoleKey[]
+): NotificationEmailRecipient[] {
+  const recipients = new Map<string, NotificationEmailRecipient>();
+  const allowedRoles = Array.from(new Set(roles.filter((role) => roleHasEmailNotificationTemplate(config, role, eventType))));
+  const submitter = getTicketSubmitter(ticket);
+
+  for (const role of allowedRoles) {
+    const roleUsers = config.users
+      .filter((user) => user.active && adminUserHasRole(user, role))
+      .sort((left, right) => {
+        const scoreDifference =
+          getAdminUserScopeScore(right, ticket, config, role) -
+          getAdminUserScopeScore(left, ticket, config, role);
+
+        if (scoreDifference !== 0) {
+          return scoreDifference;
+        }
+
+        return left.displayName.localeCompare(right.displayName);
+      });
+    const directlyNamedUsers =
+      role === "requester" ? roleUsers.filter((user) => userIdentityMatchesText(user, submitter)) : [];
+    const scopedRoleUsers = roleUsers.filter(
+      (user) => adminUserScopeMatchesTicket(user, ticket, config) || roleHasTicketAccess(ticket, role, config)
+    );
+    const targetUsers = directlyNamedUsers.length > 0 ? directlyNamedUsers : scopedRoleUsers.length > 0 ? scopedRoleUsers : roleUsers;
+
+    targetUsers.forEach((user) => addNotificationEmailRecipient(recipients, user, eventType));
+  }
+
+  return Array.from(recipients.values());
+}
+
+function getNamedNotificationEmailRecipients(
+  config: AdminConfig,
+  eventType: UserEmailNotificationEventType,
+  names: readonly string[]
+): NotificationEmailRecipient[] {
+  const recipients = new Map<string, NotificationEmailRecipient>();
+
+  for (const name of names) {
+    config.users
+      .filter((user) => userIdentityMatchesText(user, name))
+      .forEach((user) => addNotificationEmailRecipient(recipients, user, eventType));
+  }
+
+  return Array.from(recipients.values());
+}
+
+function createNotificationEmailEnvelope({
+  config,
+  contextOverrides,
+  deviationAssignment,
+  eventType,
+  recipient,
+  sourceParts,
+  step,
+  template,
+  ticket,
+  portalOrigin
+}: {
+  config: AdminConfig;
+  contextOverrides?: Record<string, string>;
+  deviationAssignment?: WorkflowDeviationAssignment;
+  eventType: UserEmailNotificationEventType;
+  recipient: NotificationEmailRecipient;
+  sourceParts: string[];
+  step?: Ticket["workflow"][number];
+  template: NotificationTemplate;
+  ticket: Ticket;
+  portalOrigin: string;
+}): NotificationEmailEnvelope {
+  const context = buildNotificationTemplateContext({
+    config,
+    deviationAssignment,
+    participantName: recipient.name,
+    portalOrigin,
+    step,
+    ticket
+  });
+  Object.assign(context, contextOverrides);
+  const subject = renderNotificationTemplateWithContext(template.subject, context);
+  const body = renderNotificationTemplateWithContext(template.body, context);
+  const htmlBody = renderNotificationEmailHtmlBody(body, context);
+  const deliveryFingerprint = getNotificationEmailDeliveryFingerprint([
+    eventType,
+    ticket.key,
+    template.id,
+    recipient.email.toLowerCase(),
+    subject,
+    body,
+    ...sourceParts
+  ]);
+
+  return {
+    id: [
+      "email",
+      eventType,
+      ticket.key,
+      template.id,
+      recipient.email.toLowerCase(),
+      ...sourceParts,
+      deliveryFingerprint
+    ].join(":"),
+    eventType,
+    ticketKey: ticket.key,
+    recipients: [recipient],
+    subject,
+    body,
+    htmlBody
+  };
 }
 
 function buildApprovalRequestedEmailEnvelopes(
@@ -5204,6 +5775,333 @@ function buildJiraReadyToCreateEmailEnvelopes(
         };
       });
     });
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
+}
+
+function buildWorkflowDeviationEmailEnvelopes(
+  config: AdminConfig,
+  tickets: Ticket[],
+  portalOrigin: string
+): NotificationEmailEnvelope[] {
+  const smtp = config.integrations.smtp;
+
+  if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+    return [];
+  }
+
+  const template = config.notificationTemplates.find(
+    (candidate) =>
+      candidate.active &&
+      candidate.eventType === "workflowDeviation" &&
+      notificationDeliveryModeSendsEmail(candidate.deliveryMode)
+  );
+
+  if (!template) {
+    return [];
+  }
+
+  const recipients = getWorkflowDeviationEmailRecipients(config);
+
+  if (!recipients.length) {
+    return [];
+  }
+
+  const envelopes = tickets.flatMap((ticket) =>
+    getWorkflowDeviationAssignments(config, ticket).flatMap((deviationAssignment) =>
+      recipients.map((recipient) => {
+        const context = buildNotificationTemplateContext({
+          config,
+          deviationAssignment,
+          participantName: recipient.name,
+          portalOrigin,
+          step: deviationAssignment.unassignedStep,
+          ticket
+        });
+        const subject = renderNotificationTemplateWithContext(template.subject, context);
+        const body = renderNotificationTemplateWithContext(template.body, context);
+        const htmlBody = renderNotificationEmailHtmlBody(body, context);
+        const deliveryFingerprint = getNotificationEmailDeliveryFingerprint([
+          "workflowDeviation",
+          ticket.key,
+          deviationAssignment.unassignedStep.id,
+          deviationAssignment.coveringStep.id,
+          template.id,
+          recipient.email.toLowerCase(),
+          subject,
+          body
+        ]);
+
+        return {
+          id: [
+            "email",
+            "workflowDeviation",
+            ticket.key,
+            deviationAssignment.unassignedStep.id,
+            deviationAssignment.coveringStep.id,
+            template.id,
+            recipient.email.toLowerCase(),
+            deliveryFingerprint
+          ].join(":"),
+          eventType: "workflowDeviation" as NotificationEventType,
+          ticketKey: ticket.key,
+          recipients: [recipient],
+          subject,
+          body,
+          htmlBody
+        };
+      })
+    )
+  );
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
+}
+
+function getClarificationEmailEventType(
+  thread: Ticket["clarifications"][number]
+): UserEmailNotificationEventType | undefined {
+  const latestMessage = getLastClarificationMessage(thread);
+
+  if (!latestMessage) {
+    return undefined;
+  }
+
+  const latestRole = normalizeClarificationRoleText(latestMessage.role);
+  const requesterRole = normalizeClarificationRoleText(getClarificationRequesterRole(thread));
+  const latestMessageIsFromRequester = latestRole === requesterRole;
+
+  if (latestMessageIsFromRequester && thread.status !== "answered") {
+    return "clarificationRequested";
+  }
+
+  if (!latestMessageIsFromRequester && thread.status === "answered") {
+    return "clarificationAnswered";
+  }
+
+  return undefined;
+}
+
+function getClarificationEmailRecipients(
+  config: AdminConfig,
+  ticket: Ticket,
+  thread: Ticket["clarifications"][number],
+  eventType: UserEmailNotificationEventType
+): NotificationEmailRecipient[] {
+  const recipients = new Map<string, NotificationEmailRecipient>();
+  const targetLabels =
+    eventType === "clarificationRequested"
+      ? getClarificationAssigneeLabels(thread.assignedTo)
+      : [getClarificationRequesterRole(thread), thread.requestedBy, thread.messages[0]?.author ?? ""];
+  const targetRoles = targetLabels
+    .map((label) => getConfigRoleKeyByLabel(config, label))
+    .filter((role): role is RoleKey => Boolean(role));
+
+  getRoleNotificationEmailRecipients(config, ticket, eventType, targetRoles).forEach((recipient) => {
+    recipients.set(recipient.email.toLowerCase(), recipient);
+  });
+  getNamedNotificationEmailRecipients(config, eventType, targetLabels).forEach((recipient) => {
+    recipients.set(recipient.email.toLowerCase(), recipient);
+  });
+
+  return Array.from(recipients.values());
+}
+
+function buildClarificationEmailEnvelopes(
+  config: AdminConfig,
+  tickets: Ticket[],
+  portalOrigin: string
+): NotificationEmailEnvelope[] {
+  const smtp = config.integrations.smtp;
+
+  if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+    return [];
+  }
+
+  const envelopes = tickets
+    .filter((ticket) => ticket.state !== "closed")
+    .flatMap((ticket) =>
+      ticket.clarifications.flatMap((thread) => {
+        const latestMessage = getLastClarificationMessage(thread);
+        const eventType = getClarificationEmailEventType(thread);
+        const template = eventType ? getActiveEmailNotificationTemplate(config, eventType) : undefined;
+
+        if (!latestMessage || !eventType || !template) {
+          return [];
+        }
+
+        const recipients = getClarificationEmailRecipients(config, ticket, thread, eventType);
+
+        if (!recipients.length) {
+          return [];
+        }
+
+        return recipients.map((recipient) =>
+          createNotificationEmailEnvelope({
+            config,
+            contextOverrides: {
+              assignedTo: thread.assignedTo,
+              requestedByRole: getClarificationRequesterRole(thread)
+            },
+            eventType,
+            portalOrigin,
+            recipient,
+            sourceParts: [thread.id, latestMessage.id],
+            template,
+            ticket
+          })
+        );
+      })
+    );
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
+}
+
+function getLatestAuditEntryByEventType(ticket: Ticket, eventType: string): Ticket["audit"][number] | undefined {
+  return [...ticket.audit]
+    .reverse()
+    .find((entry) => normalizeRoleText(entry.eventType) === normalizeRoleText(eventType));
+}
+
+function buildJiraCreatedEmailEnvelopes(
+  config: AdminConfig,
+  tickets: Ticket[],
+  portalOrigin: string
+): NotificationEmailEnvelope[] {
+  const smtp = config.integrations.smtp;
+  const eventType = "jiraCreated" as const;
+
+  if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+    return [];
+  }
+
+  const template = getActiveEmailNotificationTemplate(config, eventType);
+
+  if (!template) {
+    return [];
+  }
+
+  const envelopes = tickets
+    .filter((ticket) => Boolean(ticket.relatedJiraKey))
+    .flatMap((ticket) => {
+      const auditEntry = getLatestAuditEntryByEventType(ticket, "Jira created");
+      const recipients = getRoleNotificationEmailRecipients(config, ticket, eventType, template.enabledRoles);
+
+      return recipients.map((recipient) =>
+        createNotificationEmailEnvelope({
+          config,
+          eventType,
+          portalOrigin,
+          recipient,
+          sourceParts: [auditEntry?.id ?? ticket.relatedJiraKey ?? "jira-created"],
+          template,
+          ticket
+        })
+      );
+    });
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
+}
+
+function buildSlaBreachEmailEnvelopes(
+  config: AdminConfig,
+  tickets: Ticket[],
+  portalOrigin: string
+): NotificationEmailEnvelope[] {
+  const smtp = config.integrations.smtp;
+  const eventType = "slaBreach" as const;
+
+  if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+    return [];
+  }
+
+  const template = getActiveEmailNotificationTemplate(config, eventType);
+
+  if (!template) {
+    return [];
+  }
+
+  const envelopes = tickets
+    .filter((ticket) => ticket.state !== "closed" && ticket.slaState === "breach")
+    .flatMap((ticket) => {
+      const recipients = getRoleNotificationEmailRecipients(config, ticket, eventType, template.enabledRoles);
+
+      return recipients.map((recipient) =>
+        createNotificationEmailEnvelope({
+          config,
+          eventType,
+          portalOrigin,
+          recipient,
+          sourceParts: [ticket.slaLabel || ticket.priority || "sla-breach"],
+          template,
+          ticket
+        })
+      );
+    });
+
+  return dedupeNotificationEmailEnvelopes(envelopes);
+}
+
+function getParticipantAddedEmailRecipients(
+  config: AdminConfig,
+  ticket: Ticket,
+  participant: Ticket["participants"][number]
+): NotificationEmailRecipient[] {
+  const eventType = "participantAdded" as const;
+  const recipients = new Map<string, NotificationEmailRecipient>();
+  const participantLabels = [participant.name, participant.role].filter(Boolean);
+  const participantRoles = participantLabels
+    .map((label) => getConfigRoleKeyByLabel(config, label))
+    .filter((role): role is RoleKey => Boolean(role));
+
+  getRoleNotificationEmailRecipients(config, ticket, eventType, participantRoles).forEach((recipient) => {
+    recipients.set(recipient.email.toLowerCase(), recipient);
+  });
+  getNamedNotificationEmailRecipients(config, eventType, participantLabels).forEach((recipient) => {
+    recipients.set(recipient.email.toLowerCase(), recipient);
+  });
+
+  return Array.from(recipients.values());
+}
+
+function buildParticipantAddedEmailEnvelopes(
+  config: AdminConfig,
+  tickets: Ticket[],
+  portalOrigin: string
+): NotificationEmailEnvelope[] {
+  const smtp = config.integrations.smtp;
+  const eventType = "participantAdded" as const;
+
+  if (!smtp.enabled || !notificationDeliveryModeSendsEmail(smtp.deliveryMode)) {
+    return [];
+  }
+
+  const template = getActiveEmailNotificationTemplate(config, eventType);
+
+  if (!template) {
+    return [];
+  }
+
+  const envelopes = tickets.flatMap((ticket) =>
+    ticket.participants.flatMap((participant) => {
+      const recipients = getParticipantAddedEmailRecipients(config, ticket, participant);
+
+      return recipients.map((recipient) =>
+        createNotificationEmailEnvelope({
+          config,
+          contextOverrides: {
+            assignedTo: participant.name || participant.role,
+            requestedByRole: participant.role
+          },
+          eventType,
+          portalOrigin,
+          recipient,
+          sourceParts: [participant.id],
+          template,
+          ticket
+        })
+      );
+    })
+  );
 
   return dedupeNotificationEmailEnvelopes(envelopes);
 }
@@ -5927,6 +6825,118 @@ function isActionableWorkflowStep(step: Ticket["workflow"][number]): boolean {
   return step.status === "active" || step.status === "blocked" || step.status === "delegated";
 }
 
+function isWorkflowDecisionGate(config: AdminConfig, step: Ticket["workflow"][number]): boolean {
+  return step.status !== "complete" && step.status !== "optional" && getRoleWorkflowType(config, step.ownerRole) !== "inform";
+}
+
+function isWorkflowStepAssigned(config: AdminConfig, step: Ticket["workflow"][number]): boolean {
+  const ownerName = step.ownerName.trim();
+  const roleLabel = getConfigRoleLabel(config, step.ownerRole);
+
+  return Boolean(
+    ownerName &&
+      ownerName !== "Unassigned" &&
+      normalizeRoleText(ownerName) !== normalizeRoleText(roleLabel)
+  );
+}
+
+function isWorkflowStepUnassigned(config: AdminConfig, step: Ticket["workflow"][number]): boolean {
+  return isWorkflowDecisionGate(config, step) && !isWorkflowStepAssigned(config, step);
+}
+
+function getWorkflowDeviationAssignmentForStep(
+  config: AdminConfig,
+  ticket: Ticket,
+  stepIndex: number
+): WorkflowDeviationAssignment | undefined {
+  const unassignedStep = ticket.workflow[stepIndex];
+
+  if (!unassignedStep || !isActionableWorkflowStep(unassignedStep) || !isWorkflowStepUnassigned(config, unassignedStep)) {
+    return undefined;
+  }
+
+  const coveringStepIndex = ticket.workflow.findIndex(
+    (step, index) =>
+      index > stepIndex &&
+      isWorkflowDecisionGate(config, step) &&
+      isWorkflowStepAssigned(config, step)
+  );
+
+  if (coveringStepIndex < 0) {
+    return undefined;
+  }
+
+  return {
+    unassignedStep,
+    unassignedStepIndex: stepIndex,
+    coveringStep: ticket.workflow[coveringStepIndex],
+    coveringStepIndex
+  };
+}
+
+function canPersonaCoverWorkflowDeviation(
+  config: AdminConfig,
+  persona: RolePersonaOption,
+  ticket: Ticket,
+  assignment: WorkflowDeviationAssignment
+): boolean {
+  if (personaHasRole(persona, "admin")) {
+    return true;
+  }
+
+  return (
+    personaHasRole(persona, assignment.coveringStep.ownerRole) &&
+    personaCanActOnTicketAsRole(persona, ticket, config, assignment.coveringStep.ownerRole)
+  );
+}
+
+function getWorkflowDeviationAssignmentForPersona(
+  config: AdminConfig,
+  persona: RolePersonaOption,
+  ticket: Ticket,
+  stepIndex: number
+): WorkflowDeviationAssignment | undefined {
+  const assignment = getWorkflowDeviationAssignmentForStep(config, ticket, stepIndex);
+
+  return assignment && canPersonaCoverWorkflowDeviation(config, persona, ticket, assignment) ? assignment : undefined;
+}
+
+function canPersonaDecideWorkflowStep(
+  config: AdminConfig,
+  persona: RolePersonaOption,
+  ticket: Ticket,
+  step: Ticket["workflow"][number],
+  stepIndex: number
+): boolean {
+  return (
+    isApprovalVisibleForPersona(config, persona, ticket, step) ||
+    Boolean(getWorkflowDeviationAssignmentForPersona(config, persona, ticket, stepIndex))
+  );
+}
+
+function getWorkflowDecisionActorPersona(
+  config: AdminConfig,
+  persona: RolePersonaOption,
+  ticket: Ticket,
+  step: Ticket["workflow"][number],
+  stepIndex: number
+): RolePersonaOption {
+  if (
+    personaHasRole(persona, step.ownerRole) &&
+    personaCanActOnTicketAsRole(persona, ticket, config, step.ownerRole)
+  ) {
+    return getPersonaForRole(config, persona, step.ownerRole);
+  }
+
+  const deviationAssignment = getWorkflowDeviationAssignmentForPersona(config, persona, ticket, stepIndex);
+
+  if (deviationAssignment) {
+    return getPersonaForRole(config, persona, deviationAssignment.coveringStep.ownerRole);
+  }
+
+  return persona;
+}
+
 function isBlockingSequentialAdvance(step: Ticket["workflow"][number]): boolean {
   return isActionableWorkflowStep(step) && !step.parallelGroup;
 }
@@ -6010,7 +7020,9 @@ function isApprovalVisibleForPersona(
   ticket: Ticket,
   step: Ticket["workflow"][number]
 ): boolean {
-  return isApprovalVisibleForRole(persona.role, step) && personaCanActOnTicket(persona, ticket, config);
+  return getPersonaRoleKeys(persona).some(
+    (role) => isApprovalVisibleForRole(role, step) && personaCanActOnTicketAsRole(persona, ticket, config, role)
+  );
 }
 
 function getApprovalQueueItems(
@@ -6022,19 +7034,38 @@ function getApprovalQueueItems(
     .filter((ticket) => ticket.state !== "closed")
     .flatMap((ticket) =>
       ticket.workflow.flatMap((step, stepIndex) => {
-        const isDecisionGate = step.status !== "complete" && step.status !== "optional";
+        const isDecisionGate = isWorkflowDecisionGate(config, step);
 
-        if (!isDecisionGate || !isApprovalVisibleForPersona(config, persona, ticket, step)) {
+        if (!isDecisionGate) {
+          return [];
+        }
+
+        if (isApprovalVisibleForPersona(config, persona, ticket, step)) {
+          return [
+            {
+              id: `${ticket.key}-${step.id}`,
+              ticket,
+              step,
+              stepIndex,
+              actionable: isActionableWorkflowStep(step)
+            }
+          ];
+        }
+
+        const deviationAssignment = getWorkflowDeviationAssignmentForPersona(config, persona, ticket, stepIndex);
+
+        if (!deviationAssignment) {
           return [];
         }
 
         return [
           {
-            id: `${ticket.key}-${step.id}`,
+            id: `${ticket.key}-${step.id}-deviation-${deviationAssignment.coveringStep.id}`,
             ticket,
             step,
             stepIndex,
-            actionable: isActionableWorkflowStep(step)
+            actionable: isActionableWorkflowStep(step),
+            deviationAssignment
           }
         ];
       })
@@ -6271,6 +7302,319 @@ function createDefaultApprovalClarificationDraft(
     pullInActionType,
     temporary: true
   };
+}
+
+function getTicketGlobalLpoApprovalRequests(ticket: Ticket): GlobalLpoApprovalRequest[] {
+  return Array.isArray(ticket.globalLpoApprovalRequests) ? ticket.globalLpoApprovalRequests : [];
+}
+
+function getActiveLocalProductOwnerUsers(config: AdminConfig): AdminUser[] {
+  return config.users
+    .filter((user) => user.active && adminUserHasRole(user, "local_product_owner"))
+    .sort((left, right) => {
+      const leftSite = `${left.site || ALL_SCOPE_LABEL} ${left.displayName}`;
+      const rightSite = `${right.site || ALL_SCOPE_LABEL} ${right.displayName}`;
+
+      return leftSite.localeCompare(rightSite);
+    });
+}
+
+function buildGlobalLpoApprovalTarget(user: AdminUser): GlobalLpoApprovalTarget {
+  return {
+    userId: user.id,
+    displayName: user.displayName,
+    email: user.email,
+    site: user.site,
+    productIds: [...user.productIds],
+    pruNames: [...user.pruNames]
+  };
+}
+
+function getGlobalLpoApprovalTargets(config: AdminConfig): GlobalLpoApprovalTarget[] {
+  const targetsByUserId = new Map<string, GlobalLpoApprovalTarget>();
+
+  for (const user of getActiveLocalProductOwnerUsers(config)) {
+    targetsByUserId.set(user.id, buildGlobalLpoApprovalTarget(user));
+  }
+
+  return Array.from(targetsByUserId.values());
+}
+
+function buildDefaultGlobalLpoApprovalQuestion(ticket: Ticket): string {
+  const context = [ticket.product, ticket.pru, ticket.module].filter(Boolean).join(" / ");
+
+  return normalizeRichTextForStorage(
+    `<p>Global PO requests LPO input before deciding if this request should be globalized.</p>
+<p><strong>Request:</strong> ${escapeHtml(ticket.key)} - ${escapeHtml(ticket.title)}</p>
+${context ? `<p><strong>Current scope:</strong> ${escapeHtml(context)}</p>` : ""}
+<p>Please answer whether your area also needs this capability, or whether it should remain local to the current scope.</p>`,
+    "html"
+  );
+}
+
+function getGlobalLpoApprovalResponse(
+  request: GlobalLpoApprovalRequest,
+  persona: RolePersonaOption
+): GlobalLpoApprovalResponse | undefined {
+  if (!persona.userId) {
+    return undefined;
+  }
+
+  return request.responses.find((response) => response.userId === persona.userId);
+}
+
+function isGlobalLpoApprovalTarget(
+  request: GlobalLpoApprovalRequest,
+  persona: RolePersonaOption
+): boolean {
+  return Boolean(
+    persona.userId &&
+      personaHasRole(persona, "local_product_owner") &&
+      request.targetLpos.some((target) => target.userId === persona.userId)
+  );
+}
+
+function canManageGlobalLpoApprovalRequest(
+  ticket: Ticket,
+  request: GlobalLpoApprovalRequest,
+  persona: RolePersonaOption,
+  config: AdminConfig
+): boolean {
+  if (personaHasRole(persona, "admin")) {
+    return true;
+  }
+
+  if (!personaHasRole(persona, "global_product_owner")) {
+    return false;
+  }
+
+  return (
+    personaCanActOnTicketAsRole(persona, ticket, config, "global_product_owner") ||
+    personaTextMatchesCandidate(persona, request.requestedBy)
+  );
+}
+
+function getGlobalLpoManagerActorPersona(config: AdminConfig, persona: RolePersonaOption): RolePersonaOption {
+  if (personaHasRole(persona, "global_product_owner")) {
+    return getPersonaForRole(config, persona, "global_product_owner");
+  }
+
+  if (personaHasRole(persona, "admin")) {
+    return getPersonaForRole(config, persona, "admin");
+  }
+
+  return persona;
+}
+
+function getGlobalLpoResponseActorPersona(config: AdminConfig, persona: RolePersonaOption): RolePersonaOption {
+  return personaHasRole(persona, "local_product_owner")
+    ? getPersonaForRole(config, persona, "local_product_owner")
+    : persona;
+}
+
+function isGlobalLpoApprovalVisibleForPersona(
+  ticket: Ticket,
+  request: GlobalLpoApprovalRequest,
+  persona: RolePersonaOption,
+  config: AdminConfig
+): boolean {
+  return (
+    isGlobalLpoApprovalTarget(request, persona) ||
+    canManageGlobalLpoApprovalRequest(ticket, request, persona, config)
+  );
+}
+
+function getGlobalLpoApprovalItems(
+  tickets: Ticket[],
+  config: AdminConfig,
+  persona: RolePersonaOption
+): GlobalLpoApprovalItem[] {
+  return tickets
+    .flatMap((ticket) =>
+      getTicketGlobalLpoApprovalRequests(ticket)
+        .filter((request) => isGlobalLpoApprovalVisibleForPersona(ticket, request, persona, config))
+        .map((request) => {
+          const currentResponse = getGlobalLpoApprovalResponse(request, persona);
+
+          return {
+            id: `${ticket.key}-${request.id}`,
+            ticket,
+            request,
+            currentResponse,
+            needsResponse: request.status === "open" && isGlobalLpoApprovalTarget(request, persona) && !currentResponse,
+            canClose: request.status === "open" && canManageGlobalLpoApprovalRequest(ticket, request, persona, config)
+          };
+        })
+    )
+    .sort((left, right) => {
+      if (left.needsResponse !== right.needsResponse) {
+        return left.needsResponse ? -1 : 1;
+      }
+
+      if (left.request.status !== right.request.status) {
+        return left.request.status === "open" ? -1 : 1;
+      }
+
+      return parseTicketTimestamp(right.request.createdAt) - parseTicketTimestamp(left.request.createdAt);
+    });
+}
+
+function getGlobalLpoApprovalAttentionCount(
+  tickets: Ticket[],
+  config: AdminConfig,
+  persona: RolePersonaOption
+): number {
+  return getGlobalLpoApprovalItems(tickets, config, persona).filter(
+    (item) => item.needsResponse || (item.canClose && item.request.status === "open")
+  ).length;
+}
+
+function getApprovalCenterTickets(
+  tickets: Ticket[],
+  config: AdminConfig,
+  persona: RolePersonaOption
+): Ticket[] {
+  const scopedTicketKeys = new Set(getPersonaScopedTickets(tickets, config, persona).map((ticket) => ticket.key));
+  const globalLpoTicketKeys = new Set(
+    tickets
+      .filter((ticket) =>
+        getTicketGlobalLpoApprovalRequests(ticket).some((request) =>
+          isGlobalLpoApprovalVisibleForPersona(ticket, request, persona, config)
+        )
+      )
+      .map((ticket) => ticket.key)
+  );
+
+  return tickets.filter((ticket) => scopedTicketKeys.has(ticket.key) || globalLpoTicketKeys.has(ticket.key));
+}
+
+function getGlobalLpoApprovalDecisionLabel(decision: GlobalLpoApprovalDecision): string {
+  if (decision === "needs_global") {
+    return "Needed in my area";
+  }
+
+  if (decision === "local_only") {
+    return "Not needed in my area";
+  }
+
+  return "Need discussion";
+}
+
+function getGlobalLpoApprovalDecisionTone(decision: GlobalLpoApprovalDecision): "success" | "neutral" | "warning" {
+  if (decision === "needs_global") {
+    return "success";
+  }
+
+  if (decision === "local_only") {
+    return "neutral";
+  }
+
+  return "warning";
+}
+
+const globalLpoApprovalOutcomeOptions = [
+  { value: "globalize_request", label: "Globalize request" },
+  { value: "keep_local", label: "Keep local" },
+  { value: "pru_specific", label: "Make PRU-specific" },
+  { value: "split_requests", label: "Split into scoped requests" },
+  { value: "architecture_review", label: "Send to architecture review" },
+  { value: "no_action", label: "No action" }
+] as const satisfies readonly { value: GlobalLpoApprovalOutcome; label: string }[];
+
+function getGlobalLpoApprovalOutcomeLabel(outcome?: GlobalLpoApprovalOutcome): string {
+  return globalLpoApprovalOutcomeOptions.find((option) => option.value === outcome)?.label ?? "Decision pending";
+}
+
+function getGlobalLpoApprovalOutcomeTone(outcome?: GlobalLpoApprovalOutcome): "success" | "neutral" | "warning" {
+  if (outcome === "globalize_request" || outcome === "split_requests") {
+    return "success";
+  }
+
+  if (outcome === "architecture_review" || outcome === "pru_specific") {
+    return "warning";
+  }
+
+  return "neutral";
+}
+
+function getGlobalLpoApprovalOutcomeNextStep(outcome?: GlobalLpoApprovalOutcome): string {
+  switch (outcome) {
+    case "globalize_request":
+      return "GPO should continue with a global scope decision and move the ticket toward global planning/Jira handoff.";
+    case "keep_local":
+      return "The ticket remains in the current local scope; GPO can continue or approve the normal workflow.";
+    case "pru_specific":
+      return "The request should be treated as PRU-specific; update ticket scope or create a scoped follow-up if needed.";
+    case "split_requests":
+      return "Create linked scoped follow-up tickets for the areas that need the capability.";
+    case "architecture_review":
+      return "Pull in architecture review before final global/local scope is decided.";
+    case "no_action":
+      return "No globalization action will be taken from this group request.";
+    default:
+      return "Review LPO responses, select the GPO decision, then close the request.";
+  }
+}
+
+function getRecommendedGlobalLpoApprovalOutcome(request: GlobalLpoApprovalRequest): GlobalLpoApprovalOutcome {
+  const responseCounts = request.responses.reduce(
+    (counts, response) => {
+      counts[response.decision] += 1;
+
+      return counts;
+    },
+    {
+      needs_global: 0,
+      local_only: 0,
+      needs_discussion: 0
+    } satisfies Record<GlobalLpoApprovalDecision, number>
+  );
+  const pendingCount = Math.max(request.targetLpos.length - request.responses.length, 0);
+
+  if (responseCounts.needs_discussion > 0) {
+    return "architecture_review";
+  }
+
+  if (responseCounts.needs_global > 1 && responseCounts.local_only > 0) {
+    return "split_requests";
+  }
+
+  if (responseCounts.needs_global > 0) {
+    return "globalize_request";
+  }
+
+  if (pendingCount === 0 && responseCounts.local_only > 0) {
+    return "keep_local";
+  }
+
+  return "architecture_review";
+}
+
+function getGlobalLpoApprovalSummary(request: GlobalLpoApprovalRequest): string {
+  const responseCounts = request.responses.reduce(
+    (counts, response) => {
+      counts[response.decision] += 1;
+
+      return counts;
+    },
+    {
+      needs_global: 0,
+      local_only: 0,
+      needs_discussion: 0
+    } satisfies Record<GlobalLpoApprovalDecision, number>
+  );
+  const pendingCount = Math.max(request.targetLpos.length - request.responses.length, 0);
+
+  return [
+    `${responseCounts.needs_global} need global`,
+    `${responseCounts.local_only} local only`,
+    `${responseCounts.needs_discussion} discuss`,
+    `${pendingCount} pending`
+  ].join(" - ");
+}
+
+function hasOpenGlobalLpoApprovalRequest(ticket: Ticket): boolean {
+  return getTicketGlobalLpoApprovalRequests(ticket).some((request) => request.status === "open");
 }
 
 function getJiraFollowUpStatusLabel(status: JiraFollowUpStatus): string {
@@ -8775,11 +10119,11 @@ export function NexusPortal() {
 
   const roleOptions = useMemo(() => getRoleOptions(config), [config]);
   const rolePersonaOptions = useMemo(() => buildRolePersonaOptions(config), [config]);
-  const selectedPersona =
-    rolePersonaOptions.find((option) => option.id === selectedPersonaId && option.role === role) ??
-    rolePersonaOptions.find((option) => option.role === role) ??
+  const selectedUserPersona =
+    rolePersonaOptions.find((option) => option.id === selectedPersonaId) ??
     rolePersonaOptions[0] ??
     createFallbackRolePersona({ key: "requester", label: "User" });
+  const selectedPersona = getPersonaForRole(config, selectedUserPersona, role);
   const personaScopedTickets = useMemo(
     () => getPersonaScopedTickets(ticketList, config, selectedPersona),
     [config, selectedPersona, ticketList]
@@ -8791,6 +10135,10 @@ export function NexusPortal() {
   const ticketListTickets = useMemo(
     () => personaScopedTickets,
     [personaScopedTickets]
+  );
+  const approvalCenterTickets = useMemo(
+    () => getApprovalCenterTickets(ticketList, config, selectedPersona),
+    [config, selectedPersona, ticketList]
   );
   const dashboardTickets = useMemo(
     () => personaScopedTickets,
@@ -8807,19 +10155,26 @@ export function NexusPortal() {
         ? ticketListTickets
         : activeModule === "clarifications"
           ? clarificationTickets
+          : activeModule === "approvals"
+            ? approvalCenterTickets
           : activeModule === "escalations"
             ? escalationScopedTickets
             : personaScopedTickets;
   const selectedTicket =
     activeModuleTickets.find((ticket) => ticket.key === selectedTicketKey) ?? activeModuleTickets[0];
-  const moduleScopedTickets = activeModule === "escalations" ? escalationScopedTickets : personaScopedTickets;
+  const moduleScopedTickets =
+    activeModule === "approvals"
+      ? approvalCenterTickets
+      : activeModule === "escalations"
+        ? escalationScopedTickets
+        : personaScopedTickets;
   const personaScopedTicketKeys = useMemo(
     () => new Set(personaScopedTickets.map((ticket) => ticket.key)),
     [personaScopedTickets]
   );
   const visibleNavItems = useMemo(
-    () => navItems.filter((item) => roleCanAccessNavItem(role, item)),
-    [role]
+    () => navItems.filter((item) => personaCanAccessNavItem(selectedUserPersona, item)),
+    [selectedUserPersona]
   );
 
   const filteredTickets = useMemo(() => {
@@ -8846,7 +10201,7 @@ export function NexusPortal() {
       [
         ...filterVisible(initialNotifications, role),
         ...buildJiraReadyToCreateNotifications(ticketList, selectedPersona, config),
-        ...buildClarificationNotifications(ticketList, role, selectedPersona, config)
+        ...buildClarificationNotifications(ticketList, selectedPersona, config)
       ]
         .filter((item) => personaScopedTicketKeys.has(item.ticketKey))
         .filter((item) => !readNotificationIds.has(item.id))
@@ -8862,14 +10217,14 @@ export function NexusPortal() {
   const headerAttentionItems = useMemo(
     () =>
       buildHeaderAttentionItems({
+        approvalScopeTickets: approvalCenterTickets,
         config,
         checkedJiraItemIds,
-        role,
         selectedPersona,
         tickets: personaScopedTickets,
         visibleNotifications
       }),
-    [checkedJiraItemIds, config, role, personaScopedTickets, selectedPersona, visibleNotifications]
+    [approvalCenterTickets, checkedJiraItemIds, config, personaScopedTickets, selectedPersona, visibleNotifications]
   );
   const attentionCountsByModule = useMemo(
     () =>
@@ -8967,7 +10322,12 @@ export function NexusPortal() {
     const portalOrigin = typeof window === "undefined" ? "" : window.location.origin;
     const pendingEmails = [
       ...buildApprovalRequestedEmailEnvelopes(config, ticketList, portalOrigin),
-      ...buildJiraReadyToCreateEmailEnvelopes(config, ticketList, portalOrigin)
+      ...buildClarificationEmailEnvelopes(config, ticketList, portalOrigin),
+      ...buildJiraReadyToCreateEmailEnvelopes(config, ticketList, portalOrigin),
+      ...buildJiraCreatedEmailEnvelopes(config, ticketList, portalOrigin),
+      ...buildSlaBreachEmailEnvelopes(config, ticketList, portalOrigin),
+      ...buildWorkflowDeviationEmailEnvelopes(config, ticketList, portalOrigin),
+      ...buildParticipantAddedEmailEnvelopes(config, ticketList, portalOrigin)
     ].filter(
       (email) =>
         !sentEmailNotificationIds.includes(email.id) &&
@@ -9059,8 +10419,7 @@ export function NexusPortal() {
 
   useEffect(() => {
     if (!roleOptions.some((item) => item.key === role)) {
-      const fallbackPersona =
-        rolePersonaOptions.find((option) => option.role === "requester") ?? rolePersonaOptions[0];
+      const fallbackPersona = rolePersonaOptions[0];
 
       if (fallbackPersona) {
         setRole(fallbackPersona.role);
@@ -9070,22 +10429,30 @@ export function NexusPortal() {
       return;
     }
 
-    const currentPersona = rolePersonaOptions.find((option) => option.id === selectedPersonaId && option.role === role);
+    const currentPersona = rolePersonaOptions.find((option) => option.id === selectedPersonaId);
 
     if (!currentPersona) {
-      const fallbackPersona = rolePersonaOptions.find((option) => option.role === role) ?? rolePersonaOptions[0];
+      const fallbackPersona = rolePersonaOptions[0];
 
       if (fallbackPersona) {
         setSelectedPersonaId(fallbackPersona.id);
-
-        if (fallbackPersona.role !== role) {
-          setRole(fallbackPersona.role);
-        }
+        setRole(fallbackPersona.role);
       }
+
+      return;
     }
 
-    if (!canAccessModule(role, activeModule)) {
-      setActiveModule(firstAccessibleModule(role));
+    const moduleRole = getPersonaRoleForModule(currentPersona, activeModule);
+
+    if (!moduleRole) {
+      const fallbackModule = firstAccessibleModuleForPersona(currentPersona);
+      setActiveModule(fallbackModule);
+      setRole(getPersonaRoleForModule(currentPersona, fallbackModule) ?? currentPersona.role);
+      return;
+    }
+
+    if (!personaHasRole(currentPersona, role) || !canAccessModule(role, activeModule)) {
+      setRole(moduleRole);
     }
   }, [activeModule, role, roleOptions, rolePersonaOptions, selectedPersonaId]);
 
@@ -9359,6 +10726,13 @@ export function NexusPortal() {
   }
 
   function openModule(module: ModuleKey) {
+    const moduleRole = getPersonaRoleForModule(selectedUserPersona, module);
+
+    if (!moduleRole) {
+      return;
+    }
+
+    setRole(moduleRole);
     setActiveModule(module);
 
     if (module === "tickets") {
@@ -9389,10 +10763,11 @@ function openNotificationItem(notification: NotificationItem) {
     }
 
     setSelectedPersonaId(nextPersona.id);
-    setRole(nextPersona.role);
+    const nextModuleRole = getPersonaRoleForModule(nextPersona, activeModule);
+    setRole(nextModuleRole ?? nextPersona.role);
 
-    if (!canAccessModule(nextPersona.role, activeModule)) {
-      setActiveModule(firstAccessibleModule(nextPersona.role));
+    if (!nextModuleRole) {
+      setActiveModule(firstAccessibleModuleForPersona(nextPersona));
     }
   }
 
@@ -9694,6 +11069,273 @@ function openNotificationItem(notification: NotificationItem) {
           };
         }
       )
+    );
+  }
+
+  function createGlobalLpoApprovalRequest(ticketKey: string, sourceStepId: string, question: string) {
+    const normalizedQuestion = normalizeRichTextForStorage(question);
+
+    if (!htmlToPlainTextFallback(normalizedQuestion).trim()) {
+      return;
+    }
+
+    const targets = getGlobalLpoApprovalTargets(config);
+
+    if (!targets.length) {
+      console.warn("Global LPO approval request rejected because no active Local Product Owners are configured.", {
+        ticketKey
+      });
+      return;
+    }
+
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const dueAt = formatLocalDateTime(new Date(now.getTime() + 48 * 60 * 60 * 1000));
+    const actor = getGlobalLpoManagerActorPersona(config, selectedPersona);
+    const actorLabel = actor.roleLabel;
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        if (!canManageGlobalLpoApprovalRequest(ticket, {
+          id: "",
+          question: normalizedQuestion,
+          status: "open",
+          requestedBy: actor.displayName,
+          requestedByRole: actorLabel,
+          createdAt: timestamp,
+          dueAt,
+          sourceStepId,
+          targetLpos: targets,
+          responses: []
+        }, actor, config)) {
+          return ticket;
+        }
+
+        if (hasOpenGlobalLpoApprovalRequest(ticket)) {
+          return ticket;
+        }
+
+        const request: GlobalLpoApprovalRequest = {
+          id: `global-lpo-${ticket.key}-${now.getTime()}`,
+          question: normalizedQuestion,
+          status: "open",
+          requestedBy: actor.displayName,
+          requestedByRole: actorLabel,
+          createdAt: timestamp,
+          dueAt,
+          sourceStepId,
+          targetLpos: targets,
+          responses: []
+        };
+
+        return {
+          ...ticket,
+          state: ticket.state === "closed" ? ticket.state : "approval",
+          globalLpoApprovalRequests: [...getTicketGlobalLpoApprovalRequests(ticket), request],
+          updatedAt: timestamp,
+          comments: [
+            ...ticket.comments,
+            {
+              id: `comment-${ticket.key}-global-lpo-request-${now.getTime()}`,
+              author: actor.displayName,
+              role: actorLabel,
+              body: normalizedQuestion,
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              source: "portal"
+            }
+          ],
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-global-lpo-request-${now.getTime()}`,
+              eventType: "Global LPO group approval requested",
+              actor: formatPersonaAuditActor(actor),
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              newValue: `${targets.length} Local Product Owner${targets.length === 1 ? "" : "s"}`,
+              reason: htmlToPlainTextFallback(normalizedQuestion)
+            }
+          ]
+        };
+      })
+    );
+  }
+
+  function respondToGlobalLpoApprovalRequest(
+    ticketKey: string,
+    requestId: string,
+    decision: GlobalLpoApprovalDecision,
+    note: string
+  ) {
+    if (!personaHasRole(selectedPersona, "local_product_owner") || !selectedPersona.userId) {
+      return;
+    }
+
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const actor = getGlobalLpoResponseActorPersona(config, selectedPersona);
+    const actorUserId = selectedPersona.userId;
+    const responseNote = normalizeRichTextForStorage(note);
+    const target: GlobalLpoApprovalTarget = {
+      userId: actorUserId,
+      displayName: actor.displayName,
+      email: actor.email,
+      site: actor.site,
+      productIds: [...actor.productIds],
+      pruNames: [...actor.pruNames]
+    };
+    const response: GlobalLpoApprovalResponse = {
+      ...target,
+      decision,
+      note: responseNote,
+      respondedAt: timestamp
+    };
+    const decisionLabel = getGlobalLpoApprovalDecisionLabel(decision);
+    const responseBody = normalizeRichTextForStorage(
+      `<p><strong>${escapeHtml(decisionLabel)}</strong></p>${responseNote || "<p>No note provided.</p>"}`,
+      "html"
+    );
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        const requests = getTicketGlobalLpoApprovalRequests(ticket);
+        const request = requests.find((candidate) => candidate.id === requestId);
+
+        if (!request || request.status !== "open" || !isGlobalLpoApprovalTarget(request, actor)) {
+          return ticket;
+        }
+
+        const responses = [
+          ...request.responses.filter((candidate) => candidate.userId !== actorUserId),
+          response
+        ].sort((left, right) => left.displayName.localeCompare(right.displayName));
+
+        return {
+          ...ticket,
+          globalLpoApprovalRequests: requests.map((candidate) =>
+            candidate.id === requestId
+              ? {
+                  ...candidate,
+                  responses
+                }
+              : candidate
+          ),
+          updatedAt: timestamp,
+          comments: [
+            ...ticket.comments,
+            {
+              id: `comment-${ticket.key}-global-lpo-response-${actor.userId}-${now.getTime()}`,
+              author: actor.displayName,
+              role: actor.roleLabel,
+              body: responseBody,
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              source: "portal"
+            }
+          ],
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-global-lpo-response-${actor.userId}-${now.getTime()}`,
+              eventType: "Global LPO response recorded",
+              actor: formatPersonaAuditActor(actor),
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              newValue: decisionLabel,
+              reason: responseNote ? htmlToPlainTextFallback(responseNote) : decisionLabel
+            }
+          ]
+        };
+      })
+    );
+  }
+
+  function closeGlobalLpoApprovalRequest(
+    ticketKey: string,
+    requestId: string,
+    outcome: GlobalLpoApprovalOutcome,
+    note: string
+  ) {
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const actor = getGlobalLpoManagerActorPersona(config, selectedPersona);
+    const normalizedNote = normalizeRichTextForStorage(note);
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        const requests = getTicketGlobalLpoApprovalRequests(ticket);
+        const request = requests.find((candidate) => candidate.id === requestId);
+
+        if (!request || request.status !== "open" || !canManageGlobalLpoApprovalRequest(ticket, request, actor, config)) {
+          return ticket;
+        }
+
+        const summary = getGlobalLpoApprovalSummary(request);
+        const outcomeLabel = getGlobalLpoApprovalOutcomeLabel(outcome);
+        const nextStep = getGlobalLpoApprovalOutcomeNextStep(outcome);
+        const decisionBody = normalizeRichTextForStorage(
+          `<p><strong>GPO final decision:</strong> ${escapeHtml(outcomeLabel)}</p>
+<p><strong>Next step:</strong> ${escapeHtml(nextStep)}</p>
+${normalizedNote ? `<p><strong>Decision note:</strong></p>${normalizedNote}` : ""}`,
+          "html"
+        );
+
+        return {
+          ...ticket,
+          globalLpoApprovalRequests: requests.map((candidate) =>
+            candidate.id === requestId
+              ? {
+                  ...candidate,
+                  status: "closed",
+                  closedAt: timestamp,
+                  closedBy: actor.displayName,
+                  finalOutcome: outcome,
+                  finalDecisionNote: normalizedNote
+                }
+              : candidate
+          ),
+          updatedAt: timestamp,
+          comments: [
+            ...ticket.comments,
+            {
+              id: `comment-${ticket.key}-global-lpo-final-${now.getTime()}`,
+              author: actor.displayName,
+              role: actor.roleLabel,
+              body: decisionBody,
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              source: "portal"
+            }
+          ],
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-global-lpo-close-${now.getTime()}`,
+              eventType: "Global LPO group approval closed",
+              actor: formatPersonaAuditActor(actor),
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              newValue: outcomeLabel,
+              reason: [summary, nextStep, normalizedNote ? htmlToPlainTextFallback(normalizedNote) : ""]
+                .filter(Boolean)
+                .join(" ")
+            }
+          ]
+        };
+      })
     );
   }
 
@@ -11637,8 +13279,7 @@ function openNotificationItem(notification: NotificationItem) {
     note: ApprovalDecisionPayload
   ) {
     const now = new Date();
-    const actor = selectedPersona;
-    const roleLabel = actor.roleLabel;
+    const baseActor = selectedPersona;
     const noteText = typeof note === "string" ? note : note.question;
     const trimmedNote = noteText.trim();
 
@@ -11649,19 +13290,28 @@ function openNotificationItem(notification: NotificationItem) {
         }
 
         const targetStep = ticket.workflow.find((step) => step.id === stepId);
+        const targetStepIndex = targetStep ? ticket.workflow.findIndex((step) => step.id === stepId) : -1;
 
         if (
           !targetStep ||
-          !isApprovalVisibleForPersona(config, actor, ticket, targetStep) ||
+          targetStepIndex < 0 ||
+          !canPersonaDecideWorkflowStep(config, baseActor, ticket, targetStep, targetStepIndex) ||
           !isActionableWorkflowStep(targetStep)
         ) {
           return ticket;
         }
 
+        const actor = getWorkflowDecisionActorPersona(config, baseActor, ticket, targetStep, targetStepIndex);
+        const roleLabel = actor.roleLabel;
+
         if (action === "approve") {
+          const deviationAssignment = getWorkflowDeviationAssignmentForPersona(config, baseActor, ticket, targetStepIndex);
           const workflow = getNextWorkflowAfterApproval(ticket.workflow, stepId, actor.displayName);
           const requiredWorkflowComplete = hasCompletedRequiredWorkflow(workflow);
-          const reason = trimmedNote || `Approved ${targetStep.label}.`;
+          const deviationReason = deviationAssignment
+            ? `Deviation approval: ${actor.displayName} covered unassigned ${targetStep.label} before ${deviationAssignment.coveringStep.label}.`
+            : "";
+          const reason = trimmedNote || deviationReason || `Approved ${targetStep.label}.`;
 
           return {
             ...ticket,
@@ -11675,7 +13325,7 @@ function openNotificationItem(notification: NotificationItem) {
               ...ticket.audit,
               {
                 id: `audit-${ticket.key}-approval-${now.getTime()}`,
-                eventType: "Approval granted",
+                eventType: deviationAssignment ? "Deviation approval granted" : "Approval granted",
                 actor: formatPersonaAuditActor(actor),
                 createdAt: now.toISOString(),
                 visibility: "approvers_only",
@@ -11889,8 +13539,8 @@ function openNotificationItem(notification: NotificationItem) {
         attentionItems={headerAttentionItems}
         config={config}
         rolePersonaOptions={rolePersonaOptions}
-        selectedPersona={selectedPersona}
-        selectedPersonaId={selectedPersona.id}
+        selectedPersona={selectedUserPersona}
+        selectedPersonaId={selectedUserPersona.id}
         ticketSearchOptions={ticketListTickets}
         ticketSearchQuery={query}
         onGoDashboard={goToDashboard}
@@ -11945,9 +13595,12 @@ function openNotificationItem(notification: NotificationItem) {
               onAddComment: addTicketComment,
               onCreateClarification: createClarificationThread,
               onCreateEscalation: createEscalation,
+              onCreateGlobalLpoApprovalRequest: createGlobalLpoApprovalRequest,
               onCreateJira: createJiraForTicket,
+              onCloseGlobalLpoApprovalRequest: closeGlobalLpoApprovalRequest,
               onPostJiraComment: postJiraCommentForTicket,
               onReopenTicket: reopenTicket,
+              onRespondGlobalLpoApprovalRequest: respondToGlobalLpoApprovalRequest,
               onUpdateJiraDraft: updateJiraDraft,
               onUpdateJiraIssue: updateJiraIssueForTicket,
               onUpdateJiraLink: updateJiraIssueLink,
@@ -12107,6 +13760,7 @@ function TopBar({
 }) {
   const [isAttentionOpen, setIsAttentionOpen] = useState(false);
   const [isTicketSearchOpen, setIsTicketSearchOpen] = useState(false);
+  const [activeProfileTab, setActiveProfileTab] = useState<"profile" | "notifications">("profile");
   const [activeTicketSearchIndex, setActiveTicketSearchIndex] = useState(0);
   const ticketSearchListId = useId();
   const attentionTotal = attentionItems.reduce((total, item) => total + item.count, 0);
@@ -12116,6 +13770,11 @@ function TopBar({
   );
   const selectedUserNotificationPreferences =
     selectedUser?.notificationPreferences ?? getDefaultAdminUserNotificationPreferences();
+  const selectedUserNotificationEventOptions = useMemo(
+    () => (selectedUser ? getRelevantUserEmailNotificationEventOptions(config, selectedUser) : []),
+    [config, selectedUser]
+  );
+  const selectedUserRelevantEventTypes = selectedUserNotificationEventOptions.map((option) => option.value);
   const normalizedTicketSearchQuery = ticketSearchQuery.trim().toLowerCase();
   const visibleTicketSearchOptions = useMemo(() => {
     const source = normalizedTicketSearchQuery
@@ -12143,6 +13802,10 @@ function TopBar({
   useEffect(() => {
     setActiveTicketSearchIndex(0);
   }, [normalizedTicketSearchQuery, visibleTicketSearchOptions.length]);
+
+  useEffect(() => {
+    setActiveProfileTab("profile");
+  }, [selectedPersona.id]);
 
   function openTicketSearchResult(ticket: Ticket) {
     setIsAttentionOpen(false);
@@ -12321,10 +13984,10 @@ function TopBar({
           </form>
         </TdsHeaderItem>
         <label className="tegel-header-role" slot="end">
-          <span className="tegel-header-role-label">Role</span>
-          <span className="sr-only">Current role</span>
+          <span className="tegel-header-role-label">User</span>
+          <span className="sr-only">Current user</span>
           <select
-            aria-label="Current test user and role"
+            aria-label="Current user"
             value={selectedPersonaId}
             onChange={(event) => {
               setIsAttentionOpen(false);
@@ -12360,6 +14023,7 @@ function TopBar({
             className="tegel-user-button"
             type="button"
             onClick={() => setIsAttentionOpen((isOpen) => !isOpen)}
+            title="Open user profile"
           >
             {selectedPersona.initials}
             {attentionTotal > 0 ? <span className="tegel-user-ping">{attentionTotal}</span> : null}
@@ -12378,81 +14042,143 @@ function TopBar({
         </TdsHeaderBrandSymbol>
       </TdsHeader>
       {isAttentionOpen ? (
-        <section className="tegel-attention-popover" id="header-attention-panel" aria-label="User attention summary">
+        <section className="tegel-attention-popover" id="header-attention-panel" aria-label="User profile">
           <header>
             <span>{selectedPersona.displayName}</span>
-            <strong>Needs attention</strong>
+            <strong>Profile</strong>
             <small>{selectedPersona.roleLabel}</small>
           </header>
-          {attentionItems.length > 0 ? (
-            <div className="tegel-attention-list">
-              {attentionItems.map((item) => (
-                <button
-                  className={`tegel-attention-item tone-${item.tone}`}
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setIsAttentionOpen(false);
-                    onOpenModule(item.module);
-                  }}
-                >
-                  <span>
-                    <strong>{item.title}</strong>
-                    <small>{item.meta}</small>
-                  </span>
-                  <em>{item.count}</em>
-                </button>
-              ))}
+          <div className="tegel-profile-tabs" role="tablist" aria-label="Profile sections">
+            <button
+              className={activeProfileTab === "profile" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={activeProfileTab === "profile"}
+              onClick={() => setActiveProfileTab("profile")}
+            >
+              Profile
+            </button>
+            <button
+              className={activeProfileTab === "notifications" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={activeProfileTab === "notifications"}
+              onClick={() => setActiveProfileTab("notifications")}
+            >
+              Notifications
+            </button>
+          </div>
+          {activeProfileTab === "profile" ? (
+            <div className="tegel-profile-tab-panel" role="tabpanel">
+              <div className="tegel-profile-details">
+                <span>
+                  <b>Primary role</b>
+                  {selectedPersona.roleLabel}
+                </span>
+                <span>
+                  <b>Secondary roles</b>
+                  {formatPersonaSecondaryRoles(config, selectedPersona)}
+                </span>
+                <span>
+                  <b>Email</b>
+                  {selectedPersona.email || "No email configured"}
+                </span>
+                <span>
+                  <b>Scope</b>
+                  {selectedPersona.region || ALL_SCOPE_LABEL} / {selectedPersona.site || ALL_SCOPE_LABEL}
+                </span>
+                <span>
+                  <b>Product scope</b>
+                  {formatProfileProductScope(config, selectedPersona.productIds)}
+                </span>
+                <span>
+                  <b>PRU scope</b>
+                  {formatProfilePruScope(selectedPersona.pruNames)}
+                </span>
+              </div>
+              <div className="tegel-profile-settings-header">
+                <strong>Needs attention</strong>
+                <small>Visible actions for this user and assigned roles.</small>
+              </div>
+              {attentionItems.length > 0 ? (
+                <div className="tegel-attention-list">
+                  {attentionItems.map((item) => (
+                    <button
+                      className={`tegel-attention-item tone-${item.tone}`}
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setIsAttentionOpen(false);
+                        onOpenModule(item.module);
+                      }}
+                    >
+                      <span>
+                        <strong>{item.title}</strong>
+                        <small>{item.meta}</small>
+                      </span>
+                      <em>{item.count}</em>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p>No visible modules require attention for this role.</p>
+              )}
             </div>
           ) : (
-            <p>No visible modules require attention for this role.</p>
-          )}
-          <section className="tegel-profile-settings" aria-label="Email notification settings">
-            <div className="tegel-profile-settings-header">
-              <strong>Email notifications</strong>
-              <small>Choose which automatic email actions this user receives.</small>
-            </div>
-            {selectedUser ? (
-              <div className="tegel-profile-settings-body">
-                <AdminCheckbox
-                  checked={selectedUserNotificationPreferences.emailEnabled}
-                  label="Allow automatic email notifications"
-                  onChange={(emailEnabled) =>
-                    updateSelectedUserNotificationPreferences((current) => ({
-                      ...current,
-                      emailEnabled
-                    }))
-                  }
-                />
-                <fieldset
-                  className={`notification-preference-list ${selectedUserNotificationPreferences.emailEnabled ? "" : "is-disabled"}`}
-                  disabled={!selectedUserNotificationPreferences.emailEnabled}
-                >
-                  {userEmailNotificationEventOptions.map((option) => (
-                    <AdminCheckbox
-                      checked={selectedUserNotificationPreferences.emailEventTypes.includes(option.value)}
-                      key={option.value}
-                      label={option.label}
-                      onChange={(checked) =>
-                        updateSelectedUserNotificationPreferences((current) => ({
-                          ...current,
-                          emailEventTypes: toggleUserEmailNotificationEventSelection(
-                            current.emailEventTypes,
-                            option.value,
-                            checked
-                          )
-                        }))
-                      }
-                    />
-                  ))}
-                </fieldset>
+            <section className="tegel-profile-settings" aria-label="Email notification settings" role="tabpanel">
+              <div className="tegel-profile-settings-header">
+                <strong>Email notifications</strong>
+                <small>Choose which automatic email actions this user receives.</small>
               </div>
-            ) : (
-              <p className="tegel-profile-settings-hint">
-                Switch to a named user persona to manage profile email notifications.
-              </p>
-            )}
-          </section>
+              {selectedUser ? (
+                <div className="tegel-profile-settings-body">
+                  <AdminCheckbox
+                    checked={selectedUserNotificationPreferences.emailEnabled}
+                    label="Allow automatic email notifications"
+                    onChange={(emailEnabled) =>
+                      updateSelectedUserNotificationPreferences((current) => ({
+                        ...current,
+                        emailEnabled
+                      }))
+                    }
+                  />
+                  {selectedUserNotificationEventOptions.length > 0 ? (
+                    <fieldset
+                      className={`notification-preference-list ${selectedUserNotificationPreferences.emailEnabled ? "" : "is-disabled"}`}
+                      disabled={!selectedUserNotificationPreferences.emailEnabled}
+                    >
+                      {selectedUserNotificationEventOptions.map((option) => (
+                        <AdminCheckbox
+                          checked={selectedUserNotificationPreferences.emailEventTypes.includes(option.value)}
+                          key={option.value}
+                          label={option.label}
+                          onChange={(checked) =>
+                            updateSelectedUserNotificationPreferences((current) => ({
+                              ...current,
+                              emailEventTypes: toggleUserEmailNotificationEventSelection(
+                                current.emailEventTypes,
+                                option.value,
+                                checked,
+                                selectedUserRelevantEventTypes
+                              )
+                            }))
+                          }
+                        />
+                      ))}
+                    </fieldset>
+                  ) : (
+                    <p className="tegel-profile-settings-hint">
+                      No automatic email events are available for this user&apos;s current role.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="tegel-profile-settings-hint">
+                  Switch to a named user persona to manage profile email notifications.
+                </p>
+              )}
+            </section>
+          )}
         </section>
       ) : null}
     </div>
@@ -13954,9 +15680,12 @@ function renderModule({
   onAddComment,
   onCreateClarification,
   onCreateEscalation,
+  onCreateGlobalLpoApprovalRequest,
   onCreateJira,
+  onCloseGlobalLpoApprovalRequest,
   onPostJiraComment,
   onReopenTicket,
+  onRespondGlobalLpoApprovalRequest,
   onUpdateJiraDraft,
   onUpdateJiraIssue,
   onUpdateJiraLink,
@@ -13997,9 +15726,12 @@ function renderModule({
   onAddComment: (ticketKey: string, body: string, visibility: VisibilityLevel) => void;
   onCreateClarification: (ticketKey: string, input: NewClarificationThreadInput) => void;
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
+  onCreateGlobalLpoApprovalRequest: CreateGlobalLpoApprovalRequestHandler;
   onCreateJira: CreateJiraHandler;
+  onCloseGlobalLpoApprovalRequest: CloseGlobalLpoApprovalRequestHandler;
   onPostJiraComment: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
+  onRespondGlobalLpoApprovalRequest: RespondGlobalLpoApprovalRequestHandler;
   onUpdateJiraDraft: (ticketKey: string, draftUpdate: JiraDraftUpdateInput) => void;
   onUpdateJiraIssue: UpdateJiraIssueHandler;
   onUpdateJiraLink: UpdateJiraLinkHandler;
@@ -14068,6 +15800,7 @@ function renderModule({
         onAddComment={onAddComment}
         onCreateClarification={onCreateClarification}
         onCreateEscalation={onCreateEscalation}
+        onApprovalDecision={onApprovalDecision}
         onPostJiraComment={onPostJiraComment}
         onOpenTicket={selectTicket}
         onDetailOpenChange={onTicketDetailOpenChange}
@@ -14089,7 +15822,10 @@ function renderModule({
         selectedPersona={selectedPersona}
         config={config}
         onApprovalDecision={onApprovalDecision}
+        onCloseGlobalLpoApprovalRequest={onCloseGlobalLpoApprovalRequest}
+        onCreateGlobalLpoApprovalRequest={onCreateGlobalLpoApprovalRequest}
         onOpenTicket={selectTicket}
+        onRespondGlobalLpoApprovalRequest={onRespondGlobalLpoApprovalRequest}
       />
     );
   }
@@ -14459,7 +16195,10 @@ function ApprovalCenter({
   selectedPersona,
   config,
   onApprovalDecision,
-  onOpenTicket
+  onCloseGlobalLpoApprovalRequest,
+  onCreateGlobalLpoApprovalRequest,
+  onOpenTicket,
+  onRespondGlobalLpoApprovalRequest
 }: {
   tickets: Ticket[];
   role: RoleKey;
@@ -14471,12 +16210,20 @@ function ApprovalCenter({
     action: ApprovalDecisionAction,
     note: ApprovalDecisionPayload
   ) => void;
+  onCloseGlobalLpoApprovalRequest: CloseGlobalLpoApprovalRequestHandler;
+  onCreateGlobalLpoApprovalRequest: CreateGlobalLpoApprovalRequestHandler;
   onOpenTicket: (ticketKey: string) => void;
+  onRespondGlobalLpoApprovalRequest: RespondGlobalLpoApprovalRequestHandler;
 }) {
   const approvalItems = useMemo(
     () => getApprovalQueueItems(tickets, config, selectedPersona),
     [config, selectedPersona, tickets]
   );
+  const globalLpoApprovalItems = useMemo(
+    () => getGlobalLpoApprovalItems(tickets, config, selectedPersona),
+    [config, selectedPersona, tickets]
+  );
+  const globalLpoTargetCount = useMemo(() => getGlobalLpoApprovalTargets(config).length, [config]);
   const pendingApprovals = approvalItems.filter((item) => item.actionable && item.step.status !== "blocked");
   const blockedApprovals = approvalItems.filter((item) => item.actionable && item.step.status === "blocked");
   const waitingApprovals = approvalItems.filter((item) => !item.actionable);
@@ -14485,6 +16232,12 @@ function ApprovalCenter({
   const [clarificationComposerItemId, setClarificationComposerItemId] = useState<string | null>(null);
   const [clarificationDrafts, setClarificationDrafts] = useState<Record<string, ApprovalClarificationDraft>>({});
   const [clarificationErrorItemId, setClarificationErrorItemId] = useState<string | null>(null);
+  const [globalLpoComposerItemId, setGlobalLpoComposerItemId] = useState<string | null>(null);
+  const [globalLpoQuestionDrafts, setGlobalLpoQuestionDrafts] = useState<Record<string, string>>({});
+  const [globalLpoQuestionErrorItemId, setGlobalLpoQuestionErrorItemId] = useState<string | null>(null);
+  const [globalLpoResponseDrafts, setGlobalLpoResponseDrafts] = useState<Record<string, string>>({});
+  const [globalLpoCloseOutcomeDrafts, setGlobalLpoCloseOutcomeDrafts] = useState<Record<string, GlobalLpoApprovalOutcome>>({});
+  const [globalLpoCloseNoteDrafts, setGlobalLpoCloseNoteDrafts] = useState<Record<string, string>>({});
 
   function submitDecision(item: ApprovalQueueItem, action: ApprovalDecisionAction) {
     if (!item.actionable || item.step.status === "blocked") {
@@ -14549,8 +16302,251 @@ function ApprovalCenter({
     }));
   }
 
+  function canRequestGlobalLpoInput(item: ApprovalQueueItem): boolean {
+    return (
+      (personaHasRole(selectedPersona, "global_product_owner") || personaHasRole(selectedPersona, "admin")) &&
+      item.actionable &&
+      item.step.status !== "blocked" &&
+      globalLpoTargetCount > 0 &&
+      !hasOpenGlobalLpoApprovalRequest(item.ticket)
+    );
+  }
+
+  function openGlobalLpoComposer(item: ApprovalQueueItem) {
+    setGlobalLpoComposerItemId(item.id);
+    setGlobalLpoQuestionErrorItemId(null);
+    setGlobalLpoQuestionDrafts((current) => ({
+      ...current,
+      [item.id]: current[item.id] ?? buildDefaultGlobalLpoApprovalQuestion(item.ticket)
+    }));
+  }
+
+  function closeGlobalLpoComposer() {
+    setGlobalLpoComposerItemId(null);
+    setGlobalLpoQuestionErrorItemId(null);
+  }
+
+  function submitGlobalLpoQuestion(item: ApprovalQueueItem) {
+    const question = globalLpoQuestionDrafts[item.id] ?? buildDefaultGlobalLpoApprovalQuestion(item.ticket);
+
+    if (!htmlToPlainTextFallback(question).trim() || globalLpoTargetCount === 0) {
+      setGlobalLpoQuestionErrorItemId(item.id);
+      return;
+    }
+
+    onCreateGlobalLpoApprovalRequest(item.ticket.key, item.step.id, question);
+    setGlobalLpoComposerItemId(null);
+    setGlobalLpoQuestionErrorItemId(null);
+  }
+
+  function submitGlobalLpoResponse(item: GlobalLpoApprovalItem, decision: GlobalLpoApprovalDecision) {
+    onRespondGlobalLpoApprovalRequest(
+      item.ticket.key,
+      item.request.id,
+      decision,
+      globalLpoResponseDrafts[item.id] ?? ""
+    );
+    setGlobalLpoResponseDrafts((current) => ({
+      ...current,
+      [item.id]: ""
+    }));
+  }
+
+  function getGlobalLpoCloseOutcomeDraft(item: GlobalLpoApprovalItem): GlobalLpoApprovalOutcome {
+    return globalLpoCloseOutcomeDrafts[item.id] ?? getRecommendedGlobalLpoApprovalOutcome(item.request);
+  }
+
+  function submitGlobalLpoClose(item: GlobalLpoApprovalItem) {
+    onCloseGlobalLpoApprovalRequest(
+      item.ticket.key,
+      item.request.id,
+      getGlobalLpoCloseOutcomeDraft(item),
+      globalLpoCloseNoteDrafts[item.id] ?? ""
+    );
+    setGlobalLpoCloseNoteDrafts((current) => ({
+      ...current,
+      [item.id]: ""
+    }));
+    setGlobalLpoCloseOutcomeDrafts((current) => {
+      const next = { ...current };
+      delete next[item.id];
+
+      return next;
+    });
+  }
+
   return (
     <section className="approval-workbench approval-workbench-table">
+      {globalLpoApprovalItems.length > 0 ? (
+        <div className="approval-table-card global-lpo-approval-panel" aria-labelledby="global-lpo-approval-title">
+          <header className="approval-table-header">
+            <div>
+              <h2 id="global-lpo-approval-title">Global LPO group requests</h2>
+              <p>
+                {formatCount(globalLpoApprovalItems.length)} request{globalLpoApprovalItems.length === 1 ? "" : "s"} for cross-area approval or globalization input
+              </p>
+            </div>
+          </header>
+          <div className="global-lpo-request-list" role="list">
+            {globalLpoApprovalItems.map((item) => {
+              const responseSummary = getGlobalLpoApprovalSummary(item.request);
+              const isManagerView = canManageGlobalLpoApprovalRequest(item.ticket, item.request, selectedPersona, config);
+              const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(item.request);
+              const closeOutcomeDraft = globalLpoCloseOutcomeDrafts[item.id] ?? recommendedCloseOutcome;
+
+              return (
+                <article className={`global-lpo-request-card is-${item.request.status}`} key={item.id} role="listitem">
+                  <div className="global-lpo-request-main">
+                    <button
+                      className="approval-ticket-link"
+                      type="button"
+                      title="Select ticket"
+                      onClick={() => onOpenTicket(item.ticket.key)}
+                    >
+                      <strong>{item.ticket.key}</strong>
+                      <span>{item.ticket.title}</span>
+                    </button>
+                    <small>
+                      {[item.ticket.product, item.ticket.pru, item.ticket.module].filter(Boolean).join(" - ") ||
+                        "No product scope"}{" "}
+                      · due {formatDateTimeDisplay(item.request.dueAt)}
+                    </small>
+                  </div>
+                  <div className="global-lpo-request-context">
+                    <span className={`thread-state thread-${item.request.status}`}>
+                      {item.request.status}
+                    </span>
+                    <RichTextContent value={item.request.question} fallback="No question provided." compact />
+                    <p>{responseSummary}</p>
+                  </div>
+                  {item.needsResponse ? (
+                    <div className="global-lpo-response-box">
+                      <RichTextEditor
+                        label="Response note"
+                        value={globalLpoResponseDrafts[item.id] ?? ""}
+                        onChange={(value) =>
+                          setGlobalLpoResponseDrafts((current) => ({
+                            ...current,
+                            [item.id]: value
+                          }))
+                        }
+                        placeholder="Add area, site, or rollout context if needed."
+                        rows={2}
+                      />
+                      <div className="global-lpo-response-actions">
+                        <button
+                          className="primary-button"
+                          type="button"
+                          onClick={() => submitGlobalLpoResponse(item, "needs_global")}
+                        >
+                          Needed in my area
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => submitGlobalLpoResponse(item, "local_only")}
+                        >
+                          Not needed
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => submitGlobalLpoResponse(item, "needs_discussion")}
+                        >
+                          Discuss
+                        </button>
+                      </div>
+                    </div>
+                  ) : item.currentResponse ? (
+                    <div className={`global-lpo-response-summary tone-${getGlobalLpoApprovalDecisionTone(item.currentResponse.decision)}`}>
+                      <strong>{getGlobalLpoApprovalDecisionLabel(item.currentResponse.decision)}</strong>
+                      <span>{formatDateTimeDisplay(item.currentResponse.respondedAt)}</span>
+                      {item.currentResponse.note ? (
+                        <RichTextContent value={item.currentResponse.note} fallback="" compact />
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {isManagerView ? (
+                    <div className="global-lpo-manager-summary">
+                      <div className="global-lpo-response-chip-list" aria-label="LPO responses">
+                        {item.request.responses.length === 0 ? (
+                          <span className="global-lpo-response-chip">No responses yet</span>
+                        ) : null}
+                        {item.request.responses.map((response) => (
+                          <span
+                            className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
+                            key={`${item.request.id}-${response.userId}`}
+                            title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
+                          >
+                            {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
+                          </span>
+                        ))}
+                      </div>
+                      {item.canClose ? (
+                        <div className="global-lpo-finalize-box">
+                          <div className="global-lpo-finalize-heading">
+                            <strong>GPO final decision</strong>
+                            <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                          </div>
+                          <label className="form-field">
+                            <span>Outcome</span>
+                            <select
+                              value={closeOutcomeDraft}
+                              onChange={(event) =>
+                                setGlobalLpoCloseOutcomeDrafts((current) => ({
+                                  ...current,
+                                  [item.id]: event.target.value as GlobalLpoApprovalOutcome
+                                }))
+                              }
+                            >
+                              {globalLpoApprovalOutcomeOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <p className="global-lpo-next-step">{getGlobalLpoApprovalOutcomeNextStep(closeOutcomeDraft)}</p>
+                          <RichTextEditor
+                            label="Decision note"
+                            value={globalLpoCloseNoteDrafts[item.id] ?? ""}
+                            onChange={(value) =>
+                              setGlobalLpoCloseNoteDrafts((current) => ({
+                                ...current,
+                                [item.id]: value
+                              }))
+                            }
+                            placeholder="Add scope, PRU, rollout, or follow-up context."
+                            rows={2}
+                          />
+                          <div className="global-lpo-finalize-actions">
+                            <button className="secondary-button" type="button" onClick={() => submitGlobalLpoClose(item)}>
+                              Close with decision
+                            </button>
+                          </div>
+                        </div>
+                      ) : item.request.status === "closed" ? (
+                        <div className={`global-lpo-final-decision tone-${getGlobalLpoApprovalOutcomeTone(item.request.finalOutcome)}`}>
+                          <strong>{getGlobalLpoApprovalOutcomeLabel(item.request.finalOutcome)}</strong>
+                          <span>
+                            {[item.request.closedBy ? `Closed by ${item.request.closedBy}` : "", item.request.closedAt ? formatDateTimeDisplay(item.request.closedAt) : ""]
+                              .filter(Boolean)
+                              .join(" - ")}
+                          </span>
+                          <p>{getGlobalLpoApprovalOutcomeNextStep(item.request.finalOutcome)}</p>
+                          {item.request.finalDecisionNote ? (
+                            <RichTextContent value={item.request.finalDecisionNote} fallback="" compact />
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       <div className="approval-table-card" aria-labelledby="pending-approvals-title">
         <header className="approval-table-header">
           <div>
@@ -14586,6 +16582,7 @@ function ApprovalCenter({
               ) : null}
               {pendingApprovals.map((item) => {
                 const isClarificationComposerOpen = clarificationComposerItemId === item.id;
+                const isGlobalLpoComposerOpen = globalLpoComposerItemId === item.id;
                 const clarificationDraft =
                   clarificationDrafts[item.id] ?? createDefaultApprovalClarificationDraft(config, item);
                 const workflowTargetOptions = getApprovalClarificationTargetOptions(config, item);
@@ -14596,6 +16593,8 @@ function ApprovalCenter({
                     (option) => !workflowTargetRoleKeys.has(option.key) || option.key === clarificationDraft.pullInTargetRole
                   ) || configuredPullInRoleOptions;
                 const availablePullInRoleOptions = pullInRoleOptions.length > 0 ? pullInRoleOptions : configuredPullInRoleOptions;
+                const globalLpoRequestOpen = hasOpenGlobalLpoApprovalRequest(item.ticket);
+                const canOpenGlobalLpoRequest = canRequestGlobalLpoInput(item);
 
                 return (
                   <Fragment key={item.id}>
@@ -14613,6 +16612,12 @@ function ApprovalCenter({
                       </td>
                       <td>
                         <span className="approval-status-chip">{getTicketListStatusLabel(item.ticket)}</span>
+                        {item.deviationAssignment ? (
+                          <small className="approval-deviation-note">
+                            Deviation: covering unassigned {item.step.label} before{" "}
+                            {item.deviationAssignment.coveringStep.label}
+                          </small>
+                        ) : null}
                       </td>
                       <td>
                         <span className={`priority priority-${getPriorityToneClassName(item.ticket.priority)}`}>
@@ -14630,6 +16635,9 @@ function ApprovalCenter({
                       <td>{getTicketSubmitter(item.ticket)}</td>
                       <td>
                         <div className="approval-row-actions">
+                          {item.deviationAssignment ? (
+                            <span className="approval-deviation-badge">Deviation workflow</span>
+                          ) : null}
                           <button className="primary-button" type="button" onClick={() => submitDecision(item, "approve")}>
                             Approve
                           </button>
@@ -14648,6 +16656,23 @@ function ApprovalCenter({
                           >
                             More info
                           </button>
+                          {role === "global_product_owner" || role === "admin" ? (
+                            <button
+                              className="secondary-button"
+                              disabled={!canOpenGlobalLpoRequest}
+                              title={
+                                globalLpoRequestOpen
+                                  ? "This ticket already has an open Global LPO group request."
+                                  : globalLpoTargetCount === 0
+                                    ? "Configure active Local Product Owner users before sending."
+                                    : "Ask every configured Local Product Owner for globalization input."
+                              }
+                              type="button"
+                              onClick={() => openGlobalLpoComposer(item)}
+                            >
+                              Ask all LPOs
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -14797,6 +16822,51 @@ function ApprovalCenter({
                               <button className="primary-button" type="button" onClick={() => submitClarificationQuestion(item)}>
                                 <TegelIcon name="send" size="16px" />
                                 Send back for more info request
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                    {isGlobalLpoComposerOpen ? (
+                      <tr className="approval-clarification-row">
+                        <td colSpan={6}>
+                          <div className="approval-clarification-card global-lpo-composer-card">
+                            <div className="global-lpo-composer-header">
+                              <div>
+                                <strong>Ask all Local Product Owners</strong>
+                                <p>
+                                  Sends a group approval request to {formatCount(globalLpoTargetCount)} active LPO
+                                  {globalLpoTargetCount === 1 ? "" : "s"} so they can say if their area needs this request.
+                                </p>
+                              </div>
+                              <span className="approval-status-chip">Globalization check</span>
+                            </div>
+                            <RichTextEditor
+                              label="Question / group approval request"
+                              value={globalLpoQuestionDrafts[item.id] ?? buildDefaultGlobalLpoApprovalQuestion(item.ticket)}
+                              onChange={(value) => {
+                                setGlobalLpoQuestionDrafts((current) => ({
+                                  ...current,
+                                  [item.id]: value
+                                }));
+                                setGlobalLpoQuestionErrorItemId(null);
+                              }}
+                              placeholder="Ask LPOs whether their area also needs this capability."
+                              rows={4}
+                            />
+                            {globalLpoQuestionErrorItemId === item.id ? (
+                              <p className="approval-clarification-error">
+                                Write the question and make sure active Local Product Owner users are configured.
+                              </p>
+                            ) : null}
+                            <div className="approval-clarification-actions">
+                              <button className="secondary-button" type="button" onClick={closeGlobalLpoComposer}>
+                                Cancel
+                              </button>
+                              <button className="primary-button" type="button" onClick={() => submitGlobalLpoQuestion(item)}>
+                                <TegelIcon name="send" size="16px" />
+                                Send to all LPOs
                               </button>
                             </div>
                           </div>
@@ -16563,6 +18633,7 @@ function TicketListWorkspace({
   onAddComment,
   onCreateClarification,
   onCreateEscalation,
+  onApprovalDecision,
   onPostJiraComment,
   onReopenTicket,
   onUpdateTicket,
@@ -16589,6 +18660,12 @@ function TicketListWorkspace({
   onAddComment: (ticketKey: string, body: string, visibility: VisibilityLevel) => void;
   onCreateClarification: (ticketKey: string, input: NewClarificationThreadInput) => void;
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
+  onApprovalDecision: (
+    ticketKey: string,
+    stepId: string,
+    action: ApprovalDecisionAction,
+    note: ApprovalDecisionPayload
+  ) => void;
   onPostJiraComment?: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
   onUpdateTicket: UpdateTicketHandler;
@@ -16796,6 +18873,7 @@ function TicketListWorkspace({
           onAddComment={onAddComment}
           onCreateClarification={onCreateClarification}
           onCreateEscalation={onCreateEscalation}
+          onApprovalDecision={onApprovalDecision}
           onPostJiraComment={onPostJiraComment}
           onReopenTicket={onReopenTicket}
           onTabChange={onTabChange}
@@ -17165,6 +19243,7 @@ function TicketDetail({
   onAddComment,
   onCreateClarification,
   onCreateEscalation,
+  onApprovalDecision,
   onPostJiraComment,
   onReopenTicket,
   onUpdateTicket,
@@ -17186,6 +19265,12 @@ function TicketDetail({
   onAddComment: (ticketKey: string, body: string, visibility: VisibilityLevel) => void;
   onCreateClarification: (ticketKey: string, input: NewClarificationThreadInput) => void;
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
+  onApprovalDecision: (
+    ticketKey: string,
+    stepId: string,
+    action: ApprovalDecisionAction,
+    note: ApprovalDecisionPayload
+  ) => void;
   onPostJiraComment?: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
   onUpdateTicket: UpdateTicketHandler;
@@ -17264,6 +19349,8 @@ function TicketDetail({
             embedded
             expanded
             role={role}
+            selectedPersona={selectedPersona}
+            onApprovalDecision={onApprovalDecision}
             onOpenClarifications={() => onTabChange("Clarifications")}
             onUpdateWorkflowStatus={onUpdateWorkflowStatus}
           />
@@ -17614,6 +19701,7 @@ function WorkflowPanel({
   expanded = false,
   embedded = false,
   role,
+  selectedPersona,
   onApprovalDecision,
   onOpenClarifications,
   onUpdateWorkflowStatus
@@ -17623,6 +19711,7 @@ function WorkflowPanel({
   expanded?: boolean;
   embedded?: boolean;
   role?: RoleKey;
+  selectedPersona?: RolePersonaOption;
   onApprovalDecision?: (
     ticketKey: string,
     stepId: string,
@@ -17803,6 +19892,18 @@ function WorkflowPanel({
         ) : null}
         {configuredWorkflow.map((step, index) => {
           const waitReason = getWorkflowStepWaitReason(configuredTicket, step);
+          const originalStepIndex = ticket.workflow.findIndex((candidate) => candidate.id === step.id);
+          const deviationAssignment =
+            selectedPersona && originalStepIndex >= 0
+              ? getWorkflowDeviationAssignmentForPersona(config, selectedPersona, ticket, originalStepIndex)
+              : undefined;
+          const canDecideStep = Boolean(
+            onApprovalDecision &&
+              selectedPersona &&
+              originalStepIndex >= 0 &&
+              isActionableWorkflowStep(step) &&
+              canPersonaDecideWorkflowStep(config, selectedPersona, ticket, step, originalStepIndex)
+          );
 
           return (
             <div className={`workflow-step step-${step.status}`} key={step.id}>
@@ -17848,8 +19949,17 @@ function WorkflowPanel({
                   </div>
                 ) : null}
                 {onApprovalDecision && role && isActionableWorkflowStep(step) ? (
-                  isApprovalVisibleForRole(role, step) ? (
+                  canDecideStep ? (
                     <div className="workflow-step-actions">
+                      {deviationAssignment ? (
+                        <div className="workflow-deviation-notice">
+                          <strong>Deviation workflow</strong>
+                          <span>
+                            {deviationAssignment.coveringStep.ownerName} is next in charge at{" "}
+                            {deviationAssignment.coveringStep.label} and can cover this unassigned gate.
+                          </span>
+                        </div>
+                      ) : null}
                       <RichTextEditor
                         label="Decision note / clarification question"
                         value={decisionNotes[step.id] ?? ""}
@@ -20535,6 +22645,276 @@ function EscalationPeopleList({ people }: { people: EscalationPerson[] }) {
   );
 }
 
+function parseOutlookMeetingAttendees(value: string): { attendees: string[]; error: string } {
+  const attendees = Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((email) => normalizeEmailAddressInput(email))
+        .filter(Boolean)
+    )
+  );
+
+  if (attendees.length === 0) {
+    return { attendees, error: "Add at least one attendee email address." };
+  }
+
+  const invalidAttendee = attendees.find((email) => !isValidEmailAddress(email));
+
+  if (invalidAttendee) {
+    return { attendees, error: `Invalid attendee email address: ${invalidAttendee}.` };
+  }
+
+  return { attendees, error: "" };
+}
+
+function formatOutlookMeetingError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Could not create the Outlook meeting.";
+  const details =
+    error &&
+    typeof error === "object" &&
+    "details" in error &&
+    Array.isArray((error as { details?: unknown }).details)
+      ? (error as { details: string[] }).details.filter(Boolean).join(" ")
+      : "";
+
+  return details ? `${message} ${details}` : message;
+}
+
+function OutlookMeetingModal({
+  initialForm,
+  onClose
+}: {
+  initialForm: OutlookMeetingFormState;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState<OutlookMeetingFormState>(initialForm);
+  const [submitState, setSubmitState] = useState<"idle" | "submitting">("idle");
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<CreateOutlookMeetingResult | null>(null);
+  const isSubmitting = submitState === "submitting";
+
+  useEffect(() => {
+    setForm(initialForm);
+    setSubmitState("idle");
+    setError("");
+    setResult(null);
+  }, [initialForm]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !isSubmitting) {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isSubmitting, onClose]);
+
+  function updateForm<K extends keyof OutlookMeetingFormState>(field: K, value: OutlookMeetingFormState[K]) {
+    setForm((currentForm) => ({
+      ...currentForm,
+      [field]: value
+    }));
+    setError("");
+    setResult(null);
+  }
+
+  async function submitForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const title = form.title.trim();
+    const attendeeValidation = parseOutlookMeetingAttendees(form.attendees);
+    const startDateTime = form.startDateTime.trim();
+    const endDateTime = form.endDateTime.trim();
+    const startMs = Date.parse(startDateTime);
+    const endMs = Date.parse(endDateTime);
+
+    if (!title) {
+      setError("Meeting title is required.");
+      return;
+    }
+
+    if (attendeeValidation.error) {
+      setError(attendeeValidation.error);
+      return;
+    }
+
+    if (!startDateTime || Number.isNaN(startMs)) {
+      setError("Start date/time must be valid.");
+      return;
+    }
+
+    if (!endDateTime || Number.isNaN(endMs)) {
+      setError("End date/time must be valid.");
+      return;
+    }
+
+    if (endMs <= startMs) {
+      setError("End date/time must be after start date/time.");
+      return;
+    }
+
+    setSubmitState("submitting");
+    setError("");
+    setResult(null);
+
+    try {
+      const createdMeeting = await createOutlookMeeting({
+        title,
+        attendees: attendeeValidation.attendees,
+        startDateTime,
+        endDateTime,
+        description: form.description,
+        createTeamsMeeting: form.createTeamsMeeting,
+        relatedTicketId: form.relatedTicketId,
+        escalationPriority: form.escalationPriority
+      });
+
+      setResult(createdMeeting);
+    } catch (submitError) {
+      setError(formatOutlookMeetingError(submitError));
+    } finally {
+      setSubmitState("idle");
+    }
+  }
+
+  return createPortal(
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !isSubmitting) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        className="ticket-modal outlook-meeting-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="outlook-meeting-title"
+      >
+        <header className="modal-header">
+          <div>
+            <h2 id="outlook-meeting-title">Create Outlook/Teams meeting</h2>
+            <p>Create an Outlook calendar event using Europe/Stockholm time.</p>
+          </div>
+          <button className="icon-button quiet" type="button" onClick={onClose} aria-label="Close" disabled={isSubmitting}>
+            <TegelIcon name="cross" />
+          </button>
+        </header>
+        <form className="ticket-form outlook-meeting-form" onSubmit={(event) => void submitForm(event)}>
+          <label className="form-field form-field-wide">
+            <span>Meeting title</span>
+            <input
+              value={form.title}
+              onChange={(event) => updateForm("title", event.target.value)}
+              placeholder="Escalation follow-up"
+            />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Attendees, comma-separated emails</span>
+            <input
+              inputMode="email"
+              value={form.attendees}
+              onChange={(event) => updateForm("attendees", event.target.value)}
+              placeholder="name@example.com, owner@example.com"
+            />
+          </label>
+          <label className="form-field">
+            <span>Start date/time</span>
+            <input
+              type="datetime-local"
+              value={form.startDateTime}
+              onChange={(event) => updateForm("startDateTime", event.target.value)}
+            />
+          </label>
+          <label className="form-field">
+            <span>End date/time</span>
+            <input
+              type="datetime-local"
+              value={form.endDateTime}
+              onChange={(event) => updateForm("endDateTime", event.target.value)}
+            />
+          </label>
+          <label className="form-field form-field-wide">
+            <span>Description/agenda</span>
+            <textarea
+              value={form.description}
+              onChange={(event) => updateForm("description", event.target.value)}
+              placeholder="Agenda, context, and desired outcome"
+              rows={5}
+            />
+          </label>
+          <div className="form-field form-field-wide">
+            <AdminCheckbox
+              checked={form.createTeamsMeeting}
+              label="Create Teams meeting"
+              onChange={(checked) => updateForm("createTeamsMeeting", checked)}
+            />
+          </div>
+          <label className="form-field">
+            <span>Optional related ticket ID</span>
+            <input
+              value={form.relatedTicketId}
+              onChange={(event) => updateForm("relatedTicketId", event.target.value)}
+              placeholder="NEXUS-123"
+            />
+          </label>
+          <label className="form-field">
+            <span>Optional escalation priority</span>
+            <input
+              value={form.escalationPriority}
+              onChange={(event) => updateForm("escalationPriority", event.target.value)}
+              placeholder="High"
+            />
+          </label>
+          {error ? (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {result ? (
+            <div className="outlook-meeting-result form-field-wide" role="status">
+              <strong>Meeting created</strong>
+              <span>Outlook event ID: {result.eventId}</span>
+              {result.joinUrl ? (
+                <span>
+                  Teams join URL:{" "}
+                  <a href={result.joinUrl} target="_blank" rel="noreferrer">
+                    {result.joinUrl}
+                  </a>
+                </span>
+              ) : null}
+              {result.webLink ? (
+                <span>
+                  Outlook event:{" "}
+                  <a href={result.webLink} target="_blank" rel="noreferrer">
+                    {result.webLink}
+                  </a>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="modal-actions">
+            <button className="secondary-button" type="button" onClick={onClose} disabled={isSubmitting}>
+              Close
+            </button>
+            <button className="primary-button" type="submit" disabled={isSubmitting}>
+              <TegelIcon name="calendar" size="16px" />
+              {isSubmitting ? "Creating..." : "Create meeting"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
 function EscalationPanel({
   ticket,
   config,
@@ -20598,6 +22978,7 @@ function EscalationPanel({
   const [meetingSeriesAiError, setMeetingSeriesAiError] = useState("");
   const [meetingSeriesAiSuccess, setMeetingSeriesAiSuccess] = useState("");
   const [meetingAvailabilityErrors, setMeetingAvailabilityErrors] = useState<Record<string, string>>({});
+  const [outlookMeetingForm, setOutlookMeetingForm] = useState<OutlookMeetingFormState | null>(null);
   const [escalationStatusFilter, setEscalationStatusFilter] =
     useState<"all" | (typeof escalationBoardColumns)[number]["id"]>("all");
   const [escalationSeverityFilter, setEscalationSeverityFilter] =
@@ -20750,6 +23131,14 @@ function EscalationPanel({
     );
   }
 
+  function openOutlookMeetingModal(escalation?: Ticket["escalations"][number]) {
+    const fallbackEscalation =
+      visibleEscalations.find((candidate) => candidate.id === selectedEscalationId) ??
+      visibleEscalations.find((candidate) => candidate.status !== "resolved");
+
+    setOutlookMeetingForm(buildOutlookMeetingInitialForm(ticket, escalation ?? fallbackEscalation));
+  }
+
   function applyCreateEscalationTargetDefaults(targetTicketKey: string) {
     const target =
       availableEscalationTargetOptions.find((option) => option.key === targetTicketKey) ??
@@ -20887,152 +23276,6 @@ function EscalationPanel({
         meetingAvailabilityStatus: result.status,
         meetingAvailabilityCheckedAt: result.checkedAt,
         meetingAvailabilityNote: result.note
-      }));
-    }
-  }
-
-  async function createOutlookMeetingInvite(
-    target: "new" | string,
-    input: EscalationMeetingSeriesInput,
-    people: EscalationPersonInput[] | EscalationPerson[]
-  ) {
-    const availability = buildEscalationMeetingAvailabilityDraft(input, people);
-
-    if (availability.error) {
-      setMeetingAvailabilityErrors((currentErrors) => ({
-        ...currentErrors,
-        [target]: availability.error
-      }));
-      return;
-    }
-
-    const attendees = normalizeEscalationPeople(people);
-    const organizerEmail = normalizeEmailAddressInput(selectedPersona.email || attendees[0]?.email || "");
-    const meetingType = normalizeEscalationMeetingType(input.meetingType);
-    const recurrenceFrequency = normalizeEscalationMeetingRecurrenceFrequency(input.meetingRecurrenceFrequency, meetingType);
-    const recurrenceInterval = normalizeEscalationMeetingRecurrenceInterval(
-      input.meetingRecurrenceInterval,
-      input.meetingRecurrenceFrequency
-    );
-    const recurrenceDays = getEscalationMeetingRecurrenceDays({
-      meetingStartAt: input.meetingStartAt,
-      meetingRecurrenceFrequency: recurrenceFrequency,
-      meetingRecurrenceDays: input.meetingRecurrenceDays
-    });
-    const meetingTimeZone = input.meetingTimeZone || defaultEscalationMeetingTimeZone;
-    const recurrence =
-      meetingType === "series"
-        ? {
-            frequency: recurrenceFrequency,
-            interval: recurrenceInterval,
-            daysOfWeek: recurrenceDays,
-            startDate: getDatePartFromDateTimeLocal(input.meetingStartAt),
-            endDate: input.meetingRecurrenceUntil,
-            timeZone: meetingTimeZone
-          }
-        : undefined;
-    const bodyText = [
-      `${ticket.key}: ${ticket.title}`,
-      `Product / PRU / Module: ${[ticket.product, ticket.pru, ticket.module].filter(Boolean).join(" / ") || "Not set"}`,
-      `Severity: ${input.severity}`,
-      `Status: ${input.status ? getEscalationStatusLabel(input.status) : "New"}`,
-      "",
-      "Requested action:",
-      htmlToPlainTextFallback(input.requestedAction).trim() || "No requested action provided.",
-      "",
-      "Action plan:",
-      htmlToPlainTextFallback(input.actionPlan || input.mitigationPlan || "").trim() || "Action plan pending.",
-      "",
-      "Meeting series:",
-      input.meetingSeries?.trim() || "No meeting series notes added.",
-      "",
-      "Schedule:",
-      formatEscalationMeetingSchedule(input)
-    ].join("\n");
-
-    let payload: TeamsMeetingCreatePayload | null = null;
-
-    try {
-      const response = await fetch("/api/integrations/microsoft-graph/teams-meeting", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          subject: `Escalation follow-up: ${ticket.key} - ${ticket.title}`,
-          startDateTime: input.meetingStartAt,
-          endDateTime: getEscalationMeetingEndAt(input),
-          timeZone: meetingTimeZone,
-          organizerEmail,
-          attendees: attendees.map((person) => ({
-            email: person.email,
-            name: person.name || person.email,
-            type: "required"
-          })),
-          bodyText,
-          recurrence,
-          transactionId: `${ticket.key}-${target}-${input.meetingStartAt ?? ""}`
-        }),
-        signal: AbortSignal.timeout(25000)
-      });
-
-      payload = (await response.json().catch(() => null)) as TeamsMeetingCreatePayload | null;
-
-      if (!response.ok) {
-        setMeetingAvailabilityErrors((currentErrors) => ({
-          ...currentErrors,
-          [target]: formatIntegrationApiError(payload as IntegrationApiErrorPayload | null, "Teams meeting creation failed.")
-        }));
-        return;
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not reach the Teams meeting API.";
-
-      setMeetingAvailabilityErrors((currentErrors) => ({
-        ...currentErrors,
-        [target]: `Teams meeting creation failed. ${message}`
-      }));
-      return;
-    }
-
-    const meeting = payload && "data" in payload ? payload.data : undefined;
-
-    if (!meeting?.eventId || !meeting.joinUrl) {
-      setMeetingAvailabilityErrors((currentErrors) => ({
-        ...currentErrors,
-        [target]: "Teams meeting creation response did not include an event ID and join URL."
-      }));
-      return;
-    }
-
-    const checkedAt = new Date().toISOString();
-    const note = [
-      `Microsoft Teams ${meetingType === "series" ? "meeting series" : "meeting"} created for ${attendees.length} attendee${attendees.length === 1 ? "" : "s"}.`,
-      `Event ID: ${meeting.eventId}.`,
-      `Join URL: ${meeting.joinUrl}.`,
-      meeting.webLink ? `Outlook event: ${meeting.webLink}.` : "",
-      availability.note
-    ].filter(Boolean).join(" ");
-
-    setMeetingAvailabilityErrors((currentErrors) => ({
-      ...currentErrors,
-      [target]: ""
-    }));
-    setMeetingAvailabilityDrafts((currentDrafts) => ({
-      ...currentDrafts,
-      [target]: {
-        status: "ready_for_outlook",
-        note,
-        checkedAt
-      }
-    }));
-
-    if (target === "new") {
-      setNewEscalation((currentEscalation) => ({
-        ...currentEscalation,
-        meetingAvailabilityStatus: "ready_for_outlook",
-        meetingAvailabilityCheckedAt: checkedAt,
-        meetingAvailabilityNote: note
       }));
     }
   }
@@ -21512,15 +23755,24 @@ function EscalationPanel({
                 className="secondary-button"
                 type="button"
                 onClick={() =>
-                  void createOutlookMeetingInvite(
-                    escalation.id,
-                    buildEscalationMeetingSeriesDraft(escalation),
-                    currentPeopleDraft
-                  )
+                  openOutlookMeetingModal({
+                    ...escalation,
+                    meetingSeries: meetingSeriesDrafts[escalation.id] ?? escalation.meetingSeries ?? "",
+                    meetingType: currentMeetingType,
+                    meetingStartAt: currentMeetingStartAt,
+                    meetingEndAt: currentMeetingEndAt,
+                    meetingDurationMinutes: currentMeetingDurationMinutes,
+                    meetingTimeZone: currentMeetingTimeZone,
+                    meetingRecurrenceFrequency: currentMeetingRecurrenceFrequency,
+                    meetingRecurrenceInterval: currentMeetingRecurrenceInterval,
+                    meetingRecurrenceDays: currentMeetingRecurrenceDays,
+                    meetingRecurrenceUntil: currentMeetingRecurrenceUntil,
+                    people: currentPeopleDraft
+                  })
                 }
               >
                 <TegelIcon name="calendar" size="16px" />
-                Create Outlook meeting
+                Create Outlook/Teams meeting
               </button>
             </div>
             <div className="meeting-availability-grid">
@@ -22071,6 +24323,14 @@ function EscalationPanel({
             <button
               className="secondary-button"
               type="button"
+              onClick={() => openOutlookMeetingModal(escalation)}
+            >
+              <TegelIcon name="calendar" size="16px" />
+              Create Outlook/Teams meeting
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
               onClick={() => openEscalationStatusForm(escalation)}
             >
               <TegelIcon name="edit" size="16px" />
@@ -22149,6 +24409,14 @@ function EscalationPanel({
               {isCreateFormOpen ? "Close escalation form" : "Create escalation"}
             </button>
           ) : null}
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => openOutlookMeetingModal()}
+          >
+            <TegelIcon name="calendar" size="16px" />
+            Create Outlook/Teams meeting
+          </button>
         </div>
       ) : null}
       {canWrite && onCreateEscalation && isCreateFormOpen ? (
@@ -22340,10 +24608,39 @@ function EscalationPanel({
                 <button
                   className="secondary-button"
                   type="button"
-                  onClick={() => void createOutlookMeetingInvite("new", newEscalation, newEscalation.people)}
+                  onClick={() =>
+                    openOutlookMeetingModal({
+                      id: "new",
+                      type: newEscalation.type,
+                      severity: newEscalation.severity,
+                      reason: newEscalation.reason,
+                      impact: newEscalation.impact,
+                      urgency: newEscalation.urgency,
+                      requestedAction: newEscalation.requestedAction,
+                      mitigationPlan: newEscalation.mitigationPlan,
+                      decisionMaker: newEscalation.decisionMaker,
+                      dueAt: newEscalation.dueAt,
+                      status: "open",
+                      actionPlan: newEscalation.actionPlan,
+                      actionItems: newEscalation.actionItems,
+                      meetingSeries: newEscalation.meetingSeries,
+                      meetingType: newEscalation.meetingType,
+                      meetingStartAt: newEscalation.meetingStartAt,
+                      meetingEndAt: newEscalation.meetingEndAt,
+                      meetingDurationMinutes: newEscalation.meetingDurationMinutes,
+                      meetingTimeZone: newEscalation.meetingTimeZone,
+                      meetingRecurrenceFrequency: newEscalation.meetingRecurrenceFrequency,
+                      meetingRecurrenceInterval: newEscalation.meetingRecurrenceInterval,
+                      meetingRecurrenceDays: newEscalation.meetingRecurrenceDays,
+                      meetingRecurrenceUntil: newEscalation.meetingRecurrenceUntil,
+                      people: newEscalation.people,
+                      managerName: newEscalation.managerName,
+                      managerEmail: newEscalation.managerEmail
+                    })
+                  }
                 >
                   <TegelIcon name="calendar" size="16px" />
-                  Create Outlook meeting
+                  Create Outlook/Teams meeting
                 </button>
               </div>
               <div className="meeting-availability-grid">
@@ -22857,6 +25154,16 @@ function EscalationPanel({
                     </div>
                   ) : null}
                   <div className="escalation-card-actions">
+                    {expanded && canWrite ? (
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => openOutlookMeetingModal(escalation)}
+                      >
+                        <TegelIcon name="calendar" size="16px" />
+                        Create Outlook/Teams meeting
+                      </button>
+                    ) : null}
                     {expanded && canWrite && onUpdateEscalationStatus ? (
                       <button
                         className="secondary-button"
@@ -23419,6 +25726,12 @@ function EscalationPanel({
           ))
         )}
       </div>
+      {outlookMeetingForm ? (
+        <OutlookMeetingModal
+          initialForm={outlookMeetingForm}
+          onClose={() => setOutlookMeetingForm(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -24252,6 +26565,13 @@ const adminSections = [
     iconName: "timer"
   },
   {
+    id: "leadTime",
+    label: "Lead time",
+    summary: "Business and IT split",
+    description: "Configure how ticket statuses and transitions contribute to Business, IT, mixed, and process lead time.",
+    iconName: "history"
+  },
+  {
     id: "notifications",
     label: "Notifications",
     summary: "Templates",
@@ -24356,6 +26676,10 @@ function renderAdminSection(
     return <SlaRulesManager config={config} onConfigChange={onConfigChange} />;
   }
 
+  if (sectionId === "leadTime") {
+    return <LeadTimeConfigManager config={config} onConfigChange={onConfigChange} />;
+  }
+
   if (sectionId === "notifications") {
     return <NotificationTemplateManager config={config} onConfigChange={onConfigChange} />;
   }
@@ -24365,6 +26689,433 @@ function renderAdminSection(
   }
 
   return <AdminMasterDataManager config={config} onConfigChange={onConfigChange} />;
+}
+
+function LeadTimeConfigManager({
+  config,
+  onConfigChange
+}: {
+  config: AdminConfig;
+  onConfigChange: AdminConfigUpdater;
+}) {
+  const activeStatusRules = config.leadTimeStatusRules.filter((rule) => rule.active).length;
+  const activeTransitionRules = config.leadTimeTransitionRules.filter((rule) => rule.active).length;
+
+  function restoreDefaults() {
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeStatusRules: defaultLeadTimeStatusRules,
+      leadTimeTransitionRules: defaultLeadTimeTransitionRules
+    }));
+  }
+
+  return (
+    <div className="lead-time-config-manager">
+      <div className="admin-summary-grid">
+        <AdminSummaryCard label="Transition rules" value={config.leadTimeTransitionRules.length} />
+        <AdminSummaryCard label="Active transitions" value={activeTransitionRules} />
+        <AdminSummaryCard label="Status rules" value={config.leadTimeStatusRules.length} />
+        <AdminSummaryCard label="Active statuses" value={activeStatusRules} />
+      </div>
+      <div className="lead-time-config-header">
+        <div>
+          <h3>Lead-time ownership rules</h3>
+          <p>
+            Transition rules are evaluated first. Status rules are used as a fallback for the segment&apos;s starting status.
+            Mixed rules count once as process time and split equally between Business and IT.
+          </p>
+        </div>
+        <button className="secondary-button" type="button" onClick={restoreDefaults}>
+          Restore defaults
+        </button>
+      </div>
+      <LeadTimeTransitionRuleEditor config={config} onConfigChange={onConfigChange} />
+      <LeadTimeStatusRuleEditor config={config} onConfigChange={onConfigChange} />
+    </div>
+  );
+}
+
+function LeadTimeTransitionRuleEditor({
+  config,
+  onConfigChange
+}: {
+  config: AdminConfig;
+  onConfigChange: AdminConfigUpdater;
+}) {
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [form, setForm] = useState<LeadTimeTransitionRuleFormState>(() => buildLeadTimeTransitionRuleForm());
+  const [error, setError] = useState("");
+  const statusSuggestions = getLeadTimeStatusSuggestions(config);
+
+  function resetForm() {
+    setEditingRuleId(null);
+    setForm(buildLeadTimeTransitionRuleForm());
+    setError("");
+  }
+
+  function startEdit(rule: LeadTimeTransitionRule) {
+    setEditingRuleId(rule.id);
+    setForm(buildLeadTimeTransitionRuleForm(rule));
+    setError("");
+  }
+
+  function saveRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const fromStatus = form.fromStatus.trim();
+    const toStatus = form.toStatus.trim();
+
+    if (!fromStatus || !toStatus) {
+      setError("From status and to status are required.");
+      return;
+    }
+
+    if (normalizeLeadTimeLabel(fromStatus) === normalizeLeadTimeLabel(toStatus)) {
+      setError("From status and to status must be different.");
+      return;
+    }
+
+    const hasDuplicate = config.leadTimeTransitionRules.some(
+      (rule) =>
+        rule.id !== editingRuleId &&
+        normalizeLeadTimeLabel(rule.fromStatus) === normalizeLeadTimeLabel(fromStatus) &&
+        normalizeLeadTimeLabel(rule.toStatus) === normalizeLeadTimeLabel(toStatus)
+    );
+
+    if (hasDuplicate) {
+      setError("A transition rule with this from/to status already exists.");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const rule: LeadTimeTransitionRule = {
+      id:
+        editingRuleId ??
+        getUniqueConfigId(
+          config.leadTimeTransitionRules.map((item) => item.id),
+          normalizeId(`${fromStatus}-${toStatus}`, "lead-transition")
+        ),
+      fromStatus,
+      toStatus,
+      ownership: form.ownership,
+      active: form.active,
+      updatedAt: timestamp
+    };
+
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeTransitionRules: editingRuleId
+        ? current.leadTimeTransitionRules.map((item) => (item.id === editingRuleId ? rule : item))
+        : [...current.leadTimeTransitionRules, rule]
+    }));
+    setEditingRuleId(rule.id);
+    setForm(buildLeadTimeTransitionRuleForm(rule));
+    setError("");
+  }
+
+  function setRuleActive(ruleId: string, active: boolean) {
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeTransitionRules: current.leadTimeTransitionRules.map((rule) =>
+        rule.id === ruleId ? { ...rule, active, updatedAt: new Date().toISOString() } : rule
+      )
+    }));
+  }
+
+  function removeRule(ruleId: string) {
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeTransitionRules: current.leadTimeTransitionRules.filter((rule) => rule.id !== ruleId)
+    }));
+
+    if (editingRuleId === ruleId) {
+      resetForm();
+    }
+  }
+
+  return (
+    <section className="request-options-editor lead-time-rule-editor">
+      <form className="admin-editor-form admin-form request-option-form" onSubmit={saveRule}>
+        <div className="admin-form-heading">
+          <h3>{editingRuleId ? "Edit transition rule" : "Create transition rule"}</h3>
+          {editingRuleId ? (
+            <button className="secondary-button" type="button" onClick={resetForm}>
+              New
+            </button>
+          ) : null}
+        </div>
+        <p className="admin-hint">Use this for exact moves such as IT Test to Business Test.</p>
+        {error ? <p className="admin-form-error" role="alert">{error}</p> : null}
+        <label className="form-field">
+          <span>From status</span>
+          <select
+            value={form.fromStatus}
+            onChange={(event) => setForm({ ...form, fromStatus: event.target.value })}
+          >
+            <option value="">Select from workflow status</option>
+            {getLeadTimeStatusSelectOptions(statusSuggestions, form.fromStatus).map((status) => (
+              <option key={`from-${status}`} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="form-field">
+          <span>To status</span>
+          <select
+            value={form.toStatus}
+            onChange={(event) => setForm({ ...form, toStatus: event.target.value })}
+          >
+            <option value="">Select to workflow status</option>
+            {getLeadTimeStatusSelectOptions(statusSuggestions, form.toStatus).map((status) => (
+              <option key={`to-${status}`} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <LeadTimeOwnershipSelect
+          value={form.ownership}
+          onChange={(ownership) => setForm({ ...form, ownership })}
+        />
+        <AdminCheckbox
+          checked={form.active}
+          label="Active"
+          onChange={(active) => setForm({ ...form, active })}
+        />
+        <AdminFormActions editing={Boolean(editingRuleId)} onCancel={resetForm} />
+      </form>
+      <div className="request-option-record-list">
+        {config.leadTimeTransitionRules.length === 0 ? (
+          <EmptyState title="No transition rules" body="Create transition rules to classify exact status moves." />
+        ) : null}
+        {config.leadTimeTransitionRules.map((rule) => (
+          <LeadTimeRuleRecord
+            key={rule.id}
+            title={`${rule.fromStatus} -> ${rule.toStatus}`}
+            meta="Transition rule"
+            rule={rule}
+            onEdit={() => startEdit(rule)}
+            onToggleActive={() => setRuleActive(rule.id, !rule.active)}
+            onRemove={() => removeRule(rule.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LeadTimeStatusRuleEditor({
+  config,
+  onConfigChange
+}: {
+  config: AdminConfig;
+  onConfigChange: AdminConfigUpdater;
+}) {
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [form, setForm] = useState<LeadTimeStatusRuleFormState>(() => buildLeadTimeStatusRuleForm());
+  const [error, setError] = useState("");
+  const statusSuggestions = getLeadTimeStatusSuggestions(config);
+
+  function resetForm() {
+    setEditingRuleId(null);
+    setForm(buildLeadTimeStatusRuleForm());
+    setError("");
+  }
+
+  function startEdit(rule: LeadTimeStatusRule) {
+    setEditingRuleId(rule.id);
+    setForm(buildLeadTimeStatusRuleForm(rule));
+    setError("");
+  }
+
+  function saveRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const status = form.status.trim();
+
+    if (!status) {
+      setError("Status is required.");
+      return;
+    }
+
+    const hasDuplicate = config.leadTimeStatusRules.some(
+      (rule) => rule.id !== editingRuleId && normalizeLeadTimeLabel(rule.status) === normalizeLeadTimeLabel(status)
+    );
+
+    if (hasDuplicate) {
+      setError("A status rule with this status already exists.");
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const rule: LeadTimeStatusRule = {
+      id:
+        editingRuleId ??
+        getUniqueConfigId(
+          config.leadTimeStatusRules.map((item) => item.id),
+          normalizeId(status, "lead-status")
+        ),
+      status,
+      ownership: form.ownership,
+      active: form.active,
+      updatedAt: timestamp
+    };
+
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeStatusRules: editingRuleId
+        ? current.leadTimeStatusRules.map((item) => (item.id === editingRuleId ? rule : item))
+        : [...current.leadTimeStatusRules, rule]
+    }));
+    setEditingRuleId(rule.id);
+    setForm(buildLeadTimeStatusRuleForm(rule));
+    setError("");
+  }
+
+  function setRuleActive(ruleId: string, active: boolean) {
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeStatusRules: current.leadTimeStatusRules.map((rule) =>
+        rule.id === ruleId ? { ...rule, active, updatedAt: new Date().toISOString() } : rule
+      )
+    }));
+  }
+
+  function removeRule(ruleId: string) {
+    onConfigChange((current) => ({
+      ...current,
+      leadTimeStatusRules: current.leadTimeStatusRules.filter((rule) => rule.id !== ruleId)
+    }));
+
+    if (editingRuleId === ruleId) {
+      resetForm();
+    }
+  }
+
+  return (
+    <section className="request-options-editor lead-time-rule-editor">
+      <form className="admin-editor-form admin-form request-option-form" onSubmit={saveRule}>
+        <div className="admin-form-heading">
+          <h3>{editingRuleId ? "Edit status rule" : "Create status rule"}</h3>
+          {editingRuleId ? (
+            <button className="secondary-button" type="button" onClick={resetForm}>
+              New
+            </button>
+          ) : null}
+        </div>
+        <p className="admin-hint">Used when no exact transition rule matches the segment.</p>
+        {error ? <p className="admin-form-error" role="alert">{error}</p> : null}
+        <label className="form-field">
+          <span>Status</span>
+          <select
+            value={form.status}
+            onChange={(event) => setForm({ ...form, status: event.target.value })}
+          >
+            <option value="">Select workflow status</option>
+            {getLeadTimeStatusSelectOptions(statusSuggestions, form.status).map((status) => (
+              <option key={`status-${status}`} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <LeadTimeOwnershipSelect
+          value={form.ownership}
+          onChange={(ownership) => setForm({ ...form, ownership })}
+        />
+        <AdminCheckbox
+          checked={form.active}
+          label="Active"
+          onChange={(active) => setForm({ ...form, active })}
+        />
+        <AdminFormActions editing={Boolean(editingRuleId)} onCancel={resetForm} />
+      </form>
+      <div className="request-option-record-list">
+        {config.leadTimeStatusRules.length === 0 ? (
+          <EmptyState title="No status rules" body="Create fallback status rules for unhandled ticket stages." />
+        ) : null}
+        {config.leadTimeStatusRules.map((rule) => (
+          <LeadTimeRuleRecord
+            key={rule.id}
+            title={rule.status}
+            meta="Status fallback rule"
+            rule={rule}
+            onEdit={() => startEdit(rule)}
+            onToggleActive={() => setRuleActive(rule.id, !rule.active)}
+            onRemove={() => removeRule(rule.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LeadTimeOwnershipSelect({
+  value,
+  onChange
+}: {
+  value: LeadTimeOwnership;
+  onChange: (ownership: LeadTimeOwnership) => void;
+}) {
+  return (
+    <label className="form-field">
+      <span>Lead-time owner</span>
+      <select value={value} onChange={(event) => onChange(event.target.value as LeadTimeOwnership)}>
+        {leadTimeOwnershipOptions.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function LeadTimeRuleRecord({
+  title,
+  meta,
+  rule,
+  onEdit,
+  onToggleActive,
+  onRemove
+}: {
+  title: string;
+  meta: string;
+  rule: LeadTimeStatusRule | LeadTimeTransitionRule;
+  onEdit: () => void;
+  onToggleActive: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <article className="admin-editable-record request-option-record">
+      <div className="admin-record-main">
+        <div className="admin-record-header">
+          <div>
+            <strong>{title}</strong>
+            <span>{meta} · updated {formatDateTimeDisplay(rule.updatedAt)}</span>
+          </div>
+          <AdminStatusPill active={rule.active} />
+        </div>
+        <div className="admin-pill-list">
+          <span className="admin-pill">{getLeadTimeOwnershipLabel(rule.ownership)}</span>
+        </div>
+      </div>
+      <div className="admin-record-actions">
+        <button className="secondary-button" type="button" onClick={onEdit}>
+          <TegelIcon name="edit" size="16px" />
+          Edit
+        </button>
+        <button className="secondary-button" type="button" onClick={onToggleActive}>
+          {rule.active ? "Deactivate" : "Activate"}
+        </button>
+        <button className="secondary-button danger-button hard-delete-button" type="button" onClick={onRemove}>
+          <TegelIcon name="trash" size="16px" />
+          Delete
+        </button>
+      </div>
+    </article>
+  );
 }
 
 function RequestOptionsManager({
@@ -25414,8 +28165,6 @@ type UserFormState = {
   productIds: string[];
   pruNames: string[];
   active: boolean;
-  emailNotificationsEnabled: boolean;
-  emailNotificationEventTypes: UserEmailNotificationEventType[];
 };
 
 type RoleFormState = {
@@ -25614,7 +28363,13 @@ type GitLabConfigFormState = {
   ref: string;
 };
 
-type IntegrationProviderKey = "jira" | "smtp" | "ai" | "gitlab";
+type EntraConfigFormState = {
+  clientId: string;
+  tenantId: string;
+  redirectUri: string;
+};
+
+type IntegrationProviderKey = "jira" | "smtp" | "ai" | "gitlab" | "entra";
 
 type IntegrationTestResult = {
   tone: "success" | "warning" | "danger";
@@ -25628,18 +28383,6 @@ type IntegrationApiErrorPayload = {
     code?: string;
     message?: string;
     details?: string[];
-  };
-};
-
-type TeamsMeetingCreatePayload = IntegrationApiErrorPayload | {
-  data?: {
-    eventId?: string;
-    joinUrl?: string;
-    webLink?: string;
-    subject?: string;
-    isOnlineMeeting?: boolean;
-    onlineMeetingProvider?: string;
-    authMode?: string;
   };
 };
 
@@ -25765,6 +28508,9 @@ type LocalIntegrationSecrets = {
   openAiApiKey?: string;
   aiTestPrompt?: string;
   gitlabToken?: string;
+  entraClientId?: string;
+  entraTenantId?: string;
+  entraRedirectUri?: string;
   smtpUsername?: string;
   smtpPassword?: string;
   smtpTestRecipient?: string;
@@ -26003,6 +28749,25 @@ function formatScopedCount(values: string[], singular: string, plural: string): 
   return `${values.length} ${values.length === 1 ? singular : plural}`;
 }
 
+function formatProfileProductScope(config: AdminConfig, productIds: string[]): string {
+  if (!productIds.length || productIds.includes(ALL_SCOPE_VALUE)) {
+    return "All products";
+  }
+
+  return productIds
+    .map((productId) => getConfigProductById(config, productId)?.productName ?? productId)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function formatProfilePruScope(pruNames: string[]): string {
+  if (!pruNames.length || pruNames.includes(ALL_SCOPE_VALUE)) {
+    return "All PRUs";
+  }
+
+  return pruNames.join(", ");
+}
+
 function getResponsibilityMappingRoles(mapping: ResponsibilityMappingConfig): RoleKey[] {
   const rolesForMapping = mapping.roles?.length ? mapping.roles : [mapping.role];
 
@@ -26146,6 +28911,16 @@ function isValidHttpUrl(value: string): boolean {
   }
 }
 
+function isGuidValue(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function isValidEntraTenantValue(value: string): boolean {
+  const tenantValue = value.trim();
+
+  return isGuidValue(tenantValue) || /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(tenantValue);
+}
+
 function normalizeEmailAddressInput(value: string): string {
   const trimmedValue = value.trim();
 
@@ -26254,7 +29029,6 @@ function writeLocalIntegrationSecrets(secrets: LocalIntegrationSecrets): void {
 
 function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
   const firstSite = config.regionSites.find((site) => site.active) ?? config.regionSites[0];
-  const notificationPreferences = user?.notificationPreferences ?? getDefaultAdminUserNotificationPreferences();
 
   return {
     displayName: user?.displayName ?? "",
@@ -26265,9 +29039,7 @@ function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
     site: user?.site ?? firstSite?.site ?? "Global",
     productIds: user?.productIds ?? [],
     pruNames: user?.pruNames ?? [],
-    active: user?.active ?? true,
-    emailNotificationsEnabled: notificationPreferences.emailEnabled,
-    emailNotificationEventTypes: notificationPreferences.emailEventTypes
+    active: user?.active ?? true
   };
 }
 
@@ -26351,6 +29123,87 @@ function buildStatusColorForm(status?: StatusColorConfig): StatusColorFormState 
     status: status?.status ?? "",
     color: status?.color ?? "neutral"
   };
+}
+
+function buildLeadTimeStatusRuleForm(rule?: LeadTimeStatusRule): LeadTimeStatusRuleFormState {
+  return {
+    status: rule?.status ?? "",
+    ownership: rule?.ownership ?? "business",
+    active: rule?.active ?? true
+  };
+}
+
+function buildLeadTimeTransitionRuleForm(rule?: LeadTimeTransitionRule): LeadTimeTransitionRuleFormState {
+  return {
+    fromStatus: rule?.fromStatus ?? "",
+    toStatus: rule?.toStatus ?? "",
+    ownership: rule?.ownership ?? "it",
+    active: rule?.active ?? true
+  };
+}
+
+function normalizeLeadTimeLabel(value: string): string {
+  return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function getLeadTimeOwnershipLabel(ownership: LeadTimeOwnershipBucket): string {
+  if (ownership === "unclassified") {
+    return "Unclassified";
+  }
+
+  return leadTimeOwnershipOptions.find((option) => option.value === ownership)?.label ?? ownership;
+}
+
+function getConfiguredLeadTimeWorkflowStepLabels(config: AdminConfig): string[] {
+  return config.ticketTypeWorkflows.flatMap((workflow) =>
+    getConfiguredWorkflowStepsForRoute(workflow, config).map((step) => step.label)
+  );
+}
+
+function getLeadTimeStatusOrder(status: string): number {
+  const normalizedStatus = normalizeLeadTimeLabel(status);
+  const workflowOrder = leadTimeSuggestedStatusLabels.findIndex(
+    (candidate) => normalizeLeadTimeLabel(candidate) === normalizedStatus
+  );
+
+  return workflowOrder >= 0 ? workflowOrder : Number.MAX_SAFE_INTEGER;
+}
+
+function getLeadTimeStatusSuggestions(config: AdminConfig): string[] {
+  return Array.from(
+    new Set(
+      [
+        ...leadTimeSuggestedStatusLabels,
+        ...getConfiguredLeadTimeWorkflowStepLabels(config),
+        ...config.statusColors.map((statusColor) => statusColor.status),
+        ...config.leadTimeStatusRules.map((rule) => rule.status),
+        ...config.leadTimeTransitionRules.flatMap((rule) => [rule.fromStatus, rule.toStatus])
+      ]
+        .map((status) => status.trim())
+        .filter(Boolean)
+    )
+  ).sort((left, right) => {
+    const orderDifference = getLeadTimeStatusOrder(left) - getLeadTimeStatusOrder(right);
+
+    return orderDifference !== 0 ? orderDifference : left.localeCompare(right);
+  });
+}
+
+function getLeadTimeStatusSelectOptions(statusSuggestions: string[], currentStatus: string): string[] {
+  const currentValue = currentStatus.trim();
+  const values = currentValue ? [...statusSuggestions, currentValue] : statusSuggestions;
+  const seen = new Set<string>();
+
+  return values.filter((status) => {
+    const normalizedStatus = normalizeLeadTimeLabel(status);
+
+    if (!normalizedStatus || seen.has(normalizedStatus)) {
+      return false;
+    }
+
+    seen.add(normalizedStatus);
+    return true;
+  });
 }
 
 function buildRequestCategoryForm(category = ""): RequestCategoryFormState {
@@ -26711,6 +29564,45 @@ function buildGitLabConfigForm(config: GitLabIntegrationConfig): GitLabConfigFor
     filePath: "",
     ref: defaultRef
   };
+}
+
+function buildEntraConfigForm(secrets: LocalIntegrationSecrets = {}): EntraConfigFormState {
+  const envClientId = (
+    process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_CLIENT_ID ??
+    process.env.NEXT_PUBLIC_MICROSOFT_CLIENT_ID ??
+    ""
+  ).trim();
+  const envTenantId = (
+    process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_TENANT_ID ??
+    process.env.NEXT_PUBLIC_MICROSOFT_TENANT_ID ??
+    ""
+  ).trim();
+  const envRedirectUri = (process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_REDIRECT_URI ?? "").trim();
+
+  return {
+    clientId: secrets.entraClientId?.trim() || envClientId,
+    tenantId: secrets.entraTenantId?.trim() || envTenantId,
+    redirectUri:
+      secrets.entraRedirectUri?.trim() ||
+      envRedirectUri ||
+      (typeof window !== "undefined" ? window.location.origin : "")
+  };
+}
+
+function buildEntraAdminConsentUrl(form: EntraConfigFormState): string {
+  const clientId = form.clientId.trim();
+  const tenantId = form.tenantId.trim();
+  const redirectUri = form.redirectUri.trim();
+
+  if (!clientId || !tenantId || !redirectUri) {
+    return "";
+  }
+
+  return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/adminconsent?${new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    state: "nexus-portal-graph-consent"
+  }).toString()}`;
 }
 
 function buildSmtpConfigForm(config: SmtpConfig): SmtpConfigFormState {
@@ -27589,7 +30481,6 @@ function AdminMasterDataManager({
       visibleModuleProductIds.has(module.productId) &&
       (visibleModulePruNames.size === 0 || visibleModulePruNames.has(module.pruName))
   );
-
   useEffect(() => {
     if (editingPruRef) {
       return;
@@ -27693,6 +30584,7 @@ function AdminMasterDataManager({
         config.users.map((user) => user.id),
         normalizeId(displayName, "user")
       );
+    const existingUser = editingUserId ? config.users.find((user) => user.id === editingUserId) : undefined;
     const user = normalizeAdminUser({
       id,
       displayName,
@@ -27704,10 +30596,7 @@ function AdminMasterDataManager({
       productIds: userForm.productIds,
       pruNames: userForm.pruNames,
       active: userForm.active,
-      notificationPreferences: {
-        emailEnabled: userForm.emailNotificationsEnabled,
-        emailEventTypes: userForm.emailNotificationEventTypes
-      }
+      notificationPreferences: existingUser?.notificationPreferences ?? getDefaultAdminUserNotificationPreferences()
     });
 
     onConfigChange((current) => ({
@@ -28290,41 +31179,6 @@ function AdminMasterDataManager({
                 ))}
               </select>
             </label>
-            <div className="notification-preference-editor">
-              <div className="notification-preference-editor-header">
-                <span>Email notifications</span>
-                <small>These preferences apply to the automatic notification emails this user can receive.</small>
-              </div>
-              <AdminCheckbox
-                checked={userForm.emailNotificationsEnabled}
-                label="Allow automatic email notifications"
-                onChange={(emailNotificationsEnabled) =>
-                  setUserForm({ ...userForm, emailNotificationsEnabled })
-                }
-              />
-              <fieldset
-                className={`notification-preference-list ${userForm.emailNotificationsEnabled ? "" : "is-disabled"}`}
-                disabled={!userForm.emailNotificationsEnabled}
-              >
-                {userEmailNotificationEventOptions.map((option) => (
-                  <AdminCheckbox
-                    checked={userForm.emailNotificationEventTypes.includes(option.value)}
-                    key={option.value}
-                    label={option.label}
-                    onChange={(checked) =>
-                      setUserForm({
-                        ...userForm,
-                        emailNotificationEventTypes: toggleUserEmailNotificationEventSelection(
-                          userForm.emailNotificationEventTypes,
-                          option.value,
-                          checked
-                        )
-                      })
-                    }
-                  />
-                ))}
-              </fieldset>
-            </div>
             <AdminCheckbox
               checked={userForm.active}
               label="Active user"
@@ -28343,7 +31197,7 @@ function AdminMasterDataManager({
                   ...user.actionRoles.map((role) => `Acting: ${getConfigRoleLabel(config, role)}`),
                   formatScopedCount(user.productIds, "product", "products"),
                   formatScopedCount(user.pruNames, "PRU", "PRUs"),
-                  getAdminUserEmailNotificationSummary(user)
+                  getAdminUserEmailNotificationSummary(config, user)
                 ]}
                 onEdit={() => {
                   setEditingUserId(user.id);
@@ -30802,6 +33656,9 @@ function IntegrationConfigurationPanel({
   const [gitlabForm, setGitLabForm] = useState<GitLabConfigFormState>(() =>
     buildGitLabConfigForm(config.integrations.gitlab)
   );
+  const [entraForm, setEntraForm] = useState<EntraConfigFormState>(() =>
+    buildEntraConfigForm()
+  );
   const [smtpForm, setSmtpForm] = useState<SmtpConfigFormState>(() =>
     buildSmtpConfigForm(config.integrations.smtp)
   );
@@ -30812,11 +33669,14 @@ function IntegrationConfigurationPanel({
   const [aiSuccessMessage, setAiSuccessMessage] = useState("");
   const [gitlabError, setGitLabError] = useState("");
   const [gitlabSuccessMessage, setGitLabSuccessMessage] = useState("");
+  const [entraError, setEntraError] = useState("");
+  const [entraSuccessMessage, setEntraSuccessMessage] = useState("");
   const [smtpError, setSmtpError] = useState("");
   const [smtpSuccessMessage, setSmtpSuccessMessage] = useState("");
   const [jiraTestResult, setJiraTestResult] = useState<IntegrationTestResult | null>(null);
   const [aiTestResult, setAiTestResult] = useState<IntegrationTestResult | null>(null);
   const [gitlabTestResult, setGitLabTestResult] = useState<IntegrationTestResult | null>(null);
+  const [entraTestResult, setEntraTestResult] = useState<IntegrationTestResult | null>(null);
   const [smtpTestResult, setSmtpTestResult] = useState<IntegrationTestResult | null>(null);
   const [gitlabGroupResults, setGitLabGroupResults] = useState<GitLabGroupResult[]>([]);
   const [gitlabProjectResults, setGitLabProjectResults] = useState<GitLabProjectResult[]>([]);
@@ -30921,6 +33781,7 @@ function IntegrationConfigurationPanel({
       ...current,
       token: secrets.gitlabToken ?? current.token
     }));
+    setEntraForm(buildEntraConfigForm(secrets));
     setSmtpForm((current) => ({
       ...current,
       username: secrets.smtpUsername ?? current.username,
@@ -30942,6 +33803,10 @@ function IntegrationConfigurationPanel({
   useEffect(() => {
     setGitLabTestResult(null);
   }, [gitlabForm]);
+
+  useEffect(() => {
+    setEntraTestResult(null);
+  }, [entraForm]);
 
   useEffect(() => {
     setSmtpTestResult(null);
@@ -30971,6 +33836,8 @@ function IntegrationConfigurationPanel({
         setAiTestResult(result);
       } else if (activeIntegration === "gitlab") {
         setGitLabTestResult(result);
+      } else if (activeIntegration === "entra") {
+        setEntraTestResult(result);
       } else {
         setJiraTestResult(result);
       }
@@ -31009,6 +33876,120 @@ function IntegrationConfigurationPanel({
       tone: "warning",
       title: "Local GitLab token cleared",
       detail: "The saved browser-local GitLab token was removed.",
+      checkedAt: new Date().toISOString()
+    });
+  }
+
+  function validateEntraForm(): string[] {
+    const clientId = entraForm.clientId.trim();
+    const tenantId = entraForm.tenantId.trim();
+    const redirectUri = entraForm.redirectUri.trim();
+    const errors: string[] = [];
+
+    if (!clientId) {
+      errors.push("Application client ID is required.");
+    } else if (!isGuidValue(clientId)) {
+      errors.push("Application client ID must be a valid GUID from the Entra app registration.");
+    }
+
+    if (!tenantId) {
+      errors.push("Tenant ID or tenant domain is required.");
+    } else if (!isValidEntraTenantValue(tenantId)) {
+      errors.push("Tenant must be a GUID or tenant domain such as contoso.onmicrosoft.com.");
+    }
+
+    if (!redirectUri) {
+      errors.push("Redirect URI is required.");
+    } else if (!isValidHttpUrl(redirectUri)) {
+      errors.push("Redirect URI must be a valid HTTP or HTTPS URL.");
+    }
+
+    return errors;
+  }
+
+  function saveEntraConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const errors = validateEntraForm();
+
+    if (errors.length > 0) {
+      setEntraError(errors.join(" "));
+      setEntraSuccessMessage("");
+      return;
+    }
+
+    const nextEntraConfig = {
+      entraClientId: entraForm.clientId.trim(),
+      entraTenantId: entraForm.tenantId.trim(),
+      entraRedirectUri: entraForm.redirectUri.trim(),
+      updatedAt: new Date().toISOString()
+    };
+
+    updateLocalSecrets(nextEntraConfig);
+    setEntraForm({
+      clientId: nextEntraConfig.entraClientId,
+      tenantId: nextEntraConfig.entraTenantId,
+      redirectUri: nextEntraConfig.entraRedirectUri
+    });
+    setEntraError("");
+    setEntraSuccessMessage("Entra/Azure Microsoft Graph settings saved in this browser.");
+    setEntraTestResult({
+      tone: "success",
+      title: "Entra settings saved",
+      detail: "The Outlook/Teams meeting modal will use these browser-local MSAL settings before falling back to environment variables. Tenant admin consent may still be required before users can sign in.",
+      checkedAt: new Date().toISOString()
+    });
+  }
+
+  function testEntraConfig() {
+    const errors = validateEntraForm();
+    const authority = `https://login.microsoftonline.com/${entraForm.tenantId.trim()}`;
+    const adminConsentUrl = buildEntraAdminConsentUrl(entraForm);
+
+    setEntraError("");
+    setEntraSuccessMessage("");
+    setEntraTestResult({
+      tone: errors.length > 0 ? "danger" : "success",
+      title: errors.length > 0 ? "Entra readiness check failed" : "Entra local settings look valid",
+      detail:
+        errors.length > 0
+          ? errors.join(" ")
+          : `MSAL can be initialized with authority ${authority}, redirect URI ${entraForm.redirectUri.trim()}, and scopes ${entraRequiredScopes.join(", ")}. If sign-in shows "Need admin approval", ask an Entra admin to grant consent using ${adminConsentUrl}.`,
+      checkedAt: new Date().toISOString()
+    });
+  }
+
+  function openEntraAdminConsent() {
+    const errors = validateEntraForm();
+
+    if (errors.length > 0) {
+      setEntraError(errors.join(" "));
+      setEntraSuccessMessage("");
+      return;
+    }
+
+    const adminConsentUrl = buildEntraAdminConsentUrl(entraForm);
+
+    window.open(adminConsentUrl, "_blank", "noopener,noreferrer");
+    setEntraError("");
+    setEntraSuccessMessage("Opened the Microsoft admin consent request in a new tab.");
+    setEntraTestResult({
+      tone: "warning",
+      title: "Admin consent required",
+      detail: "A tenant administrator must sign in and approve the Microsoft Graph delegated permissions before blocked users can create Outlook/Teams meetings.",
+      checkedAt: new Date().toISOString()
+    });
+  }
+
+  function clearLocalEntraConfig() {
+    updateLocalSecrets({ entraClientId: "", entraTenantId: "", entraRedirectUri: "" });
+    setEntraForm(buildEntraConfigForm({}));
+    setEntraSuccessMessage("");
+    setEntraError("");
+    setEntraTestResult({
+      tone: "warning",
+      title: "Local Entra settings cleared",
+      detail: "The saved browser-local Entra/Azure settings were removed. Environment variables will be used if configured.",
       checkedAt: new Date().toISOString()
     });
   }
@@ -32159,6 +35140,30 @@ function IntegrationConfigurationPanel({
         </button>
 
         <button
+          className={`integration-provider-button ${activeIntegration === "entra" ? "is-active" : ""}`}
+          type="button"
+          aria-pressed={activeIntegration === "entra"}
+          onClick={() => setActiveIntegration("entra")}
+        >
+          <span className="integration-provider-heading">
+            <span className="integration-provider-icon">
+              <TegelIcon name="global" size="18px" />
+            </span>
+            <span>
+              <strong>Entra/Azure</strong>
+              <small>Graph calendar auth</small>
+            </span>
+          </span>
+          <span className={`integration-provider-status ${entraForm.clientId && entraForm.tenantId ? "is-active" : "is-inactive"}`}>
+            {entraForm.clientId && entraForm.tenantId ? "Configured" : "Missing"}
+          </span>
+          <span className="integration-provider-meta">{entraForm.tenantId || "Tenant not set"}</span>
+          <span className="integration-provider-meta">
+            {entraForm.redirectUri ? "Redirect URI configured" : "Redirect URI not set"}
+          </span>
+        </button>
+
+        <button
           className={`integration-provider-button ${activeIntegration === "smtp" ? "is-active" : ""}`}
           type="button"
           aria-pressed={activeIntegration === "smtp"}
@@ -32889,6 +35894,112 @@ function IntegrationConfigurationPanel({
               </div>
             </article>
           </div>
+        ) : activeIntegration === "entra" ? (
+          <div className="integration-settings-grid" aria-label="Entra and Azure settings">
+            <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveEntraConfig}>
+              <h3>Entra/Azure Graph settings</h3>
+              {entraError ? <p className="admin-form-error">{entraError}</p> : null}
+              {entraSuccessMessage ? <p className="admin-form-success">{entraSuccessMessage}</p> : null}
+              <label className="form-field">
+                <span>Application client ID</span>
+                <input
+                  value={entraForm.clientId}
+                  onChange={(event) => {
+                    setEntraForm({ ...entraForm, clientId: event.target.value });
+                    setEntraSuccessMessage("");
+                  }}
+                  placeholder="00000000-0000-0000-0000-000000000000"
+                />
+              </label>
+              <label className="form-field">
+                <span>Tenant ID or domain</span>
+                <input
+                  value={entraForm.tenantId}
+                  onChange={(event) => {
+                    setEntraForm({ ...entraForm, tenantId: event.target.value });
+                    setEntraSuccessMessage("");
+                  }}
+                  placeholder="tenant-id or company.onmicrosoft.com"
+                />
+              </label>
+              <label className="form-field form-field-wide">
+                <span>Redirect URI</span>
+                <input
+                  value={entraForm.redirectUri}
+                  onChange={(event) => {
+                    setEntraForm({ ...entraForm, redirectUri: event.target.value });
+                    setEntraSuccessMessage("");
+                  }}
+                  placeholder="http://localhost:3001"
+                />
+              </label>
+              <div className="admin-record-grid compact-record-grid">
+                <span>Authority</span>
+                <strong>
+                  {entraForm.tenantId.trim()
+                    ? `https://login.microsoftonline.com/${entraForm.tenantId.trim()}`
+                    : "Tenant required"}
+                </strong>
+                <span>Graph endpoint</span>
+                <strong>{microsoftGraphEventEndpoint}</strong>
+                <span>Required scopes</span>
+                <strong>{entraRequiredScopes.join(", ")}</strong>
+                <span>Admin consent URL</span>
+                <strong>{buildEntraAdminConsentUrl(entraForm) || "Complete app ID, tenant, and redirect URI first"}</strong>
+                <span>Storage</span>
+                <strong>Browser localStorage, env fallback supported</strong>
+              </div>
+              <p className="admin-hint">
+                Add this redirect URI to the Entra app registration as a Single-page application URI. These values are public MSAL settings used by the Outlook/Teams meeting modal; no client secret is needed for delegated browser sign-in. If users see Need admin approval, an Entra tenant admin must grant consent for the Graph permissions.
+              </p>
+              <div className="admin-form-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={!entraForm.clientId && !entraForm.tenantId && !entraForm.redirectUri}
+                  onClick={clearLocalEntraConfig}
+                >
+                  <TegelIcon name="cross" size="16px" />
+                  Clear local settings
+                </button>
+                <button className="secondary-button" type="button" onClick={testEntraConfig}>
+                  <TegelIcon name="global" size="16px" />
+                  Check readiness
+                </button>
+                <button className="secondary-button" type="button" onClick={openEntraAdminConsent}>
+                  <TegelIcon name="link" size="16px" />
+                  Open admin consent
+                </button>
+                <button className="primary-button" type="submit">
+                  <TegelIcon name="save" size="16px" />
+                  Save Entra settings
+                </button>
+              </div>
+              <IntegrationTestResultBanner result={entraTestResult} />
+            </form>
+
+            <article className="integration-card jira-config-summary">
+              <div className="admin-record-header">
+                <div>
+                  <strong>Microsoft Graph calendar auth</strong>
+                  <span>Outlook event and optional Teams meeting creation</span>
+                </div>
+                <AdminStatusPill active={Boolean(entraForm.clientId && entraForm.tenantId && entraForm.redirectUri)} />
+              </div>
+              <div className="admin-record-grid">
+                <span>Client ID</span>
+                <strong>{entraForm.clientId || "Not configured"}</strong>
+                <span>Tenant</span>
+                <strong>{entraForm.tenantId || "Not configured"}</strong>
+                <span>Redirect URI</span>
+                <strong>{entraForm.redirectUri || "Not configured"}</strong>
+                <span>Permissions</span>
+                <strong>{entraRequiredScopes.length} delegated scopes</strong>
+                <span>Meeting timezone</span>
+                <strong>Europe/Stockholm</strong>
+              </div>
+            </article>
+          </div>
         ) : (
           <div className="integration-settings-grid" aria-label="SMTP settings">
             <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveSmtpConfig}>
@@ -33287,6 +36398,135 @@ function slaPolicyItems(config: AdminConfig) {
   });
 }
 
+function ReportScopeFilterPanel({
+  filters,
+  onCreateReport,
+  onResetFilters,
+  onUpdateFilter,
+  previewTicketCount,
+  priorityOptions,
+  productOptions,
+  pruOptions,
+  regionOptions,
+  reportFilterTags,
+  reportIsStale,
+  reportSnapshot,
+  siteOptions,
+  slaStateOptions,
+  stateOptions,
+  typeOptions
+}: {
+  filters: AnalyticsReportFilters;
+  onCreateReport: () => void;
+  onResetFilters: () => void;
+  onUpdateFilter: (key: keyof AnalyticsReportFilters, value: string) => void;
+  previewTicketCount: number;
+  priorityOptions: ReportOption[];
+  productOptions: ReportOption[];
+  pruOptions: ReportOption[];
+  regionOptions: ReportOption[];
+  reportFilterTags: string[];
+  reportIsStale: boolean;
+  reportSnapshot: AnalyticsReportSnapshot | null;
+  siteOptions: ReportOption[];
+  slaStateOptions: ReportOption[];
+  stateOptions: ReportOption[];
+  typeOptions: ReportOption[];
+}) {
+  return (
+    <div className="reports-tab-panel report-scope-panel">
+      <form
+        className="report-filter-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onCreateReport();
+        }}
+      >
+        <div className="report-filter-grid">
+          <ReportFilterSelect
+            label="Region"
+            value={filters.region}
+            options={regionOptions}
+            onChange={(value) => onUpdateFilter("region", value)}
+          />
+          <ReportFilterSelect
+            label="Site"
+            value={filters.site}
+            options={siteOptions}
+            onChange={(value) => onUpdateFilter("site", value)}
+          />
+          <ReportFilterSelect
+            label="Product"
+            value={filters.product}
+            options={productOptions}
+            onChange={(value) => onUpdateFilter("product", value)}
+          />
+          <ReportFilterSelect
+            label="PRU"
+            value={filters.pru}
+            options={pruOptions}
+            onChange={(value) => onUpdateFilter("pru", value)}
+          />
+          <ReportFilterSelect
+            label="Ticket type"
+            value={filters.typeId}
+            options={typeOptions}
+            onChange={(value) => onUpdateFilter("typeId", value)}
+          />
+          <ReportFilterSelect
+            label="Workflow state"
+            value={filters.state}
+            options={stateOptions}
+            onChange={(value) => onUpdateFilter("state", value)}
+          />
+          <ReportFilterSelect
+            label="Priority"
+            value={filters.priority}
+            options={priorityOptions}
+            onChange={(value) => onUpdateFilter("priority", value)}
+          />
+          <ReportFilterSelect
+            label="SLA"
+            value={filters.slaState}
+            options={slaStateOptions}
+            onChange={(value) => onUpdateFilter("slaState", value)}
+          />
+        </div>
+        <div className="report-action-row">
+          <button className="primary-button" type="submit">
+            <TegelIcon name="report" size="16px" />
+            Create report
+          </button>
+          <button className="secondary-button" type="button" onClick={onResetFilters}>
+            Reset filters
+          </button>
+          <span className={`report-generation-status ${reportIsStale ? "is-stale" : ""}`}>
+            {reportSnapshot
+              ? `Created ${formatLocalDateTime(new Date(reportSnapshot.generatedAt))}`
+              : "Live preview"}
+          </span>
+        </div>
+      </form>
+
+      {reportIsStale ? (
+        <p className="report-filter-note">
+          Current filters match {formatCount(previewTicketCount)} tickets. Create report to refresh the report views.
+        </p>
+      ) : null}
+
+      <div className="report-filter-tags" aria-label="Report scope">
+        {reportFilterTags.length > 0 ? (
+          reportFilterTags.map((tag) => (
+            <span key={tag}>{tag}</span>
+          ))
+        ) : (
+          <span>All visible tickets</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsPanel({
   tickets,
   expanded = false,
@@ -33460,6 +36700,15 @@ function AnalyticsPanel({
           Analytics report
         </button>
         <button
+          aria-selected={activeReportTab === "leadTime"}
+          className={activeReportTab === "leadTime" ? "is-active" : ""}
+          role="tab"
+          type="button"
+          onClick={() => setActiveReportTab("leadTime")}
+        >
+          Lead time
+        </button>
+        <button
           aria-selected={activeReportTab === "jiraInsights"}
           className={activeReportTab === "jiraInsights" ? "is-active" : ""}
           role="tab"
@@ -33470,97 +36719,27 @@ function AnalyticsPanel({
         </button>
       </div>
 
+      <ReportScopeFilterPanel
+        filters={filters}
+        onCreateReport={createReport}
+        onResetFilters={resetReportFilters}
+        onUpdateFilter={updateFilter}
+        previewTicketCount={previewTickets.length}
+        priorityOptions={priorityOptions}
+        productOptions={productOptions}
+        pruOptions={pruOptions}
+        regionOptions={regionOptions}
+        reportFilterTags={reportFilterTags}
+        reportIsStale={reportIsStale}
+        reportSnapshot={reportSnapshot}
+        siteOptions={siteOptions}
+        slaStateOptions={slaStateOptions}
+        stateOptions={stateOptions}
+        typeOptions={typeOptions}
+      />
+
       {activeReportTab === "analytics" ? (
         <div className="reports-tab-panel" role="tabpanel">
-          <form
-            className="report-filter-panel"
-            onSubmit={(event) => {
-              event.preventDefault();
-              createReport();
-            }}
-          >
-            <div className="report-filter-grid">
-              <ReportFilterSelect
-                label="Region"
-                value={filters.region}
-                options={regionOptions}
-                onChange={(value) => updateFilter("region", value)}
-              />
-              <ReportFilterSelect
-                label="Site"
-                value={filters.site}
-                options={siteOptions}
-                onChange={(value) => updateFilter("site", value)}
-              />
-              <ReportFilterSelect
-                label="Product"
-                value={filters.product}
-                options={productOptions}
-                onChange={(value) => updateFilter("product", value)}
-              />
-              <ReportFilterSelect
-                label="PRU"
-                value={filters.pru}
-                options={pruOptions}
-                onChange={(value) => updateFilter("pru", value)}
-              />
-              <ReportFilterSelect
-                label="Ticket type"
-                value={filters.typeId}
-                options={typeOptions}
-                onChange={(value) => updateFilter("typeId", value)}
-              />
-              <ReportFilterSelect
-                label="Workflow state"
-                value={filters.state}
-                options={stateOptions}
-                onChange={(value) => updateFilter("state", value)}
-              />
-              <ReportFilterSelect
-                label="Priority"
-                value={filters.priority}
-                options={priorityOptions}
-                onChange={(value) => updateFilter("priority", value)}
-              />
-              <ReportFilterSelect
-                label="SLA"
-                value={filters.slaState}
-                options={slaStateOptions}
-                onChange={(value) => updateFilter("slaState", value)}
-              />
-            </div>
-            <div className="report-action-row">
-              <button className="primary-button" type="submit">
-                <TegelIcon name="report" size="16px" />
-                Create report
-              </button>
-              <button className="secondary-button" type="button" onClick={resetReportFilters}>
-                Reset filters
-              </button>
-              <span className={`report-generation-status ${reportIsStale ? "is-stale" : ""}`}>
-                {reportSnapshot
-                  ? `Created ${formatLocalDateTime(new Date(reportSnapshot.generatedAt))}`
-                  : "Live preview"}
-              </span>
-            </div>
-          </form>
-
-          {reportIsStale ? (
-            <p className="report-filter-note">
-              Current filters match {formatCount(previewTickets.length)} tickets. Create report to refresh the charts.
-            </p>
-          ) : null}
-
-          <div className="report-filter-tags" aria-label="Report scope">
-            {reportFilterTags.length > 0 ? (
-              reportFilterTags.map((tag) => (
-                <span key={tag}>{tag}</span>
-              ))
-            ) : (
-              <span>All visible tickets</span>
-            )}
-          </div>
-
           <div className="report-summary-grid">
             <ReportSummaryMetric label="Tickets" value={reportTickets.length} />
             <ReportSummaryMetric label="Bugs" value={bugTickets} />
@@ -33601,9 +36780,15 @@ function AnalyticsPanel({
             </div>
           )}
         </div>
-      ) : (
-        <JiraInsightsReport config={config} tickets={tickets} />
-      )}
+      ) : null}
+
+      {activeReportTab === "leadTime" ? (
+        <LeadTimeReport config={config} tickets={reportTickets} />
+      ) : null}
+
+      {activeReportTab === "jiraInsights" ? (
+        <JiraInsightsReport config={config} tickets={reportTickets} />
+      ) : null}
     </section>
   );
 }
@@ -33681,6 +36866,520 @@ function formatJiraInsightDuration(hours: number): string {
   }
 
   return `${hours >= 10 ? Math.round(hours) : hours.toFixed(1)} hrs`;
+}
+
+function getLeadTimeStatusFromStoredValue(value?: string): string {
+  const trimmedValue = value?.trim() ?? "";
+
+  if (!trimmedValue) {
+    return "";
+  }
+
+  const ticketStateOption = ticketStateOptions.find((option) => option.value === trimmedValue);
+
+  if (ticketStateOption) {
+    return ticketStateOption.label;
+  }
+
+  const jiraStatusOption = jiraPortalStatusTimelineOptions.find((option) => option.value === trimmedValue);
+
+  if (jiraStatusOption) {
+    if (jiraStatusOption.value === "done" || jiraStatusOption.value === "rejected") {
+      return "Close";
+    }
+
+    return jiraStatusOption.label;
+  }
+
+  return trimmedValue.replace(/[_-]+/g, " ");
+}
+
+function getWorkflowStepLeadTimeStatus(value?: string): string {
+  const trimmedValue = value?.trim() ?? "";
+
+  if (!trimmedValue) {
+    return "";
+  }
+
+  const [stepLabel] = trimmedValue.split(":");
+
+  return getLeadTimeStatusFromStoredValue(stepLabel);
+}
+
+function getTicketLifecycleLeadTimeStatus(ticket: Ticket): string {
+  const lifecycleSteps = getTicketLifecycleSteps(ticket);
+  const activeStep =
+    lifecycleSteps.find((step) => step.state === "active" || step.state === "blocked" || step.state === "rejected") ??
+    lifecycleSteps.find((step) => step.state === "waiting") ??
+    lifecycleSteps[lifecycleSteps.length - 1];
+
+  return activeStep?.label ?? getTicketCurrentStatusLabel(ticket);
+}
+
+function extractLeadTimeAuditStatusChange(
+  entry: Ticket["audit"][number]
+): { oldStatus?: string; newStatus: string } | null {
+  const eventType = entry.eventType.toLowerCase();
+
+  if (eventType.includes("jira follow-up")) {
+    const newStatus = getLeadTimeStatusFromStoredValue(entry.newValue);
+
+    return newStatus ? { oldStatus: getLeadTimeStatusFromStoredValue(entry.oldValue), newStatus } : null;
+  }
+
+  if (eventType === "workflow status changed") {
+    const newStatus = getWorkflowStepLeadTimeStatus(entry.newValue);
+
+    return newStatus ? { oldStatus: getWorkflowStepLeadTimeStatus(entry.oldValue), newStatus } : null;
+  }
+
+  if (eventType === "approval clarification requested") {
+    return {
+      oldStatus: "Review",
+      newStatus: "Clarification"
+    };
+  }
+
+  if (eventType === "approval granted" || eventType === "deviation approval granted") {
+    return {
+      oldStatus: "New request",
+      newStatus: "Review"
+    };
+  }
+
+  if (eventType === "approval rejected") {
+    return {
+      oldStatus: "Review",
+      newStatus: "Close"
+    };
+  }
+
+  if (eventType === "jira created") {
+    return {
+      oldStatus: "Jira draft",
+      newStatus: "Planning"
+    };
+  }
+
+  if (eventType === "ticket reopened") {
+    const newStatus = getLeadTimeStatusFromStoredValue(entry.newValue);
+
+    return newStatus ? { oldStatus: getLeadTimeStatusFromStoredValue(entry.oldValue), newStatus } : null;
+  }
+
+  return null;
+}
+
+function getTicketCurrentLeadTimeStatus(ticket: Ticket): string {
+  if (ticket.state === "clarification") {
+    return "Review";
+  }
+
+  return getTicketLifecycleLeadTimeStatus(ticket);
+}
+
+function getTicketInitialLeadTimeStatus(ticket: Ticket, firstEvent?: LeadTimeStatusEvent): string {
+  if (firstEvent?.oldStatus) {
+    return firstEvent.oldStatus;
+  }
+
+  return "New request";
+}
+
+function buildTicketLeadTimeStatusEvents(ticket: Ticket, endMs: number): LeadTimeStatusEvent[] {
+  const createdAtMs = getTicketCreatedAtMs(ticket);
+  const auditEvents = ticket.audit
+    .flatMap((entry) => {
+      const atMs = parseTicketTimestamp(entry.createdAt);
+      const change = extractLeadTimeAuditStatusChange(entry);
+
+      if (!atMs || !change) {
+        return [];
+      }
+
+      return [
+        {
+          status: change.newStatus,
+          atMs: Math.max(createdAtMs, atMs),
+          source: entry.eventType,
+          oldStatus: change.oldStatus
+        }
+      ];
+    })
+    .sort((left, right) => left.atMs - right.atMs);
+  const initialStatus = getTicketInitialLeadTimeStatus(ticket, auditEvents[0]);
+  const events: LeadTimeStatusEvent[] = [
+    {
+      status: initialStatus,
+      atMs: createdAtMs,
+      source: "Ticket created"
+    }
+  ];
+
+  for (const event of auditEvents) {
+    if (event.atMs > endMs) {
+      continue;
+    }
+
+    const previous = events[events.length - 1];
+
+    if (previous && previous.atMs === event.atMs && normalizeLeadTimeLabel(previous.status) === normalizeLeadTimeLabel(event.status)) {
+      continue;
+    }
+
+    if (previous && normalizeLeadTimeLabel(previous.status) === normalizeLeadTimeLabel(event.status)) {
+      continue;
+    }
+
+    events.push(event);
+  }
+
+  const currentStatus = getTicketCurrentLeadTimeStatus(ticket);
+  const currentStatusAtMs =
+    parseTicketTimestamp(ticket.jiraDraft.followUpUpdatedAt ?? "") ||
+    parseTicketTimestamp(ticket.updatedAt) ||
+    endMs;
+  const lastEvent = events[events.length - 1];
+
+  if (
+    currentStatus &&
+    lastEvent &&
+    currentStatusAtMs <= endMs &&
+    currentStatusAtMs > lastEvent.atMs &&
+    normalizeLeadTimeLabel(currentStatus) !== normalizeLeadTimeLabel(lastEvent.status)
+  ) {
+    events.push({
+      status: currentStatus,
+      atMs: currentStatusAtMs,
+      source: "Current ticket status"
+    });
+  }
+
+  return events.sort((left, right) => left.atMs - right.atMs);
+}
+
+function leadTimeStatusMatchesRule(status: string, ruleStatus: string): boolean {
+  const normalizedStatus = normalizeLeadTimeLabel(status);
+  const normalizedRuleStatus = normalizeLeadTimeLabel(ruleStatus);
+
+  if (!normalizedStatus || !normalizedRuleStatus) {
+    return false;
+  }
+
+  return (
+    normalizedStatus === normalizedRuleStatus ||
+    (normalizedRuleStatus.length >= 4 && normalizedStatus.includes(normalizedRuleStatus))
+  );
+}
+
+function getDefaultLeadTimeOwnershipForStatus(status: string): LeadTimeOwnership | undefined {
+  switch (normalizeLeadTimeLabel(status)) {
+    case "new request":
+    case "close":
+    case "done":
+    case "planned release":
+      return "process";
+    case "review":
+      return "mixed";
+    case "planning":
+    case "in progress":
+    case "in project":
+    case "it test":
+      return "it";
+    case "business test":
+    case "clarification":
+    case "waiting for clarification":
+      return "business";
+    default:
+      return undefined;
+  }
+}
+
+function getLeadTimeSegmentClassification(
+  config: AdminConfig,
+  fromStatus: string,
+  toStatus: string
+): { ownership: LeadTimeOwnershipBucket; ruleKind: LeadTimeRuleKind; ruleLabel: string } {
+  const transitionRule = config.leadTimeTransitionRules.find(
+    (rule) =>
+      rule.active &&
+      normalizeLeadTimeLabel(rule.fromStatus) === normalizeLeadTimeLabel(fromStatus) &&
+      normalizeLeadTimeLabel(rule.toStatus) === normalizeLeadTimeLabel(toStatus)
+  );
+
+  if (transitionRule) {
+    return {
+      ownership: transitionRule.ownership,
+      ruleKind: "transition",
+      ruleLabel: `${transitionRule.fromStatus} -> ${transitionRule.toStatus}`
+    };
+  }
+
+  const statusRule = config.leadTimeStatusRules.find(
+    (rule) => rule.active && leadTimeStatusMatchesRule(fromStatus, rule.status)
+  );
+
+  if (statusRule) {
+    return {
+      ownership: statusRule.ownership,
+      ruleKind: "status",
+      ruleLabel: statusRule.status
+    };
+  }
+
+  const defaultOwnership = getDefaultLeadTimeOwnershipForStatus(fromStatus);
+
+  if (defaultOwnership) {
+    return {
+      ownership: defaultOwnership,
+      ruleKind: "status",
+      ruleLabel: `Default lifecycle: ${fromStatus}`
+    };
+  }
+
+  return {
+    ownership: "unclassified",
+    ruleKind: "none",
+    ruleLabel: "No matching rule"
+  };
+}
+
+function buildTicketLeadTimeMetrics(ticket: Ticket, config: AdminConfig, nowMs: number): TicketLeadTimeMetrics {
+  const startedAtMs = getTicketCreatedAtMs(ticket);
+  const resolvedAtMs = getTicketResolvedAtMs(ticket);
+  const endedAtMs = resolvedAtMs || nowMs;
+  const events = buildTicketLeadTimeStatusEvents(ticket, endedAtMs);
+  const segments = events.flatMap((event, index): LeadTimeSegment[] => {
+    const nextEvent = events[index + 1];
+    const segmentEndMs = nextEvent?.atMs ?? endedAtMs;
+
+    if (segmentEndMs <= event.atMs) {
+      return [];
+    }
+
+    const toStatus = nextEvent?.status ?? getTicketCurrentLeadTimeStatus(ticket);
+    const classification = getLeadTimeSegmentClassification(config, event.status, toStatus);
+    const hours = (segmentEndMs - event.atMs) / 3600000;
+
+    return [
+      {
+        fromStatus: event.status,
+        toStatus,
+        startMs: event.atMs,
+        endMs: segmentEndMs,
+        hours,
+        ownership: classification.ownership,
+        ruleKind: classification.ruleKind,
+        ruleLabel: classification.ruleLabel
+      }
+    ];
+  });
+  const totals = segments.reduce(
+    (summary, segment) => {
+      if (segment.ownership === "business") {
+        summary.businessHours += segment.hours;
+        summary.processHours += segment.hours;
+      } else if (segment.ownership === "it") {
+        summary.itHours += segment.hours;
+        summary.processHours += segment.hours;
+      } else if (segment.ownership === "mixed") {
+        summary.businessHours += segment.hours / 2;
+        summary.itHours += segment.hours / 2;
+        summary.mixedHours += segment.hours;
+        summary.processHours += segment.hours;
+      } else if (segment.ownership === "process") {
+        summary.processHours += segment.hours;
+      } else {
+        summary.unclassifiedHours += segment.hours;
+      }
+
+      return summary;
+    },
+    {
+      businessHours: 0,
+      itHours: 0,
+      mixedHours: 0,
+      processHours: 0,
+      unclassifiedHours: 0
+    }
+  );
+  const totalHours = Math.max(0, (endedAtMs - startedAtMs) / 3600000);
+
+  return {
+    ticket,
+    currentStatus: getTicketCurrentLeadTimeStatus(ticket),
+    startedAtMs,
+    endedAtMs,
+    isOpen: !resolvedAtMs,
+    totalHours,
+    businessHours: totals.businessHours,
+    itHours: totals.itHours,
+    processHours: totals.processHours,
+    unclassifiedHours: totals.unclassifiedHours,
+    mixedHours: totals.mixedHours,
+    segments
+  };
+}
+
+function averageLeadTimeHours(metrics: TicketLeadTimeMetrics[], getValue: (metric: TicketLeadTimeMetrics) => number): number {
+  if (!metrics.length) {
+    return 0;
+  }
+
+  return metrics.reduce((sum, metric) => sum + getValue(metric), 0) / metrics.length;
+}
+
+function LeadTimeReport({ config, tickets }: { config: AdminConfig; tickets: Ticket[] }) {
+  const latestTicketActivityMs = useMemo(() => {
+    const timestamps = tickets
+      .map((ticket) => parseTicketTimestamp(ticket.updatedAt))
+      .filter((timestamp) => timestamp > 0);
+
+    return timestamps.length ? Math.max(...timestamps) : 0;
+  }, [tickets]);
+  const [reportGeneratedAtMs, setReportGeneratedAtMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    setReportGeneratedAtMs(Date.now());
+  }, [config.leadTimeStatusRules, config.leadTimeTransitionRules, tickets]);
+
+  const metrics = useMemo(() => {
+    const nowMs = reportGeneratedAtMs ?? latestTicketActivityMs;
+
+    return tickets.map((ticket) => buildTicketLeadTimeMetrics(ticket, config, nowMs));
+  }, [config, latestTicketActivityMs, reportGeneratedAtMs, tickets]);
+  const openTickets = metrics.filter((metric) => metric.isOpen).length;
+  const resolvedTickets = metrics.length - openTickets;
+  const avgTotalHours = averageLeadTimeHours(metrics, (metric) => metric.totalHours);
+  const avgBusinessHours = averageLeadTimeHours(metrics, (metric) => metric.businessHours);
+  const avgItHours = averageLeadTimeHours(metrics, (metric) => metric.itHours);
+  const avgProcessHours = averageLeadTimeHours(metrics, (metric) => metric.processHours);
+  const totalUnclassifiedHours = metrics.reduce((sum, metric) => sum + metric.unclassifiedHours, 0);
+  const totalLeadTimeHours = metrics.reduce((sum, metric) => sum + metric.totalHours, 0);
+  const unclassifiedPercentage = totalLeadTimeHours ? Math.round((totalUnclassifiedHours / totalLeadTimeHours) * 100) : 0;
+  const ticketRows = [...metrics]
+    .sort((left, right) => right.totalHours - left.totalHours)
+    .slice(0, 12)
+    .map((metric) => [
+      `${metric.ticket.key} - ${metric.ticket.title}`,
+      metric.currentStatus,
+      formatJiraInsightDuration(metric.totalHours),
+      formatJiraInsightDuration(metric.businessHours),
+      formatJiraInsightDuration(metric.itHours),
+      formatJiraInsightDuration(metric.processHours),
+      formatJiraInsightDuration(metric.unclassifiedHours),
+      metric.isOpen ? "Open" : "Resolved"
+    ]);
+  const segmentRows = metrics
+    .flatMap((metric) =>
+      metric.segments.map((segment) => ({
+        ticketKey: metric.ticket.key,
+        segment
+      }))
+    )
+    .sort((left, right) => right.segment.endMs - left.segment.endMs)
+    .slice(0, 12)
+    .map((row) => [
+      row.ticketKey,
+      `${row.segment.fromStatus} -> ${row.segment.toStatus}`,
+      getLeadTimeOwnershipLabel(row.segment.ownership),
+      formatJiraInsightDuration(row.segment.hours),
+      row.segment.ruleKind === "none" ? "Unmatched" : row.segment.ruleLabel,
+      formatDateTimeDisplay(new Date(row.segment.endMs).toISOString())
+    ]);
+  const ownershipBuckets: ReportBucket[] = [
+    {
+      label: "Business",
+      value: Math.round(metrics.reduce((sum, metric) => sum + metric.businessHours, 0)),
+      percentage: 0,
+      color: "#15803d"
+    },
+    {
+      label: "IT",
+      value: Math.round(metrics.reduce((sum, metric) => sum + metric.itHours, 0)),
+      percentage: 0,
+      color: "#1d4ed8"
+    },
+    {
+      label: "Process only",
+      value: Math.round(metrics.reduce((sum, metric) => sum + metric.processHours - metric.businessHours - metric.itHours, 0)),
+      percentage: 0,
+      color: "#7c5f17"
+    },
+    {
+      label: "Unclassified",
+      value: Math.round(totalUnclassifiedHours),
+      percentage: 0,
+      color: "#dc2626"
+    }
+  ];
+  const ownershipTotal = ownershipBuckets.reduce((sum, bucket) => sum + bucket.value, 0);
+  const normalizedOwnershipBuckets = ownershipBuckets.map((bucket) => ({
+    ...bucket,
+    value: Math.max(0, bucket.value),
+    percentage: ownershipTotal ? (Math.max(0, bucket.value) / ownershipTotal) * 100 : 0
+  }));
+
+  return (
+    <div className="jira-insights-report lead-time-report reports-tab-panel" role="tabpanel">
+      <div className="jira-insights-header">
+        <div>
+          <h3>Lead time report</h3>
+          <p>
+            Business, IT, process, and total lead time calculated from ticket audit/status history using the configured
+            lead-time rules.
+          </p>
+        </div>
+        <span>{formatCount(config.leadTimeTransitionRules.filter((rule) => rule.active).length)} transition rules</span>
+      </div>
+
+      {metrics.length === 0 ? (
+        <EmptyState title="No lead-time data" body="No visible tickets match the current report filters." />
+      ) : (
+        <>
+          <div className="jira-insight-kpi-grid">
+            <JiraInsightKpiCard label="Tickets" value={metrics.length} trend={`${formatCount(openTickets)} open / ${formatCount(resolvedTickets)} resolved`} />
+            <JiraInsightKpiCard label="Avg total lead time" value={formatJiraInsightDuration(avgTotalHours)} trend="created to resolved or now" tone="warning" />
+            <JiraInsightKpiCard label="Avg Business lead time" value={formatJiraInsightDuration(avgBusinessHours)} trend="business-owned segments" tone="success" />
+            <JiraInsightKpiCard label="Avg IT lead time" value={formatJiraInsightDuration(avgItHours)} trend="IT-owned segments" />
+            <JiraInsightKpiCard label="Avg process lead time" value={formatJiraInsightDuration(avgProcessHours)} trend={`${unclassifiedPercentage}% unclassified`} tone={unclassifiedPercentage ? "danger" : "success"} />
+          </div>
+          <div className="jira-insight-split-grid">
+            <JiraInsightBarList title="Lead time by owner" buckets={normalizedOwnershipBuckets} />
+            <JiraInsightQuickList
+              items={[
+                {
+                  title: `${formatCount(config.leadTimeTransitionRules.filter((rule) => rule.active).length)} active transition rules`,
+                  detail: "Exact from/to status rules are evaluated before status fallback rules.",
+                  tone: "success"
+                },
+                {
+                  title: `${formatCount(config.leadTimeStatusRules.filter((rule) => rule.active).length)} active status rules`,
+                  detail: "Fallback rules classify segments by the starting status.",
+                  tone: "success"
+                },
+                {
+                  title: `${formatJiraInsightDuration(totalUnclassifiedHours)} unclassified`,
+                  detail: "Add rules for unmatched statuses to improve process lead-time coverage.",
+                  tone: unclassifiedPercentage ? "warning" : "success"
+                }
+              ]}
+            />
+            <JiraInsightTable
+              title="Ticket lead time"
+              columns={["Ticket", "Current status", "Total", "Business", "IT", "Process", "Unclassified", "State"]}
+              rows={ticketRows}
+            />
+            <JiraInsightTable
+              title="Recent classified segments"
+              columns={["Ticket", "Segment", "Owner", "Duration", "Rule", "Until"]}
+              rows={segmentRows}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function getJiraInsightStatusLabel(ticket: Ticket): string {

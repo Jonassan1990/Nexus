@@ -56,9 +56,12 @@ export async function POST(request: NextRequest) {
       {
         data: {
           eventId: result.eventId,
-          joinUrl: result.joinUrl,
-          webLink: result.webLink,
           subject: result.subject,
+          start: result.start,
+          end: result.end,
+          joinUrl: result.joinUrl,
+          attendees: result.attendees,
+          webLink: result.webLink,
           isOnlineMeeting: result.isOnlineMeeting,
           onlineMeetingProvider: result.onlineMeetingProvider,
           authMode: result.authMode

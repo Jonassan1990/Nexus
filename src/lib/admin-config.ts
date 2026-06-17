@@ -13,11 +13,35 @@ export type TegelTagVariant = "success" | "warning" | "new" | "neutral" | "infor
 
 export type RoleDomain = "Business" | "IT" | "Admin";
 
-export type UserEmailNotificationEventType = "approvalRequested" | "jiraReadyToCreate";
+export type UserEmailNotificationEventType =
+  | "ticketSubmitted"
+  | "approvalRequested"
+  | "clarificationRequested"
+  | "clarificationAnswered"
+  | "decisionMade"
+  | "ticketApproved"
+  | "ticketRejected"
+  | "jiraReadyToCreate"
+  | "jiraCreated"
+  | "slaBreach"
+  | "escalationTriggered"
+  | "workflowDeviation"
+  | "participantAdded";
 
 export const userEmailNotificationEventTypes = [
+  "ticketSubmitted",
   "approvalRequested",
-  "jiraReadyToCreate"
+  "clarificationRequested",
+  "clarificationAnswered",
+  "decisionMade",
+  "ticketApproved",
+  "ticketRejected",
+  "jiraReadyToCreate",
+  "jiraCreated",
+  "slaBreach",
+  "escalationTriggered",
+  "workflowDeviation",
+  "participantAdded"
 ] as const satisfies readonly UserEmailNotificationEventType[];
 
 export interface AdminUserNotificationPreferences {
@@ -165,6 +189,25 @@ export interface SlaRule {
   warningHours: number;
 }
 
+export type LeadTimeOwnership = "business" | "it" | "mixed" | "process";
+
+export interface LeadTimeStatusRule {
+  id: string;
+  status: string;
+  ownership: LeadTimeOwnership;
+  active: boolean;
+  updatedAt: string;
+}
+
+export interface LeadTimeTransitionRule {
+  id: string;
+  fromStatus: string;
+  toStatus: string;
+  ownership: LeadTimeOwnership;
+  active: boolean;
+  updatedAt: string;
+}
+
 export type NotificationDeliveryMode = "inAppOnly" | "emailOnly" | "inAppAndEmail";
 export type NotificationSeverity = "info" | "warning" | "critical" | "success";
 
@@ -180,6 +223,7 @@ export type NotificationEventType =
   | "jiraCreated"
   | "slaBreach"
   | "escalationTriggered"
+  | "workflowDeviation"
   | "participantAdded";
 
 export interface NotificationTemplate {
@@ -357,6 +401,8 @@ export interface AdminConfig {
   requestCategories: string[];
   slaRules: SlaRule[];
   escalationPolicies: SlaPolicy[];
+  leadTimeStatusRules: LeadTimeStatusRule[];
+  leadTimeTransitionRules: LeadTimeTransitionRule[];
   notificationTemplates: NotificationTemplate[];
   formTemplates: ProductFormTemplate[];
   ticketTypeWorkflows: TicketTypeWorkflowConfig[];
@@ -400,6 +446,232 @@ export function normalizeProductConfig(product: ProductConfig): ProductConfig {
 }
 
 const updatedAt = "2026-05-18T00:00:00.000Z";
+
+export const leadTimeOwnershipOptions = [
+  { value: "business", label: "Business" },
+  { value: "it", label: "IT" },
+  { value: "mixed", label: "Mixed" },
+  { value: "process", label: "Process only" }
+] as const satisfies readonly { value: LeadTimeOwnership; label: string }[];
+
+export const defaultLeadTimeStatusRules: LeadTimeStatusRule[] = [
+  {
+    id: "lead-status-new-request",
+    status: "New request",
+    ownership: "process",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-review",
+    status: "Review",
+    ownership: "mixed",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-clarification",
+    status: "Clarification",
+    ownership: "business",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-waiting-clarification",
+    status: "Waiting for clarification",
+    ownership: "business",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-planning",
+    status: "Planning",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-in-progress",
+    status: "In progress",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-in-project",
+    status: "In project",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-it-test",
+    status: "IT Test",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-business-test",
+    status: "Business Test",
+    ownership: "business",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-close",
+    status: "Close",
+    ownership: "process",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-status-planned-release",
+    status: "Planned release",
+    ownership: "process",
+    active: true,
+    updatedAt
+  }
+];
+
+export const defaultLeadTimeTransitionRules: LeadTimeTransitionRule[] = [
+  {
+    id: "lead-transition-new-request-review",
+    fromStatus: "New request",
+    toStatus: "Review",
+    ownership: "process",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-transition-review-planning",
+    fromStatus: "Review",
+    toStatus: "Planning",
+    ownership: "mixed",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-transition-planning-in-progress",
+    fromStatus: "Planning",
+    toStatus: "In progress",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-transition-in-progress-it-test",
+    fromStatus: "In progress",
+    toStatus: "IT Test",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-transition-it-test-business-test",
+    fromStatus: "IT Test",
+    toStatus: "Business Test",
+    ownership: "it",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-transition-business-test-close",
+    fromStatus: "Business Test",
+    toStatus: "Close",
+    ownership: "business",
+    active: true,
+    updatedAt
+  },
+  {
+    id: "lead-transition-close-planned-release",
+    fromStatus: "Close",
+    toStatus: "Planned release",
+    ownership: "process",
+    active: true,
+    updatedAt
+  }
+];
+
+function isLeadTimeOwnership(value: unknown): value is LeadTimeOwnership {
+  return typeof value === "string" && leadTimeOwnershipOptions.some((option) => option.value === value);
+}
+
+function normalizeLeadTimeRuleDate(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value : updatedAt;
+}
+
+function normalizeLeadTimeRuleId(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeLeadTimeRuleStatus(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function normalizeLeadTimeStatusRules(value: unknown): LeadTimeStatusRule[] {
+  const rules = value === undefined ? defaultLeadTimeStatusRules : Array.isArray(value) ? value : [];
+  const seenStatuses = new Set<string>();
+
+  return rules.flatMap((rule, index) => {
+    if (!rule || typeof rule !== "object") {
+      return [];
+    }
+
+    const candidate = rule as Partial<LeadTimeStatusRule>;
+    const status = normalizeLeadTimeRuleStatus(candidate.status);
+    const normalizedStatus = status.toLowerCase();
+
+    if (!status || seenStatuses.has(normalizedStatus)) {
+      return [];
+    }
+
+    seenStatuses.add(normalizedStatus);
+
+    return [
+      {
+        id: normalizeLeadTimeRuleId(candidate.id, `lead-status-${index + 1}`),
+        status,
+        ownership: isLeadTimeOwnership(candidate.ownership) ? candidate.ownership : "process",
+        active: candidate.active ?? true,
+        updatedAt: normalizeLeadTimeRuleDate(candidate.updatedAt)
+      }
+    ];
+  });
+}
+
+export function normalizeLeadTimeTransitionRules(value: unknown): LeadTimeTransitionRule[] {
+  const rules = value === undefined ? defaultLeadTimeTransitionRules : Array.isArray(value) ? value : [];
+  const seenTransitions = new Set<string>();
+
+  return rules.flatMap((rule, index) => {
+    if (!rule || typeof rule !== "object") {
+      return [];
+    }
+
+    const candidate = rule as Partial<LeadTimeTransitionRule>;
+    const fromStatus = normalizeLeadTimeRuleStatus(candidate.fromStatus);
+    const toStatus = normalizeLeadTimeRuleStatus(candidate.toStatus);
+    const transitionKey = `${fromStatus.toLowerCase()}->${toStatus.toLowerCase()}`;
+
+    if (!fromStatus || !toStatus || seenTransitions.has(transitionKey)) {
+      return [];
+    }
+
+    seenTransitions.add(transitionKey);
+
+    return [
+      {
+        id: normalizeLeadTimeRuleId(candidate.id, `lead-transition-${index + 1}`),
+        fromStatus,
+        toStatus,
+        ownership: isLeadTimeOwnership(candidate.ownership) ? candidate.ownership : "process",
+        active: candidate.active ?? true,
+        updatedAt: normalizeLeadTimeRuleDate(candidate.updatedAt)
+      }
+    ];
+  });
+}
 
 const rawAdminUsers: AdminUserConfigInput[] = [
   {
@@ -899,6 +1171,26 @@ Priority: {{priority}}`,
     enabledRoles: ["release_manager", "it_reviewer", "admin"]
   },
   {
+    id: "tpl-workflow-deviation",
+    eventType: "workflowDeviation",
+    subject: "Workflow deviation: unassigned approval gate for {{ticketKey}}",
+    body: `Attention {{participantName}},
+
+The workflow for {{ticketKey}} has an active approval gate without an assigned owner.
+
+Ticket: {{ticketKey}}
+Title: {{ticketTitle}}
+Missing gate: {{deviationGate}}
+Missing role: {{deviationRole}}
+Covering approver: {{deviationCoveringOwner}}
+
+The next assigned approval owner can cover the unassigned gate so the ticket does not stop. Please review the ownership configuration in the Support Portal.`,
+    deliveryMode: "inAppAndEmail",
+    severity: "critical",
+    active: true,
+    enabledRoles: ["admin"]
+  },
+  {
     id: "tpl-participant-added",
     eventType: "participantAdded",
     subject: "You were added to {{ticketKey}}",
@@ -1068,6 +1360,8 @@ export const adminConfig: AdminConfig = {
   requestCategories,
   slaRules,
   escalationPolicies: slaPolicies,
+  leadTimeStatusRules: defaultLeadTimeStatusRules,
+  leadTimeTransitionRules: defaultLeadTimeTransitionRules,
   notificationTemplates,
   formTemplates,
   ticketTypeWorkflows,

@@ -279,6 +279,47 @@ export interface CommentItem {
   source: "portal" | "jira" | "system";
 }
 
+export type GlobalLpoApprovalDecision = "needs_global" | "local_only" | "needs_discussion";
+export type GlobalLpoApprovalOutcome =
+  | "globalize_request"
+  | "keep_local"
+  | "pru_specific"
+  | "split_requests"
+  | "architecture_review"
+  | "no_action";
+
+export interface GlobalLpoApprovalTarget {
+  userId: string;
+  displayName: string;
+  email: string;
+  site: string;
+  productIds: string[];
+  pruNames: string[];
+}
+
+export interface GlobalLpoApprovalResponse extends GlobalLpoApprovalTarget {
+  decision: GlobalLpoApprovalDecision;
+  note: string;
+  respondedAt: string;
+}
+
+export interface GlobalLpoApprovalRequest {
+  id: string;
+  question: string;
+  status: "open" | "closed";
+  requestedBy: string;
+  requestedByRole: string;
+  createdAt: string;
+  dueAt: string;
+  sourceStepId?: string;
+  targetLpos: GlobalLpoApprovalTarget[];
+  responses: GlobalLpoApprovalResponse[];
+  closedAt?: string;
+  closedBy?: string;
+  finalOutcome?: GlobalLpoApprovalOutcome;
+  finalDecisionNote?: string;
+}
+
 export interface Ticket {
   id: string;
   key: string;
@@ -304,6 +345,7 @@ export interface Ticket {
   attachments: Attachment[];
   audit: AuditEntry[];
   comments: CommentItem[];
+  globalLpoApprovalRequests?: GlobalLpoApprovalRequest[];
   updatedAt: string;
 }
 

@@ -4,11 +4,15 @@ import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import {
   aiIntegration,
+  defaultLeadTimeStatusRules,
+  defaultLeadTimeTransitionRules,
   getJiraPriorityOptions,
   gitlabIntegration,
   isLegacyDefaultPriorityConfig,
   jiraIntegration,
   migrateLegacyPriorityReferences,
+  normalizeLeadTimeStatusRules,
+  normalizeLeadTimeTransitionRules,
   normalizeAdminUser,
   normalizeProductConfig,
   smtpConfig,
@@ -117,6 +121,8 @@ const emptyAdminConfig: AdminConfig = {
   requestCategories: [],
   slaRules: [],
   escalationPolicies: [],
+  leadTimeStatusRules: defaultLeadTimeStatusRules,
+  leadTimeTransitionRules: defaultLeadTimeTransitionRules,
   notificationTemplates: [],
   formTemplates: [],
   ticketTypeWorkflows: [],
@@ -336,6 +342,8 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
       : Array.isArray(config.escalationPolicies)
         ? config.escalationPolicies
         : [],
+    leadTimeStatusRules: normalizeLeadTimeStatusRules(config.leadTimeStatusRules),
+    leadTimeTransitionRules: normalizeLeadTimeTransitionRules(config.leadTimeTransitionRules),
     notificationTemplates: Array.isArray(config.notificationTemplates) ? config.notificationTemplates : [],
     formTemplates: Array.isArray(config.formTemplates) ? config.formTemplates : [],
     ticketTypeWorkflows: Array.isArray(config.ticketTypeWorkflows)

@@ -44,10 +44,26 @@ export type CreateTeamsMeetingResult = {
   joinUrl: string;
   webLink: string;
   subject: string;
+  start: {
+    dateTime: string;
+    timeZone: string;
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  attendees: TeamsMeetingAttendeeResult[];
   isOnlineMeeting: boolean;
   onlineMeetingProvider: string;
   endpoint: string;
   authMode: GraphAuthMode;
+};
+
+export type TeamsMeetingAttendeeResult = {
+  email: string;
+  name: string;
+  type: string;
+  responseStatus?: string;
 };
 
 type GraphErrorBody = {
@@ -70,12 +86,32 @@ type GraphEventResponse = {
   id?: string;
   subject?: string;
   webLink?: string;
+  start?: {
+    dateTime?: string;
+    timeZone?: string;
+  };
+  end?: {
+    dateTime?: string;
+    timeZone?: string;
+  };
+  attendees?: GraphAttendeeResponse[];
   isOnlineMeeting?: boolean;
   onlineMeetingProvider?: string;
   onlineMeetingUrl?: string;
   onlineMeeting?: {
     joinUrl?: string;
   } | null;
+};
+
+type GraphAttendeeResponse = {
+  emailAddress?: {
+    address?: string;
+    name?: string;
+  };
+  type?: string;
+  status?: {
+    response?: string;
+  };
 };
 
 type NormalizedAttendee = {
@@ -372,7 +408,8 @@ function buildGraphEventEndpoint(input: CreateTeamsMeetingInput, authMode: Graph
 }
 
 function buildGraphEventLookupEndpoint(input: CreateTeamsMeetingInput, authMode: GraphAuthMode, eventId: string): string {
-  const selectedFields = "$select=id,subject,webLink,isOnlineMeeting,onlineMeetingProvider,onlineMeeting";
+  const selectedFields =
+    "$select=id,subject,webLink,start,end,attendees,isOnlineMeeting,onlineMeetingProvider,onlineMeeting";
 
   if (authMode === "delegated") {
     return `${graphBaseUrl}/me/events/${encodeURIComponent(eventId)}?${selectedFields}`;
@@ -381,6 +418,35 @@ function buildGraphEventLookupEndpoint(input: CreateTeamsMeetingInput, authMode:
   const organizerEmail = input.organizerEmail?.trim() || process.env.GRAPH_ORGANIZER_EMAIL?.trim() || "";
 
   return `${graphBaseUrl}/users/${encodeURIComponent(organizerEmail)}/events/${encodeURIComponent(eventId)}?${selectedFields}`;
+}
+
+function buildMeetingAttendeeResults(
+  graphAttendees: GraphAttendeeResponse[] | undefined,
+  fallbackAttendees: NormalizedAttendee[]
+): TeamsMeetingAttendeeResult[] {
+  const returnedAttendees = (graphAttendees ?? [])
+    .map((attendee) => {
+      const email = attendee.emailAddress?.address?.trim() ?? "";
+      const name = attendee.emailAddress?.name?.trim() || email;
+
+      return {
+        email,
+        name,
+        type: attendee.type?.trim() || "required",
+        responseStatus: attendee.status?.response?.trim() || undefined
+      };
+    })
+    .filter((attendee) => attendee.email);
+
+  if (returnedAttendees.length > 0) {
+    return returnedAttendees;
+  }
+
+  return fallbackAttendees.map((attendee) => ({
+    email: attendee.emailAddress.address,
+    name: attendee.emailAddress.name,
+    type: attendee.type
+  }));
 }
 
 function buildGraphRecurrence(input: CreateTeamsMeetingInput) {
@@ -501,6 +567,7 @@ export async function createTeamsCalendarEvent(
   const accessToken = authMode === "delegated" ? delegatedAccessToken : await getClientCredentialsAccessToken();
   const timeZone = input.timeZone?.trim() || defaultMeetingTimeZone;
   const endpoint = buildGraphEventEndpoint(input, authMode);
+  const normalizedAttendees = normalizeAttendees(input.attendees);
   const eventPayload = buildGraphEventPayload(input);
 
   const response = await fetch(endpoint, {
@@ -555,6 +622,24 @@ export async function createTeamsCalendarEvent(
     joinUrl,
     webLink: eventWithOnlineMeeting.webLink ?? createdEvent.webLink ?? "",
     subject: eventWithOnlineMeeting.subject ?? input.subject?.trim() ?? "",
+    start: {
+      dateTime:
+        eventWithOnlineMeeting.start?.dateTime ??
+        createdEvent.start?.dateTime ??
+        normalizeDateTimeValue(input.startDateTime ?? ""),
+      timeZone: eventWithOnlineMeeting.start?.timeZone ?? createdEvent.start?.timeZone ?? timeZone
+    },
+    end: {
+      dateTime:
+        eventWithOnlineMeeting.end?.dateTime ??
+        createdEvent.end?.dateTime ??
+        normalizeDateTimeValue(input.endDateTime ?? ""),
+      timeZone: eventWithOnlineMeeting.end?.timeZone ?? createdEvent.end?.timeZone ?? timeZone
+    },
+    attendees: buildMeetingAttendeeResults(
+      eventWithOnlineMeeting.attendees ?? createdEvent.attendees,
+      normalizedAttendees
+    ),
     isOnlineMeeting: Boolean(eventWithOnlineMeeting.isOnlineMeeting ?? createdEvent.isOnlineMeeting),
     onlineMeetingProvider:
       eventWithOnlineMeeting.onlineMeetingProvider ?? createdEvent.onlineMeetingProvider ?? "teamsForBusiness",

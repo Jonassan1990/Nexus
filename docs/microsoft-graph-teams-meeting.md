@@ -108,6 +108,22 @@ curl -X POST "http://localhost:3000/api/integrations/microsoft-graph/teams-meeti
   }'
 ```
 
+Smoke-test payload using app-only client credentials:
+
+```bash
+curl -X POST "http://localhost:3000/api/integrations/microsoft-graph/teams-meeting" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "authMode": "client_credentials",
+    "organizerEmail": "organizer@company.com",
+    "subject": "Graph API smoke test",
+    "startDateTime": "2026-06-18T09:00:00",
+    "endDateTime": "2026-06-18T09:30:00",
+    "timeZone": "W. Europe Standard Time",
+    "attendees": ["test-user@company.com"]
+  }'
+```
+
 ## Delegated `/me` Example
 
 Delegated mode uses the caller's access token and calls `/me/calendar/events`.
@@ -134,9 +150,25 @@ The delegated token must include `Calendars.ReadWrite`.
 {
   "data": {
     "eventId": "AAMk...",
-    "joinUrl": "https://teams.microsoft.com/l/meetup-join/...",
-    "webLink": "https://outlook.office365.com/...",
     "subject": "Team Meeting",
+    "start": {
+      "dateTime": "2026-06-20T10:00:00.0000000",
+      "timeZone": "Europe/Stockholm"
+    },
+    "end": {
+      "dateTime": "2026-06-20T11:00:00.0000000",
+      "timeZone": "Europe/Stockholm"
+    },
+    "joinUrl": "https://teams.microsoft.com/l/meetup-join/...",
+    "attendees": [
+      {
+        "email": "user@example.com",
+        "name": "User",
+        "type": "required",
+        "responseStatus": "none"
+      }
+    ],
+    "webLink": "https://outlook.office365.com/...",
     "isOnlineMeeting": true,
     "onlineMeetingProvider": "teamsForBusiness",
     "authMode": "client_credentials"
