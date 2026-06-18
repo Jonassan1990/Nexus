@@ -15,11 +15,13 @@ import {
   normalizeLeadTimeTransitionRules,
   normalizeAdminUser,
   normalizeProductConfig,
+  normalizeWorkflowStepOwnerRole,
   smtpConfig,
   statusColorOptions
 } from "./admin-config";
-import type { AdminConfig, GitLabIntegrationConfig, StatusColorConfig } from "./admin-config";
+import type { AdminConfig, GitLabIntegrationConfig, StatusColorConfig, TicketTypeWorkflowConfig } from "./admin-config";
 import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actions";
+import { workflowTemplates } from "./nexus-data";
 import type { Ticket } from "./types";
 
 type ConfigRow = {
@@ -203,17 +205,61 @@ function normalizeStoredGitLabIntegration(
   };
 }
 
+function normalizeStoredTicketTypeWorkflow(workflow: TicketTypeWorkflowConfig): TicketTypeWorkflowConfig {
+  const template = workflowTemplates.find((item) => item.id === workflow.workflowTemplateId);
+  const stepOverrides = Object.fromEntries(
+    Object.entries(workflow.stepOverrides ?? {}).map(([stepId, override]) => {
+      const templateStep = template?.steps.find((step) => step.id === stepId);
+      const label = override.label?.trim() || templateStep?.label || "";
+      const ownerRole = normalizeWorkflowStepOwnerRole({
+        id: stepId,
+        label,
+        ownerRole: override.ownerRole ?? templateStep?.ownerRole ?? "requester"
+      });
+
+      return [
+        stepId,
+        {
+          ...override,
+          ownerRole
+        }
+      ] as const;
+    })
+  );
+
+  return {
+    ...workflow,
+    escalationPolicyId: workflow.escalationPolicyId ?? "",
+    stepOverrides
+  };
+}
+
+function normalizeStoredFunctionMappingReviews(ticket: Ticket): NonNullable<Ticket["functionMappingReviews"]> {
+  if (!Array.isArray(ticket.functionMappingReviews)) {
+    return [];
+  }
+
+  return ticket.functionMappingReviews.map((review) => ({
+    ...review,
+    materialAttachmentIds: Array.isArray(review.materialAttachmentIds) ? review.materialAttachmentIds : []
+  }));
+}
+
 function normalizeStoredTicket(ticket: Ticket): Ticket {
   const projectKey = extractJiraProjectKey(ticket.jiraDraft.project);
+  const normalizedTicket: Ticket = {
+    ...ticket,
+    functionMappingReviews: normalizeStoredFunctionMappingReviews(ticket)
+  };
 
   if (!projectKey) {
-    return ticket;
+    return normalizedTicket;
   }
 
   return {
-    ...ticket,
+    ...normalizedTicket,
     jiraDraft: {
-      ...ticket.jiraDraft,
+      ...normalizedTicket.jiraDraft,
       project: projectKey
     }
   };
@@ -312,7 +358,12 @@ function assertReadOnlySql(sql: string): string {
 }
 
 function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
-  const roleDomains = Array.isArray(config.roleDomains) ? config.roleDomains : [];
+  const roleDomains = Array.isArray(config.roleDomains)
+    ? config.roleDomains.map((roleDomain) => ({
+        ...roleDomain,
+        active: roleDomain.active ?? true
+      }))
+    : [];
   const rawPriorities = Array.isArray(config.priorities) ? config.priorities : [];
   const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
   const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
@@ -347,10 +398,7 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
     notificationTemplates: Array.isArray(config.notificationTemplates) ? config.notificationTemplates : [],
     formTemplates: Array.isArray(config.formTemplates) ? config.formTemplates : [],
     ticketTypeWorkflows: Array.isArray(config.ticketTypeWorkflows)
-      ? config.ticketTypeWorkflows.map((workflow) => ({
-          ...workflow,
-          escalationPolicyId: workflow.escalationPolicyId ?? ""
-        }))
+      ? config.ticketTypeWorkflows.map((workflow) => normalizeStoredTicketTypeWorkflow(workflow))
       : [],
     integrations: {
       jira: normalizeStoredJiraIntegration(config.integrations?.jira),

@@ -113,6 +113,7 @@ export interface RoleDomainConfig {
   role: RoleKey;
   domain: RoleDomain;
   workflowType: WorkflowRoleType;
+  active: boolean;
 }
 
 export interface RegionSiteConfig {
@@ -783,7 +784,9 @@ export const roleDomains: RoleDomainConfig[] = roles.map((role) => ({
           role.key === "it_reviewer" ||
           role.key === "security_reviewer" ||
           role.key === "software_architect" ||
-          role.key === "release_manager"
+          role.key === "release_manager" ||
+          role.key === "service_manager" ||
+          role.key === "scrum_master"
         ? "IT"
         : "Business",
   workflowType:
@@ -793,7 +796,8 @@ export const roleDomains: RoleDomainConfig[] = roles.map((role) => ({
       ? "approval"
       : role.key === "requester" || role.key === "admin"
         ? "inform"
-        : "review"
+        : "review",
+  active: true
 }));
 
 export const regionSites: RegionSiteConfig[] = [
@@ -1384,6 +1388,28 @@ export function getAdminRoleLabel(roleKey: RoleKey): string {
       .replace(/[_-]+/g, " ")
       .replace(/\b\w/g, (letter) => letter.toUpperCase())
   );
+}
+
+function workflowStepMentionsProductOwnerRole(value: string, scope: "local" | "global"): boolean {
+  const normalizedValue = value.toLowerCase().replace(/[_-]+/g, " ");
+
+  return normalizedValue.includes(`${scope} product owner`) || normalizedValue.includes(`${scope} po`);
+}
+
+export function normalizeWorkflowStepOwnerRole(
+  step: Pick<WorkflowTemplateStep, "id" | "label" | "ownerRole">
+): RoleKey {
+  const value = `${step.id} ${step.label}`;
+
+  if (workflowStepMentionsProductOwnerRole(value, "local")) {
+    return "local_product_owner";
+  }
+
+  if (workflowStepMentionsProductOwnerRole(value, "global")) {
+    return "global_product_owner";
+  }
+
+  return step.ownerRole;
 }
 
 export function getProductConfig(productName: string): ProductConfig | undefined {

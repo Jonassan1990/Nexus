@@ -5,7 +5,9 @@ export type BuiltInRoleKey =
   | "business_architect"
   | "software_architect"
   | "release_manager"
+  | "service_manager"
   | "developer"
+  | "scrum_master"
   | "it_reviewer"
   | "security_reviewer"
   | "admin";
@@ -47,6 +49,7 @@ export type AttachmentRelation =
   | "clarification_response"
   | "approval_comment"
   | "escalation"
+  | "globalization_material"
   | "jira_sync";
 
 export interface TicketTypeDefinition {
@@ -173,6 +176,8 @@ export interface Escalation {
   decisionMaker: string;
   dueAt: string;
   status: "open" | "decision_pending" | "mitigating" | "resolved";
+  createdBy?: string;
+  createdAt?: string;
   statusNote?: string;
   statusUpdatedAt?: string;
   actionPlan?: string;
@@ -295,6 +300,7 @@ export interface GlobalLpoApprovalTarget {
   site: string;
   productIds: string[];
   pruNames: string[];
+  targetRoles?: RoleKey[];
 }
 
 export interface GlobalLpoApprovalResponse extends GlobalLpoApprovalTarget {
@@ -305,6 +311,7 @@ export interface GlobalLpoApprovalResponse extends GlobalLpoApprovalTarget {
 
 export interface GlobalLpoApprovalRequest {
   id: string;
+  globalTicketKey?: string;
   question: string;
   status: "open" | "closed";
   requestedBy: string;
@@ -318,6 +325,42 @@ export interface GlobalLpoApprovalRequest {
   closedBy?: string;
   finalOutcome?: GlobalLpoApprovalOutcome;
   finalDecisionNote?: string;
+}
+
+export type FunctionMappingReviewStatus = "open" | "ready_for_gpo" | "closed";
+export type FunctionMappingReviewStepStatus = "active" | "waiting" | "complete";
+
+export interface FunctionMappingReviewStep {
+  id: "solution_architecture" | "business_architecture" | "gpo_scope_decision";
+  label: string;
+  ownerRole: RoleKey;
+  ownerName: string;
+  status: FunctionMappingReviewStepStatus;
+  note?: string;
+  completedBy?: string;
+  completedAt?: string;
+}
+
+export interface FunctionMappingReview {
+  id: string;
+  status: FunctionMappingReviewStatus;
+  requestedBy: string;
+  requestedByRole: string;
+  createdAt: string;
+  dueAt: string;
+  sourceGlobalLpoRequestId?: string;
+  scopeSummary: string;
+  decisionContext: string;
+  targetPlacement?: string;
+  meetingNotes?: string;
+  decisionMaterials?: string;
+  materialAttachmentIds?: string[];
+  materialUpdatedBy?: string;
+  materialUpdatedAt?: string;
+  steps: FunctionMappingReviewStep[];
+  finalDecisionNote?: string;
+  closedBy?: string;
+  closedAt?: string;
 }
 
 export interface Ticket {
@@ -346,11 +389,13 @@ export interface Ticket {
   audit: AuditEntry[];
   comments: CommentItem[];
   globalLpoApprovalRequests?: GlobalLpoApprovalRequest[];
+  functionMappingReviews?: FunctionMappingReview[];
   updatedAt: string;
 }
 
 export interface NotificationItem {
   id: string;
+  readKey?: string;
   title: string;
   body: string;
   ticketKey: string;

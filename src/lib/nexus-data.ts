@@ -39,9 +39,19 @@ export const roles: RoleDefinition[] = [
     description: "Controls release readiness and Jira creation gates."
   },
   {
+    key: "service_manager",
+    label: "Service Manager",
+    description: "Owns service readiness, support model, and operational continuity."
+  },
+  {
     key: "developer",
     label: "Developer",
     description: "Provides estimates, technical input, and execution comments."
+  },
+  {
+    key: "scrum_master",
+    label: "Scrum Master",
+    description: "Supports delivery flow, sprint coordination, and impediment removal."
   },
   {
     key: "it_reviewer",
