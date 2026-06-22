@@ -12,6 +12,7 @@ import { roles, slaPolicies, ticketTypes, workflowTemplates } from "./nexus-data
 export type TegelTagVariant = "success" | "warning" | "new" | "neutral" | "information" | "error";
 
 export type RoleDomain = "Business" | "IT" | "Admin";
+export type ProductTicketSource = "jira" | "nexus";
 
 export type UserEmailNotificationEventType =
   | "ticketSubmitted"
@@ -152,6 +153,7 @@ export interface ProductConfig {
   id: string;
   productName: string;
   productOwnerName: string;
+  ticketSource: ProductTicketSource;
   jiraProjectKey: string;
   roleAssignments: ProductRoleAssignment[];
   prus: ProductPruConfig[];
@@ -434,6 +436,8 @@ export function normalizeProductPruConfig(pru: ProductPruConfig): ProductPruConf
 export function normalizeProductConfig(product: ProductConfig): ProductConfig {
   return {
     ...product,
+    ticketSource: product.ticketSource === "nexus" ? "nexus" : "jira",
+    jiraProjectKey: product.jiraProjectKey?.trim() ?? "",
     roleAssignments: Array.isArray(product.roleAssignments)
       ? product.roleAssignments.map((assignment) => ({
           ...assignment,
@@ -704,7 +708,7 @@ const rawAdminUsers: AdminUserConfigInput[] = [
     displayName: "Oskar Nordin",
     email: "oskar.nordin@scania.com",
     primaryRole: "software_architect",
-    actionRoles: [],
+    actionRoles: ["solution_architect"],
     region: "Global",
     site: "Global",
     productIds: ["product-calibration-hub", "product-variant-manager"],
@@ -783,6 +787,7 @@ export const roleDomains: RoleDomainConfig[] = roles.map((role) => ({
       : role.key === "developer" ||
           role.key === "it_reviewer" ||
           role.key === "security_reviewer" ||
+          role.key === "solution_architect" ||
           role.key === "software_architect" ||
           role.key === "release_manager" ||
           role.key === "service_manager" ||
@@ -840,10 +845,12 @@ export const productConfigs: ProductConfig[] = [
     id: "product-calibration-hub",
     productName: "Calibration Hub",
     productOwnerName: "Maja Lind",
+    ticketSource: "jira",
     jiraProjectKey: "CAL",
     roleAssignments: [
       { id: "cal-local-po", role: "local_product_owner", userIds: ["user-maja-lind"], active: true },
       { id: "cal-global-po", role: "global_product_owner", userIds: ["user-sara-blom"], active: true },
+      { id: "cal-solution-architect", role: "solution_architect", userIds: ["user-oskar-nordin"], active: true },
       { id: "cal-architect", role: "software_architect", userIds: ["user-oskar-nordin"], active: true },
       { id: "cal-developer", role: "developer", userIds: ["user-jonas-ny"], active: true }
     ],
@@ -867,6 +874,7 @@ export const productConfigs: ProductConfig[] = [
     id: "product-plant-portal",
     productName: "Plant Portal",
     productOwnerName: "Karin Vik",
+    ticketSource: "jira",
     jiraProjectKey: "PLANT",
     roleAssignments: [
       { id: "plant-it", role: "it_reviewer", userIds: ["user-karin-vik"], active: true },
@@ -893,10 +901,12 @@ export const productConfigs: ProductConfig[] = [
     id: "product-variant-manager",
     productName: "Variant Manager",
     productOwnerName: "Sara Blom",
+    ticketSource: "jira",
     jiraProjectKey: "VAR",
     roleAssignments: [
       { id: "variant-global-po", role: "global_product_owner", userIds: ["user-sara-blom"], active: true },
       { id: "variant-business", role: "business_architect", userIds: ["user-sara-blom"], active: true },
+      { id: "variant-solution-architect", role: "solution_architect", userIds: ["user-oskar-nordin"], active: true },
       { id: "variant-architect", role: "software_architect", userIds: ["user-oskar-nordin"], active: true },
       { id: "variant-security", role: "security_reviewer", userIds: ["user-nina-ek"], active: true },
       { id: "variant-developer", role: "developer", userIds: ["user-jonas-ny"], active: true }
@@ -921,6 +931,7 @@ export const productConfigs: ProductConfig[] = [
     id: "product-production-analytics",
     productName: "Production Analytics",
     productOwnerName: "Maja Lind",
+    ticketSource: "jira",
     jiraProjectKey: "ANL",
     roleAssignments: [
       { id: "analytics-local-po", role: "local_product_owner", userIds: ["user-maja-lind"], active: true },
@@ -1094,7 +1105,7 @@ Your response is required before the release process can continue.`,
     deliveryMode: "inAppAndEmail",
     severity: "warning",
     active: true,
-    enabledRoles: ["local_product_owner", "global_product_owner", "business_architect", "software_architect"]
+    enabledRoles: ["local_product_owner", "global_product_owner", "business_architect", "solution_architect", "software_architect"]
   },
   {
     id: "tpl-clarification-requested",
@@ -1115,7 +1126,7 @@ This request may delay implementation or approval until updated information is p
     deliveryMode: "inAppAndEmail",
     severity: "warning",
     active: true,
-    enabledRoles: ["requester", "developer", "business_architect", "software_architect"]
+    enabledRoles: ["requester", "developer", "business_architect", "solution_architect", "software_architect"]
   },
   {
     id: "tpl-jira-ready-to-create",
@@ -1134,7 +1145,7 @@ Please open the Support Portal and create the linked Jira issue.`,
     deliveryMode: "inAppAndEmail",
     severity: "warning",
     active: true,
-    enabledRoles: ["software_architect", "release_manager"]
+    enabledRoles: ["solution_architect", "software_architect", "release_manager"]
   },
   {
     id: "tpl-jira-created",
@@ -1209,7 +1220,7 @@ You now have visibility and collaboration access in the Support Portal.`,
     deliveryMode: "inAppAndEmail",
     severity: "info",
     active: true,
-    enabledRoles: ["admin", "software_architect", "business_architect"]
+    enabledRoles: ["admin", "solution_architect", "software_architect", "business_architect"]
   }
 ];
 
@@ -1396,10 +1407,20 @@ function workflowStepMentionsProductOwnerRole(value: string, scope: "local" | "g
   return normalizedValue.includes(`${scope} product owner`) || normalizedValue.includes(`${scope} po`);
 }
 
+function workflowStepMentionsSolutionArchitectRole(value: string): boolean {
+  const normalizedValue = value.toLowerCase().replace(/[_-]+/g, " ");
+
+  return normalizedValue.includes("solution architect") || normalizedValue.includes("solution architecture");
+}
+
 export function normalizeWorkflowStepOwnerRole(
   step: Pick<WorkflowTemplateStep, "id" | "label" | "ownerRole">
 ): RoleKey {
   const value = `${step.id} ${step.label}`;
+
+  if (workflowStepMentionsSolutionArchitectRole(value)) {
+    return "solution_architect";
+  }
 
   if (workflowStepMentionsProductOwnerRole(value, "local")) {
     return "local_product_owner";

@@ -29,6 +29,11 @@ export const roles: RoleDefinition[] = [
     description: "Reviews process fit, governance impact, and business rules."
   },
   {
+    key: "solution_architect",
+    label: "Solution Architect",
+    description: "Owns solution-level architecture decisions across product, business, and software scope."
+  },
+  {
     key: "software_architect",
     label: "Software Architect",
     description: "Reviews architecture, integration, and delivery feasibility."
@@ -177,8 +182,8 @@ export const workflowTemplates: WorkflowTemplate[] = [
       },
       {
         id: "architecture-parallel",
-        label: "Architecture Review",
-        ownerRole: "software_architect",
+        label: "Solution Architecture Review",
+        ownerRole: "solution_architect",
         required: true,
         parallelGroup: "architecture",
         slaHours: 36,
@@ -240,9 +245,9 @@ export const workflowTemplates: WorkflowTemplate[] = [
         allowClarification: true
       },
       {
-        id: "software-architecture",
-        label: "Software Architecture",
-        ownerRole: "software_architect",
+        id: "solution-architecture",
+        label: "Solution Architecture",
+        ownerRole: "solution_architect",
         required: true,
         slaHours: 48,
         allowDelegation: true,

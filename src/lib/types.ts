@@ -3,6 +3,7 @@ export type BuiltInRoleKey =
   | "local_product_owner"
   | "global_product_owner"
   | "business_architect"
+  | "solution_architect"
   | "software_architect"
   | "release_manager"
   | "service_manager"
@@ -330,6 +331,14 @@ export interface GlobalLpoApprovalRequest {
 export type FunctionMappingReviewStatus = "open" | "ready_for_gpo" | "closed";
 export type FunctionMappingReviewStepStatus = "active" | "waiting" | "complete";
 
+export interface FunctionMappingDiscussionEntry {
+  id: string;
+  author: string;
+  role: string;
+  body: string;
+  createdAt: string;
+}
+
 export interface FunctionMappingReviewStep {
   id: "solution_architecture" | "business_architecture" | "gpo_scope_decision";
   label: string;
@@ -337,6 +346,7 @@ export interface FunctionMappingReviewStep {
   ownerName: string;
   status: FunctionMappingReviewStepStatus;
   note?: string;
+  discussion?: FunctionMappingDiscussionEntry[];
   completedBy?: string;
   completedAt?: string;
 }

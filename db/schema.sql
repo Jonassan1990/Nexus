@@ -13,9 +13,12 @@ CREATE TABLE roles (
 CREATE TABLE products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL UNIQUE,
+    ticket_source TEXT NOT NULL DEFAULT 'jira' CHECK (ticket_source IN ('jira', 'nexus')),
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_products_ticket_source ON products(ticket_source);
 
 CREATE TABLE prus (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -76,6 +76,7 @@ import type {
   ProductFormTemplate,
   ProductModuleConfig,
   ProductPruConfig,
+  ProductTicketSource,
   RegionSiteConfig,
   ResponsibilityMappingConfig,
   RoleDomain,
@@ -93,6 +94,7 @@ import type {
   CommentItem,
   EscalationActionItem,
   EscalationPerson,
+  FunctionMappingDiscussionEntry,
   FunctionMappingReview,
   FunctionMappingReviewStep,
   JiraFollowUpStatus,
@@ -147,6 +149,7 @@ const allRoles = [
   "local_product_owner",
   "global_product_owner",
   "business_architect",
+  "solution_architect",
   "software_architect",
   "release_manager",
   "service_manager",
@@ -162,6 +165,7 @@ const standardManagedRoleKeys = [
   "local_product_owner",
   "global_product_owner",
   "business_architect",
+  "solution_architect",
   "software_architect",
   "release_manager",
   "service_manager",
@@ -173,6 +177,7 @@ const approverRoles = [
   "local_product_owner",
   "global_product_owner",
   "business_architect",
+  "solution_architect",
   "software_architect",
   "release_manager",
   "service_manager",
@@ -187,6 +192,7 @@ const governanceRoles = [
   "local_product_owner",
   "global_product_owner",
   "business_architect",
+  "solution_architect",
   "software_architect",
   "release_manager",
   "service_manager",
@@ -199,6 +205,7 @@ const governanceRoles = [
 const ticketReopenRoles = [
   "local_product_owner",
   "global_product_owner",
+  "solution_architect",
   "software_architect",
   "admin"
 ] as const satisfies readonly RoleKey[];
@@ -206,6 +213,7 @@ const ticketReopenRoles = [
 const ticketEditorRoles = [
   "local_product_owner",
   "global_product_owner",
+  "solution_architect",
   "software_architect",
   "admin"
 ] as const satisfies readonly RoleKey[];
@@ -213,6 +221,7 @@ const ticketEditorRoles = [
 const executionRoles = [
   "local_product_owner",
   "global_product_owner",
+  "solution_architect",
   "software_architect",
   "release_manager",
   "service_manager",
@@ -221,6 +230,14 @@ const executionRoles = [
   "it_reviewer",
   "security_reviewer",
   "admin"
+] as const satisfies readonly RoleKey[];
+
+const solutionArchitectInheritedTicketAccessRoles = [
+  "solution_architect",
+  "local_product_owner",
+  "global_product_owner",
+  "business_architect",
+  "software_architect"
 ] as const satisfies readonly RoleKey[];
 
 const builtInRoleKeys = new Set<RoleKey>(roles.map((role) => role.key));
@@ -346,7 +363,14 @@ function buildRolePersonaOptions(config: AdminConfig): RolePersonaOption[] {
         return [];
       }
 
-      const actionRoles = getUniqueRoleKeys(user.actionRoles.filter((actionRole) => roleOptionMap.has(actionRole) && actionRole !== user.primaryRole));
+      const mappedActionRoles = config.responsibilityMappings
+        .filter((mapping) => mapping.active && mapping.userIds.includes(user.id))
+        .flatMap((mapping) => getResponsibilityMappingRoles(mapping));
+      const actionRoles = getUniqueRoleKeys(
+        [...user.actionRoles, ...mappedActionRoles].filter(
+          (actionRole) => roleOptionMap.has(actionRole) && actionRole !== user.primaryRole
+        )
+      );
 
       coveredRoleKeys.add(user.primaryRole);
       actionRoles.forEach((actionRole) => coveredRoleKeys.add(actionRole));
@@ -497,7 +521,9 @@ interface FunctionMappingReviewItem {
   ticket: Ticket;
   review: FunctionMappingReview;
   currentStep?: FunctionMappingReviewStep;
+  editableStep?: FunctionMappingReviewStep;
   canCompleteStep: boolean;
+  canEditStep: boolean;
   canClose: boolean;
   canUpdateMaterials: boolean;
 }
@@ -769,6 +795,14 @@ function canOperateJira(role?: RoleKey): boolean {
   return role ? canAccessModule(role, "jira") : false;
 }
 
+function getProductTicketSource(product?: Pick<ProductConfig, "ticketSource">): ProductTicketSource {
+  return product?.ticketSource === "nexus" ? "nexus" : "jira";
+}
+
+function productUsesJira(product?: Pick<ProductConfig, "ticketSource">): boolean {
+  return getProductTicketSource(product) === "jira";
+}
+
 function workflowStepMatchesConfiguredStepId(step: Ticket["workflow"][number], configuredStepId: string): boolean {
   return step.id === configuredStepId || step.id.startsWith(`${configuredStepId}-`);
 }
@@ -782,6 +816,7 @@ function getDefaultRoleDomain(role: RoleKey): RoleDomain {
     role === "developer" ||
     role === "it_reviewer" ||
     role === "security_reviewer" ||
+    role === "solution_architect" ||
     role === "software_architect" ||
     role === "release_manager" ||
     role === "service_manager" ||
@@ -848,6 +883,10 @@ function getJiraCreatorRolesForTicket(config: AdminConfig, ticket: Ticket): Role
 }
 
 function canManageJiraForTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
+  if (!ticketUsesJira(config, ticket)) {
+    return false;
+  }
+
   const jiraRoles = getPersonaRoleKeys(persona).filter((role) => canOperateJira(role));
 
   if (!jiraRoles.length) {
@@ -859,7 +898,7 @@ function canManageJiraForTicket(config: AdminConfig, persona: RolePersonaOption,
   }
 
   if (
-    canCreateJiraForTicket(ticket) &&
+    canCreateJiraForTicket(ticket, config) &&
     jiraRoles.some((role) => isJiraReadyToCreateNotificationRole(role) && roleHasTicketAccess(ticket, role, config))
   ) {
     return true;
@@ -873,6 +912,10 @@ function canManageJiraForTicket(config: AdminConfig, persona: RolePersonaOption,
 }
 
 function canCommentOnJiraForTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
+  if (!ticketUsesJira(config, ticket)) {
+    return false;
+  }
+
   if (!getValidJiraIssueKey(ticket.relatedJiraKey)) {
     return false;
   }
@@ -942,7 +985,11 @@ function parseStringList(value: string | null): string[] {
   }
 }
 
-function getJiraAttentionId(ticket: Ticket): string | null {
+function getJiraAttentionId(config: AdminConfig, ticket: Ticket): string | null {
+  if (!ticketUsesJira(config, ticket)) {
+    return null;
+  }
+
   const followUpStatus = getTicketJiraFollowUpStatus(ticket);
   const needsJiraAttention =
     ticket.jiraDraft.status !== "synced" ||
@@ -963,8 +1010,8 @@ function getJiraAttentionId(ticket: Ticket): string | null {
   ].join(":");
 }
 
-function getJiraAttentionIds(tickets: Ticket[]): string[] {
-  return tickets.map(getJiraAttentionId).filter((id): id is string => Boolean(id));
+function getJiraAttentionIds(config: AdminConfig, tickets: Ticket[]): string[] {
+  return tickets.map((ticket) => getJiraAttentionId(config, ticket)).filter((id): id is string => Boolean(id));
 }
 
 function buildHeaderAttentionItems({
@@ -997,7 +1044,7 @@ function buildHeaderAttentionItems({
     (escalation) => escalation.status !== "resolved"
   ).length;
   const slaBreaches = tickets.filter((ticket) => ticket.slaState === "breach").length;
-  const jiraItems = getJiraAttentionIds(tickets).filter((id) => !checkedJiraItemIds.has(id)).length;
+  const jiraItems = getJiraAttentionIds(config, tickets).filter((id) => !checkedJiraItemIds.has(id)).length;
 
   if (unreadNotifications > 0 && canShow("notifications")) {
     items.push({
@@ -1091,6 +1138,10 @@ const tabItems = [
 ] as const;
 
 type DetailTab = (typeof tabItems)[number];
+
+const functionMappingDetailTabs = ["Overview", "Request & answers", "Workflow", "Material"] as const;
+
+type FunctionMappingDetailTab = (typeof functionMappingDetailTabs)[number];
 
 const hiddenTicketDynamicFieldLabels = new Set(["Startup Sync", "Connect"]);
 
@@ -1426,11 +1477,18 @@ type CloseGlobalLpoApprovalRequestHandler = (
   outcome: GlobalLpoApprovalOutcome,
   note: string
 ) => void;
-type CompleteFunctionMappingStepHandler = (
+type SaveFunctionMappingStepDecisionHandler = (
   ticketKey: string,
   reviewId: string,
   stepId: FunctionMappingReviewStep["id"],
-  note: string
+  note: string,
+  options?: { markComplete?: boolean }
+) => void;
+type AddFunctionMappingStepCommentHandler = (
+  ticketKey: string,
+  reviewId: string,
+  stepId: FunctionMappingReviewStep["id"],
+  comment: string
 ) => void;
 type UpdateFunctionMappingMaterialsHandler = (
   ticketKey: string,
@@ -1818,7 +1876,7 @@ function getPullInWorkflowStepLabel(actionType: PullInActionType, roleLabel: str
 }
 
 function roleUsesStructuredAttachmentLibrary(config: AdminConfig, role: RoleKey): boolean {
-  if (["admin", "software_architect", "global_product_owner", "release_manager"].includes(role)) {
+  if (["admin", "solution_architect", "software_architect", "global_product_owner", "release_manager"].includes(role)) {
     return true;
   }
 
@@ -1959,7 +2017,7 @@ const leadTimeSuggestedStatusLabels = [
   "Approval",
   "Closed"
 ] as const;
-const jiraReadyToCreateNotificationRoles = ["software_architect", "release_manager"] as const satisfies readonly RoleKey[];
+const jiraReadyToCreateNotificationRoles = ["solution_architect", "software_architect", "release_manager"] as const satisfies readonly RoleKey[];
 function isJiraReadyToCreateNotificationRole(role: RoleKey): boolean {
   return jiraReadyToCreateNotificationRoles.some((candidate) => candidate === role);
 }
@@ -2337,11 +2395,26 @@ function getDefaultNotificationSeverity(eventType: NotificationEventType): Notif
   return "info";
 }
 
+function normalizeNotificationEnabledRoles(enabledRoles: RoleKey[]): RoleKey[] {
+  const normalizedRoles = new Set(enabledRoles);
+
+  if (
+    normalizedRoles.has("local_product_owner") ||
+    normalizedRoles.has("global_product_owner") ||
+    normalizedRoles.has("business_architect") ||
+    normalizedRoles.has("software_architect")
+  ) {
+    normalizedRoles.add("solution_architect");
+  }
+
+  return Array.from(normalizedRoles);
+}
+
 function normalizeNotificationTemplate(template: NotificationTemplate): NotificationTemplate {
   return {
     ...template,
     severity: template.severity ?? getDefaultNotificationSeverity(template.eventType),
-    enabledRoles: Array.isArray(template.enabledRoles) ? template.enabledRoles : [],
+    enabledRoles: normalizeNotificationEnabledRoles(Array.isArray(template.enabledRoles) ? template.enabledRoles : []),
     active: template.active ?? true
   };
 }
@@ -3461,6 +3534,14 @@ function getConfigProductById(config: AdminConfig, productId: string): ProductCo
   return config.products.find((product) => product.id === productId);
 }
 
+function getConfigProductForTicket(config: AdminConfig, ticket: Pick<Ticket, "product">): ProductConfig | undefined {
+  return getConfigProduct(config, ticket.product) ?? getConfigProductById(config, ticket.product);
+}
+
+function ticketUsesJira(config: AdminConfig, ticket: Pick<Ticket, "product">): boolean {
+  return productUsesJira(getConfigProductForTicket(config, ticket));
+}
+
 function getConfigUserName(config: AdminConfig, userId: string): string {
   return config.users.find((user) => user.id === userId)?.displayName ?? "Unassigned";
 }
@@ -3894,7 +3975,7 @@ function getReleasePlanProductOptions(
   const productOptions = new Map<string, ReleasePlanProductOption>();
 
   config.products
-    .filter((product) => product.active && personaCanAccessReleasePlanProduct(product, persona))
+    .filter((product) => product.active && productUsesJira(product) && personaCanAccessReleasePlanProduct(product, persona))
     .forEach((product) => {
       productOptions.set(product.id, {
         value: product.id,
@@ -3910,6 +3991,11 @@ function getReleasePlanProductOptions(
     }
 
     const product = getConfigProduct(config, productName) ?? getConfigProductById(config, productName);
+
+    if (product && !productUsesJira(product)) {
+      return;
+    }
+
     const value = product?.id ?? productName;
 
     if (!productOptions.has(value)) {
@@ -3928,7 +4014,7 @@ function releasePlanProductMatchesTicket(config: AdminConfig, ticket: Ticket, pr
     return false;
   }
 
-  return getTicketProductScopeCandidates(config, ticket).includes(productFilter);
+  return ticketUsesJira(config, ticket) && getTicketProductScopeCandidates(config, ticket).includes(productFilter);
 }
 
 function getReleasePlanProductOption(config: AdminConfig, productValue: string): ReleasePlanProductOption | undefined {
@@ -3955,8 +4041,9 @@ function getReleasePlanProductProjectKeys(
   tickets: Ticket[]
 ): Set<string> {
   const product = getConfigProductById(config, productValue) ?? getConfigProduct(config, productValue);
+  const productProjectKey = productUsesJira(product) ? product?.jiraProjectKey : "";
   const projectKeys = [
-    product?.jiraProjectKey,
+    productProjectKey,
     ...tickets.map((ticket) => ticket.jiraDraft.project)
   ]
     .map((projectKey) => getValidJiraProjectKey(projectKey)?.toUpperCase())
@@ -3977,6 +4064,10 @@ function getSharedReleasePlanProjectKeys(config: AdminConfig): Set<string> {
   const counts = new Map<string, number>();
 
   for (const product of config.products) {
+    if (!productUsesJira(product)) {
+      continue;
+    }
+
     const projectKey = getValidJiraProjectKey(product.jiraProjectKey)?.toUpperCase();
 
     if (projectKey) {
@@ -4000,7 +4091,9 @@ function getReleasePlanProductPrefixCandidates(
     getConfigProduct(config, productOption.label) ??
     getConfigProduct(config, productOption.value);
   const sharedProjectKeys = getSharedReleasePlanProjectKeys(config);
-  const productProjectKey = getValidJiraProjectKey(product?.jiraProjectKey ?? "")?.toUpperCase() ?? "";
+  const productProjectKey = productUsesJira(product)
+    ? getValidJiraProjectKey(product?.jiraProjectKey ?? "")?.toUpperCase() ?? ""
+    : "";
   const rawCandidates = [
     product?.productName,
     productOption.label,
@@ -4638,6 +4731,35 @@ function getMappedWorkflowOwnerName(
     }
   }
 
+  const responsibilityMappedUsers = config.responsibilityMappings
+    .filter(
+      (mapping) =>
+        mapping.active &&
+        getResponsibilityMappingRoles(mapping).includes(ownerRole) &&
+        responsibilityMappingMatchesTicket(mapping, ticket, config)
+    )
+    .flatMap((mapping) =>
+      mapping.userIds
+        .map((userId) => config.users.find((user) => user.id === userId))
+        .filter((user): user is AdminUser => Boolean(user?.active))
+    )
+    .filter((user, index, users) => users.findIndex((candidate) => candidate.id === user.id) === index)
+    .sort((left, right) => {
+      const scoreDifference =
+        getAdminUserScopeScore(right, ticket, config, ownerRole) -
+        getAdminUserScopeScore(left, ticket, config, ownerRole);
+
+      if (scoreDifference !== 0) {
+        return scoreDifference;
+      }
+
+      return left.displayName.localeCompare(right.displayName);
+    });
+
+  if (responsibilityMappedUsers[0]) {
+    return responsibilityMappedUsers[0].displayName;
+  }
+
   const matchingUsers = config.users
     .filter((user) => user.active && adminUserHasRole(user, ownerRole) && adminUserScopeMatchesTicket(user, ticket, config))
     .sort((left, right) => {
@@ -4720,7 +4842,7 @@ function personaCanActOnTicketAsRole(
 
 function responsibilityMappingMatchesTicket(
   mapping: ResponsibilityMappingConfig,
-  ticket: Ticket,
+  ticket: TicketScope,
   config: AdminConfig
 ): boolean {
   const productId = getConfigProduct(config, ticket.product)?.id;
@@ -4749,7 +4871,11 @@ function roleHasParticipantAccess(ticket: Ticket, roleLabel: string): boolean {
   );
 }
 
-function roleHasTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig): boolean {
+function getTicketAccessRolesForRole(role: RoleKey): readonly RoleKey[] {
+  return role === "solution_architect" ? solutionArchitectInheritedTicketAccessRoles : [role];
+}
+
+function roleHasDirectTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig): boolean {
   if (role === "admin") {
     return true;
   }
@@ -4767,10 +4893,14 @@ function roleHasTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig)
       review.steps.some((step) => step.ownerRole === role)
     ) ||
     ticket.escalations.some((escalation) => roleTextMatches(roleLabel, escalation.decisionMaker)) ||
-    (canCreateJiraForTicket(ticket) && isJiraReadyToCreateNotificationRole(role)) ||
+    (canCreateJiraForTicket(ticket, config) && isJiraReadyToCreateNotificationRole(role)) ||
     roleHasParticipantAccess(ticket, roleLabel) ||
     roleHasConfiguredTicketScope(ticket, role, config)
   );
+}
+
+function roleHasTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig): boolean {
+  return getTicketAccessRolesForRole(role).some((accessRole) => roleHasDirectTicketAccess(ticket, accessRole, config));
 }
 
 function personaCanViewTicket(config: AdminConfig, persona: RolePersonaOption, ticket: Ticket): boolean {
@@ -5337,7 +5467,7 @@ function buildJiraReadyToCreateNotifications(
   config: AdminConfig
 ): NotificationItem[] {
   return tickets
-    .filter((ticket) => canCreateJiraForTicket(ticket))
+    .filter((ticket) => canCreateJiraForTicket(ticket, config))
     .filter((ticket) => personaCanReceiveJiraReadyNotification(config, selectedPersona, ticket))
     .map((ticket) => ({
       id: `notification-${ticket.key}-jira-ready-to-create`,
@@ -5623,7 +5753,7 @@ function buildNotificationTemplateContext({
     ? step.ownerName
     : step
       ? getConfigRoleLabel(config, step.ownerRole)
-      : "Software Architect / Release Manager";
+      : "Solution Architect / Software Architect / Release Manager";
   const requestedByRole = step ? getConfigRoleLabel(config, step.ownerRole) : "Jira creator";
 
   return {
@@ -5955,7 +6085,7 @@ function buildJiraReadyToCreateEmailEnvelopes(
   }
 
   const envelopes = tickets
-    .filter((ticket) => canCreateJiraForTicket(ticket))
+    .filter((ticket) => canCreateJiraForTicket(ticket, config))
     .flatMap((ticket) => {
       const recipients = getJiraReadyToCreateEmailRecipients(config, ticket, template.enabledRoles);
 
@@ -6394,7 +6524,16 @@ function hasOpenClarificationForWorkflowStep(
   );
 }
 
+function getCompletedWorkflowState(config: AdminConfig, ticket: Ticket): TicketState {
+  if (!ticketUsesJira(config, ticket)) {
+    return "closed";
+  }
+
+  return ticket.relatedJiraKey ? "jira_synced" : "jira_draft";
+}
+
 function getTicketStateAfterClarificationResolution(
+  config: AdminConfig,
   ticket: Ticket,
   workflow: Ticket["workflow"]
 ): Ticket["state"] {
@@ -6407,7 +6546,7 @@ function getTicketStateAfterClarificationResolution(
   }
 
   if (hasCompletedRequiredWorkflow(workflow)) {
-    return "jira_draft";
+    return getCompletedWorkflowState(config, ticket);
   }
 
   if (workflow.some((step) => step.status === "active" || step.status === "delegated" || step.status === "waiting")) {
@@ -6448,7 +6587,7 @@ function normalizeAnsweredClarificationWorkflow(ticket: Ticket, config: AdminCon
     return ticket;
   }
 
-  const state = getTicketStateAfterClarificationResolution(ticket, workflow);
+  const state = getTicketStateAfterClarificationResolution(config, ticket, workflow);
 
   return {
     ...ticket,
@@ -6565,7 +6704,7 @@ function normalizeMappedWorkflowOwners(ticket: Ticket, config: AdminConfig): Tic
   return changed ? { ...ticket, workflow } : ticket;
 }
 
-function normalizeSequentialWorkflowAdvance(ticket: Ticket): Ticket {
+function normalizeSequentialWorkflowAdvance(ticket: Ticket, config: AdminConfig): Ticket {
   if (ticket.state === "closed" || ticket.state === "escalated" || ticket.state === "jira_synced") {
     return ticket;
   }
@@ -6576,7 +6715,7 @@ function normalizeSequentialWorkflowAdvance(ticket: Ticket): Ticket {
     return ticket;
   }
 
-  const state = getTicketStateAfterClarificationResolution(ticket, workflow);
+  const state = getTicketStateAfterClarificationResolution(config, ticket, workflow);
 
   return {
     ...ticket,
@@ -6597,7 +6736,8 @@ function normalizeClarificationWorkflowState(ticket: Ticket, config: AdminConfig
     normalizeAnsweredClarificationWorkflow(
       normalizeMappedWorkflowOwners(normalizeApprovalClarificationAssignees(ticket), config),
       config
-    )
+    ),
+    config
   );
 }
 
@@ -7199,12 +7339,12 @@ function getDefaultWorkflowOverrideStepId(workflow: Ticket["workflow"]): string 
   );
 }
 
-function getTicketStateAfterWorkflowOverride(ticket: Ticket, workflow: Ticket["workflow"]): TicketState {
+function getTicketStateAfterWorkflowOverride(config: AdminConfig, ticket: Ticket, workflow: Ticket["workflow"]): TicketState {
   if (hasCompletedRequiredWorkflow(workflow)) {
-    return ticket.relatedJiraKey ? "jira_synced" : "jira_draft";
+    return getCompletedWorkflowState(config, ticket);
   }
 
-  if (ticket.relatedJiraKey) {
+  if (ticketUsesJira(config, ticket) && ticket.relatedJiraKey) {
     return "jira_synced";
   }
 
@@ -7365,8 +7505,8 @@ function approveWorkflowStepForPersona(
   return {
     ...ticket,
     workflow,
-    state: requiredWorkflowComplete ? "jira_draft" : "approval",
-    jiraDraft: requiredWorkflowComplete
+    state: requiredWorkflowComplete ? getCompletedWorkflowState(config, ticket) : "approval",
+    jiraDraft: requiredWorkflowComplete && ticketUsesJira(config, ticket)
       ? { ...ticket.jiraDraft, status: "ready_to_create" }
       : ticket.jiraDraft,
     updatedAt: timestamp,
@@ -7504,7 +7644,7 @@ function getWorkflowActionSummary(ticket: Ticket): {
 
   return {
     label: "No open gates",
-    detail: "Workflow is ready for Jira handoff or closure.",
+    detail: "Workflow is ready for closure.",
     tone: "complete"
   };
 }
@@ -8006,6 +8146,118 @@ function getTicketFunctionMappingReviews(ticket: Ticket): FunctionMappingReview[
   return Array.isArray(ticket.functionMappingReviews) ? ticket.functionMappingReviews : [];
 }
 
+function normalizeLegacyFunctionMappingStepDiscussion(
+  step: FunctionMappingReviewStep,
+  config: AdminConfig
+): { step: FunctionMappingReviewStep; changed: boolean } {
+  const discussion = Array.isArray(step.discussion) ? step.discussion : [];
+  let changed = discussion !== step.discussion;
+  const note = step.note ?? "";
+  const legacyQuestionPattern =
+    /<p><strong>Question from ([^<]+?) - ([^<]+?)<\/strong><\/p>([\s\S]*?)(?=<p><strong>Question from [^<]+? - [^<]+?<\/strong><\/p>|$)/gi;
+  const migratedEntries: FunctionMappingDiscussionEntry[] = [];
+  let remainingNote = note;
+  let match: RegExpExecArray | null;
+
+  while ((match = legacyQuestionPattern.exec(note)) !== null) {
+    const [, author, createdAt, body] = match;
+    const normalizedBody = normalizeRichTextForStorage(body.trim(), "html");
+
+    if (!htmlToPlainTextFallback(normalizedBody).trim()) {
+      continue;
+    }
+
+    const duplicateEntry = discussion.some(
+      (entry) =>
+        entry.author === author.trim() &&
+        entry.createdAt === createdAt.trim() &&
+        htmlToPlainTextFallback(entry.body).trim() === htmlToPlainTextFallback(normalizedBody).trim()
+    );
+
+    if (!duplicateEntry) {
+      migratedEntries.push({
+        id: `legacy-${step.id}-${match.index}`,
+        author: author.trim(),
+        role: getConfigRoleLabel(config, step.ownerRole),
+        body: normalizedBody,
+        createdAt: createdAt.trim()
+      });
+    }
+
+    remainingNote = remainingNote.replace(match[0], "");
+    changed = true;
+  }
+
+  const normalizedNote = htmlToPlainTextFallback(remainingNote).trim()
+    ? normalizeRichTextForStorage(remainingNote, "html")
+    : undefined;
+
+  return {
+    step: {
+      ...step,
+      note: changed ? normalizedNote : step.note,
+      discussion: [...discussion, ...migratedEntries]
+    },
+    changed
+  };
+}
+
+function normalizeFunctionMappingReviewsForSolutionArchitect(ticket: Ticket, config: AdminConfig): Ticket {
+  const reviews = getTicketFunctionMappingReviews(ticket);
+
+  if (!reviews.length) {
+    return ticket;
+  }
+
+  let changed = false;
+  const solutionArchitectLabel = getConfigRoleLabel(config, "solution_architect");
+  const solutionArchitectOwnerName =
+    getMappedWorkflowOwnerName(config, ticket, "solution_architect") ?? solutionArchitectLabel;
+  const normalizedReviews = reviews.map((review) => ({
+    ...review,
+    steps: review.steps.map((step) => {
+      const legacyNormalized = normalizeLegacyFunctionMappingStepDiscussion(step, config);
+      const baseStep = legacyNormalized.step;
+
+      if (legacyNormalized.changed) {
+        changed = true;
+      }
+
+      if (baseStep.id !== "solution_architecture") {
+        return baseStep;
+      }
+
+      const existingOwnerUser = config.users.find((user) => user.displayName === baseStep.ownerName);
+      const existingOwnerCanActAsSolutionArchitect = existingOwnerUser
+        ? adminUserHasRole(existingOwnerUser, "solution_architect")
+        : Boolean(
+            baseStep.ownerName && baseStep.ownerName !== "Software Architect" && baseStep.ownerName !== solutionArchitectLabel
+          );
+      const nextStep: FunctionMappingReviewStep = {
+        ...baseStep,
+        label: "Solution architecture mapping",
+        ownerRole: "solution_architect",
+        ownerName:
+          baseStep.ownerRole === "solution_architect" && existingOwnerCanActAsSolutionArchitect
+            ? baseStep.ownerName
+            : solutionArchitectOwnerName
+      };
+
+      if (
+        nextStep.label !== baseStep.label ||
+        nextStep.ownerRole !== baseStep.ownerRole ||
+        nextStep.ownerName !== baseStep.ownerName
+      ) {
+        changed = true;
+      }
+
+      return nextStep;
+    })
+  }));
+
+  return changed ? { ...ticket, functionMappingReviews: normalizedReviews } : ticket;
+}
+
 function getFunctionMappingSourceGlobalLpoRequest(
   ticket: Ticket,
   review: FunctionMappingReview
@@ -8089,11 +8341,39 @@ function getFunctionMappingStepStatusLabel(status: FunctionMappingReviewStep["st
 }
 
 function getFunctionMappingStepOwnerLabel(config: AdminConfig, step: FunctionMappingReviewStep): string {
+  return getConfigRoleLabel(config, step.ownerRole);
+}
+
+function getFunctionMappingStepLabel(step: FunctionMappingReviewStep): string {
   if (step.id === "solution_architecture") {
-    return "Solution Architect";
+    return "Solution architecture mapping";
   }
 
-  return getConfigRoleLabel(config, step.ownerRole);
+  return step.label;
+}
+
+function getFunctionMappingStepResponsibility(step: FunctionMappingReviewStep): string {
+  if (step.id === "solution_architecture") {
+    return "Map solution fit, dependencies, architecture impact, and technical scope recommendation.";
+  }
+
+  if (step.id === "business_architecture") {
+    return "Map process ownership, business impact, operating model, and local or global business need.";
+  }
+
+  return "Make the final global or local scope decision from solution and business mapping input.";
+}
+
+function getFunctionMappingStepEmptyInput(step: FunctionMappingReviewStep): string {
+  if (step.id === "gpo_scope_decision") {
+    return "No final scope decision recorded yet.";
+  }
+
+  return "No mapping decision recorded yet.";
+}
+
+function getFunctionMappingStepDiscussion(step: FunctionMappingReviewStep): FunctionMappingDiscussionEntry[] {
+  return Array.isArray(step.discussion) ? step.discussion : [];
 }
 
 function getFunctionMappingArchitectureSteps(review: FunctionMappingReview): FunctionMappingReviewStep[] {
@@ -8115,6 +8395,23 @@ function getFunctionMappingCurrentStepForPersona(
   return review.steps.find(
     (step) =>
       step.status === "active" &&
+      personaHasRole(persona, step.ownerRole) &&
+      personaCanActOnTicketAsRole(persona, ticket, config, step.ownerRole)
+  );
+}
+
+function getFunctionMappingEditableStepForPersona(
+  ticket: Ticket,
+  review: FunctionMappingReview,
+  persona: RolePersonaOption,
+  config: AdminConfig
+): FunctionMappingReviewStep | undefined {
+  if (review.status === "closed") {
+    return undefined;
+  }
+
+  return review.steps.find(
+    (step) =>
       personaHasRole(persona, step.ownerRole) &&
       personaCanActOnTicketAsRole(persona, ticket, config, step.ownerRole)
   );
@@ -8208,6 +8505,7 @@ function getFunctionMappingReviewItems(
         .filter((review) => isFunctionMappingReviewVisibleForPersona(ticket, review, persona, config))
         .map((review) => {
           const currentStep = getFunctionMappingCurrentStepForPersona(ticket, review, persona, config);
+          const editableStep = getFunctionMappingEditableStepForPersona(ticket, review, persona, config);
 
           return {
             id: `${ticket.key}-${review.id}`,
@@ -8215,6 +8513,8 @@ function getFunctionMappingReviewItems(
             review,
             currentStep,
             canCompleteStep: Boolean(currentStep && review.status !== "closed"),
+            editableStep,
+            canEditStep: Boolean(editableStep),
             canClose: canCloseFunctionMappingReview(ticket, review, persona, config),
             canUpdateMaterials: canUpdateFunctionMappingMaterials(ticket, review, persona, config)
           };
@@ -8282,7 +8582,7 @@ function buildFunctionMappingReview(
 ): FunctionMappingReview {
   const timestamp = now.toISOString();
   const dueAt = formatLocalDateTime(new Date(now.getTime() + 72 * 60 * 60 * 1000));
-  const softwareArchitectLabel = "Solution Architect";
+  const solutionArchitectLabel = getConfigRoleLabel(config, "solution_architect");
   const businessArchitectLabel = getConfigRoleLabel(config, "business_architect");
   const globalPoLabel = getConfigRoleLabel(config, "global_product_owner");
 
@@ -8304,23 +8604,26 @@ function buildFunctionMappingReview(
       {
         id: "solution_architecture",
         label: "Solution architecture mapping",
-        ownerRole: "software_architect",
-        ownerName: getMappedWorkflowOwnerName(config, ticket, "software_architect") ?? softwareArchitectLabel,
-        status: "active"
+        ownerRole: "solution_architect",
+        ownerName: getMappedWorkflowOwnerName(config, ticket, "solution_architect") ?? solutionArchitectLabel,
+        status: "active",
+        discussion: []
       },
       {
         id: "business_architecture",
         label: "Business architecture mapping",
         ownerRole: "business_architect",
         ownerName: getMappedWorkflowOwnerName(config, ticket, "business_architect") ?? businessArchitectLabel,
-        status: "active"
+        status: "active",
+        discussion: []
       },
       {
         id: "gpo_scope_decision",
         label: "GPO scope decision",
         ownerRole: "global_product_owner",
         ownerName: getMappedWorkflowOwnerName(config, ticket, "global_product_owner") ?? globalPoLabel,
-        status: "waiting"
+        status: "waiting",
+        discussion: []
       }
     ]
   };
@@ -8623,12 +8926,22 @@ function mergeImportedJiraComments(
   };
 }
 
-function canCreateJiraForTicket(ticket: Ticket): boolean {
-  return !ticket.relatedJiraKey && ticket.state === "jira_draft" && hasCompletedRequiredWorkflow(ticket.workflow);
+function canCreateJiraForTicket(ticket: Ticket, config?: AdminConfig): boolean {
+  return (
+    (!config || ticketUsesJira(config, ticket)) &&
+    !ticket.relatedJiraKey &&
+    ticket.state === "jira_draft" &&
+    hasCompletedRequiredWorkflow(ticket.workflow)
+  );
 }
 
-function canReplaceJiraForTicket(ticket: Ticket): boolean {
-  return Boolean(ticket.relatedJiraKey) && ticket.state !== "closed" && hasCompletedRequiredWorkflow(ticket.workflow);
+function canReplaceJiraForTicket(ticket: Ticket, config?: AdminConfig): boolean {
+  return (
+    (!config || ticketUsesJira(config, ticket)) &&
+    Boolean(ticket.relatedJiraKey) &&
+    ticket.state !== "closed" &&
+    hasCompletedRequiredWorkflow(ticket.workflow)
+  );
 }
 
 function canReopenTicketForRole(ticket: Ticket, role: RoleKey): boolean {
@@ -10583,7 +10896,11 @@ function workflowsAreEqual(left: Ticket["workflow"], right: Ticket["workflow"]):
   return left.length === right.length && left.every((step, index) => workflowStepsAreEqual(step, right[index]));
 }
 
-function getTicketStateAfterWorkflowConfigSync(ticket: Ticket, workflow: Ticket["workflow"]): TicketState {
+function getTicketStateAfterWorkflowConfigSync(config: AdminConfig, ticket: Ticket, workflow: Ticket["workflow"]): TicketState {
+  if (!ticketUsesJira(config, ticket) && (ticket.state === "jira_draft" || ticket.state === "jira_synced")) {
+    return "closed";
+  }
+
   if (ticket.state === "closed" || ticket.state === "escalated" || ticket.state === "jira_synced") {
     return ticket.state;
   }
@@ -10593,7 +10910,7 @@ function getTicketStateAfterWorkflowConfigSync(ticket: Ticket, workflow: Ticket[
   }
 
   if (hasCompletedRequiredWorkflow(workflow)) {
-    return ticket.relatedJiraKey ? "jira_synced" : "jira_draft";
+    return getCompletedWorkflowState(config, ticket);
   }
 
   if (ticket.state === "jira_draft" || ticket.state === "clarification") {
@@ -10606,6 +10923,13 @@ function getTicketStateAfterWorkflowConfigSync(ticket: Ticket, workflow: Ticket[
 function syncTicketWorkflowWithCurrentConfig(ticket: Ticket, config: AdminConfig): Ticket {
   if (ticket.state === "closed") {
     return ticket;
+  }
+
+  if (!ticketUsesJira(config, ticket) && (ticket.state === "jira_draft" || ticket.state === "jira_synced")) {
+    return {
+      ...ticket,
+      state: "closed"
+    };
   }
 
   const configuredSteps = getConfiguredWorkflowStepsForTicketType(config, ticket.typeId);
@@ -10639,7 +10963,7 @@ function syncTicketWorkflowWithCurrentConfig(ticket: Ticket, config: AdminConfig
     return ticket;
   }
 
-  const state = getTicketStateAfterWorkflowConfigSync(ticket, workflow);
+  const state = getTicketStateAfterWorkflowConfigSync(config, ticket, workflow);
   const workflowComplete = hasCompletedRequiredWorkflow(workflow);
 
   return {
@@ -10647,7 +10971,7 @@ function syncTicketWorkflowWithCurrentConfig(ticket: Ticket, config: AdminConfig
     workflow,
     state,
     jiraDraft:
-      workflowComplete && !ticket.relatedJiraKey
+      workflowComplete && !ticket.relatedJiraKey && ticketUsesJira(config, ticket)
         ? {
             ...ticket.jiraDraft,
             status: "ready_to_create"
@@ -10718,23 +11042,26 @@ function createTicketFromForm(
   const ticketKey = getNextTicketKey(ticketList);
   const roleLabel = actor.roleLabel;
   const productConfig = getConfigProduct(config, form.product);
+  const usesJira = productUsesJira(productConfig);
   const slaPolicy = getSlaPolicyForConfig(config, form.typeId);
   const moduleName = form.module.trim();
   const moduleConfig = getConfigModuleForTicket(config, form.product, form.pru, moduleName);
-  const jiraComponent = moduleConfig?.jiraComponent?.trim();
+  const jiraComponent = usesJira ? moduleConfig?.jiraComponent?.trim() : "";
   const formTemplate = getFormTemplateForTicket(config, form.product, form.typeId);
-  const selectedFixVersion = getFirstTemplateAnswerByOptionSource(form, formTemplate, [
-    "jiraUnreleasedVersions",
-    "jiraVersions"
-  ]);
-  const selectedSprint = getFirstTemplateAnswerByOptionSource(form, formTemplate, ["jiraSprints"]);
+  const selectedFixVersion = usesJira
+    ? getFirstTemplateAnswerByOptionSource(form, formTemplate, [
+        "jiraUnreleasedVersions",
+        "jiraVersions"
+      ])
+    : "";
+  const selectedSprint = usesJira ? getFirstTemplateAnswerByOptionSource(form, formTemplate, ["jiraSprints"]) : "";
   const priority = form.priority || "2 - Medium";
   const risk = form.risk || "Medium";
   const labels = form.labels
     .split(",")
     .map((label) => label.trim())
     .filter(Boolean);
-  const jiraLabels = getJiraLabelsWithModule(labels.length ? labels : ["nexus-draft"], moduleName);
+  const jiraLabels = usesJira ? getJiraLabelsWithModule(labels.length ? labels : ["nexus-draft"], moduleName) : labels;
 
   return {
     id: `ticket-${now.getTime()}`,
@@ -10758,9 +11085,9 @@ function createTicketFromForm(
     escalations: [],
     jiraDraft: {
       summary: form.title.trim(),
-      project: productConfig?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey,
-      board: "Draft board",
-      backlog: "Governance intake",
+      project: usesJira ? productConfig?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey : "",
+      board: usesJira ? "Draft board" : "",
+      backlog: usesJira ? "Governance intake" : "",
       sprint: selectedSprint || undefined,
       fixVersion: selectedFixVersion || undefined,
       components: jiraComponent ? [jiraComponent] : [],
@@ -10842,6 +11169,7 @@ export function NexusPortal() {
     [actingRoleAccessEnabled, config, selectedBasePersona]
   );
   const selectedPersona = getPersonaForRole(config, selectedUserPersona, role);
+  const hasJiraProductConfig = config.products.some((product) => product.active && productUsesJira(product));
   const personaScopedTickets = useMemo(
     () => getPersonaScopedTickets(ticketList, config, selectedPersona),
     [config, selectedPersona, ticketList]
@@ -10866,34 +11194,68 @@ export function NexusPortal() {
     () => personaScopedTickets.filter((ticket) => ticketHasOpenClarification(ticket)),
     [personaScopedTickets]
   );
-  const activeModuleTickets =
-    activeModule === "dashboard"
-      ? dashboardTickets
-      : activeModule === "tickets"
-        ? ticketListTickets
-        : activeModule === "clarifications"
-          ? clarificationTickets
-          : activeModule === "approvals" || activeModule === "globalization"
-            ? approvalCenterTickets
-          : activeModule === "escalations"
-            ? escalationScopedTickets
-            : personaScopedTickets;
+  const jiraScopedTickets = useMemo(
+    () => personaScopedTickets.filter((ticket) => ticketUsesJira(config, ticket)),
+    [config, personaScopedTickets]
+  );
+  const activeModuleTickets = useMemo(() => {
+    switch (activeModule) {
+      case "dashboard":
+        return dashboardTickets;
+      case "tickets":
+        return ticketListTickets;
+      case "clarifications":
+        return clarificationTickets;
+      case "approvals":
+      case "globalization":
+        return approvalCenterTickets;
+      case "escalations":
+        return escalationScopedTickets;
+      case "jira":
+        return jiraScopedTickets;
+      default:
+        return personaScopedTickets;
+    }
+  }, [
+    activeModule,
+    approvalCenterTickets,
+    clarificationTickets,
+    dashboardTickets,
+    escalationScopedTickets,
+    jiraScopedTickets,
+    personaScopedTickets,
+    ticketListTickets
+  ]);
   const selectedTicket =
     activeModuleTickets.find((ticket) => ticket.key === selectedTicketKey) ?? activeModuleTickets[0];
-  const moduleScopedTickets =
-    activeModule === "approvals" || activeModule === "globalization"
-      ? approvalCenterTickets
-      : activeModule === "escalations"
-        ? escalationScopedTickets
-        : personaScopedTickets;
+  const moduleScopedTickets = useMemo(() => {
+    switch (activeModule) {
+      case "approvals":
+      case "globalization":
+        return approvalCenterTickets;
+      case "escalations":
+        return escalationScopedTickets;
+      case "jira":
+        return jiraScopedTickets;
+      default:
+        return personaScopedTickets;
+    }
+  }, [activeModule, approvalCenterTickets, escalationScopedTickets, jiraScopedTickets, personaScopedTickets]);
   const personaScopedTicketKeys = useMemo(
     () => new Set(personaScopedTickets.map((ticket) => ticket.key)),
     [personaScopedTickets]
   );
   const visibleNavItems = useMemo(
-    () => navItems.filter((item) => personaCanAccessNavItem(selectedUserPersona, item)),
-    [selectedUserPersona]
+    () =>
+      navItems.filter(
+        (item) =>
+          personaCanAccessNavItem(selectedUserPersona, item) &&
+          (item.key !== "jira" || jiraScopedTickets.length > 0) &&
+          (item.key !== "releasePlan" || hasJiraProductConfig)
+      ),
+    [hasJiraProductConfig, jiraScopedTickets.length, selectedUserPersona]
   );
+  const activeModuleIsVisible = visibleNavItems.some((item) => item.key === activeModule);
 
   const filteredTickets = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -10913,7 +11275,10 @@ export function NexusPortal() {
     () => new Set(checkedJiraIdsByPersona[selectedPersona.id] ?? []),
     [checkedJiraIdsByPersona, selectedPersona.id]
   );
-  const currentJiraAttentionIds = useMemo(() => getJiraAttentionIds(personaScopedTickets), [personaScopedTickets]);
+  const currentJiraAttentionIds = useMemo(
+    () => getJiraAttentionIds(config, personaScopedTickets),
+    [config, personaScopedTickets]
+  );
   const visibleNotifications = useMemo(() => {
     if (!hasLoadedLocalReadState) {
       return [];
@@ -11139,6 +11504,21 @@ export function NexusPortal() {
         });
     });
   }, [config, hasLoadedConfig, hasLoadedLocalReadState, hasLoadedTickets, sentEmailNotificationIds, ticketList]);
+
+  useEffect(() => {
+    if (activeModuleIsVisible) {
+      return;
+    }
+
+    const fallbackModule = visibleNavItems[0]?.key ?? firstAccessibleModuleForPersona(selectedUserPersona);
+
+    setActiveModule(fallbackModule);
+    setRole(getPersonaRoleForModule(selectedUserPersona, fallbackModule) ?? selectedUserPersona.role);
+
+    if (activeTab === "Jira") {
+      setActiveTab("Overview");
+    }
+  }, [activeModuleIsVisible, activeTab, selectedUserPersona, visibleNavItems]);
 
   useEffect(() => {
     if (!hasLoadedLocalReadState || activeModule !== "jira" || !currentJiraAttentionIds.length) {
@@ -11373,7 +11753,8 @@ export function NexusPortal() {
       let changed = false;
       const normalizedTickets = currentTickets.map((ticket) => {
         const syncedTicket = syncTicketWorkflowWithCurrentConfig(ticket, config);
-        const normalizedTicket = normalizeClarificationWorkflowState(syncedTicket, config);
+        const mappedTicket = normalizeFunctionMappingReviewsForSolutionArchitect(syncedTicket, config);
+        const normalizedTicket = normalizeClarificationWorkflowState(mappedTicket, config);
 
         if (normalizedTicket !== ticket) {
           changed = true;
@@ -11423,6 +11804,16 @@ export function NexusPortal() {
   }
 
   function focusTicketOnJira(ticketKey: string) {
+    const ticket = ticketList.find((candidate) => candidate.key === ticketKey);
+
+    if (ticket && !ticketUsesJira(config, ticket)) {
+      setSelectedTicketKey(ticketKey);
+      setActiveModule("tickets");
+      setActiveTab("Overview");
+      setIsTicketDetailOpen(true);
+      return;
+    }
+
     setSelectedTicketKey(ticketKey);
     setActiveModule("jira");
     setActiveTab("Jira");
@@ -11451,22 +11842,30 @@ export function NexusPortal() {
   }
 
   function openTicketModule(ticketKey: string, module: ModuleKey, tab?: DetailTab) {
-    setSelectedTicketKey(ticketKey);
-    setActiveModule(module);
+    const ticket = ticketList.find((candidate) => candidate.key === ticketKey);
+    const resolvedModule = module === "jira" && ticket && !ticketUsesJira(config, ticket) ? "tickets" : module;
+    const resolvedTab = resolvedModule === "tickets" && tab === "Jira" ? "Overview" : tab;
 
-    if (tab) {
-      setActiveTab(tab);
-      setIsTicketDetailOpen(module === "tickets");
+    setSelectedTicketKey(ticketKey);
+    setActiveModule(resolvedModule);
+
+    if (resolvedTab) {
+      setActiveTab(resolvedTab);
+      setIsTicketDetailOpen(resolvedModule === "tickets");
       return;
     }
 
-    if (module === "tickets") {
+    if (resolvedModule === "tickets") {
       setActiveTab("Overview");
       setIsTicketDetailOpen(true);
     }
   }
 
   function openModule(module: ModuleKey) {
+    if (!visibleNavItems.some((item) => item.key === module)) {
+      return;
+    }
+
     const moduleRole = getPersonaRoleForModule(selectedUserPersona, module);
 
     if (!moduleRole) {
@@ -12388,16 +12787,18 @@ ${attachmentSummary}`,
     );
   }
 
-  function completeFunctionMappingStep(
+  function saveFunctionMappingStepDecision(
     ticketKey: string,
     reviewId: string,
     stepId: FunctionMappingReviewStep["id"],
-    note: string
+    note: string,
+    options: { markComplete?: boolean } = {}
   ) {
     const now = new Date();
     const timestamp = now.toISOString();
     const actor = selectedPersona;
     const normalizedNote = normalizeRichTextForStorage(note);
+    const markComplete = Boolean(options.markComplete);
 
     if (!htmlToPlainTextFallback(normalizedNote).trim()) {
       return;
@@ -12417,21 +12818,22 @@ ${attachmentSummary}`,
           !review ||
           !step ||
           review.status === "closed" ||
-          step.status !== "active" ||
           !personaHasRole(actor, step.ownerRole) ||
           !personaCanActOnTicketAsRole(actor, ticket, config, step.ownerRole)
         ) {
           return ticket;
         }
 
-        const completedStep: FunctionMappingReviewStep = {
+        const wasAlreadyComplete = step.status === "complete";
+        const nextStep: FunctionMappingReviewStep = {
           ...step,
-          status: "complete",
+          status: markComplete || wasAlreadyComplete ? "complete" : step.status,
           note: normalizedNote,
-          completedBy: actor.displayName,
-          completedAt: timestamp
+          completedBy: markComplete && !wasAlreadyComplete ? actor.displayName : step.completedBy,
+          completedAt: markComplete && !wasAlreadyComplete ? timestamp : step.completedAt,
+          discussion: getFunctionMappingStepDiscussion(step)
         };
-        const nextSteps = review.steps.map((candidate) => (candidate.id === stepId ? completedStep : candidate));
+        const nextSteps = review.steps.map((candidate) => (candidate.id === stepId ? nextStep : candidate));
         const nextReviewBase: FunctionMappingReview = {
           ...review,
           steps: nextSteps
@@ -12439,7 +12841,7 @@ ${attachmentSummary}`,
         const isReadyForGpo = functionMappingArchitectureStepsComplete(nextReviewBase);
         const nextReview: FunctionMappingReview = {
           ...nextReviewBase,
-          status: isReadyForGpo ? "ready_for_gpo" : "open",
+          status: isReadyForGpo || review.status === "ready_for_gpo" ? "ready_for_gpo" : "open",
           steps: isReadyForGpo
             ? nextSteps.map((candidate) =>
                 candidate.id === "gpo_scope_decision" && candidate.status === "waiting"
@@ -12448,8 +12850,12 @@ ${attachmentSummary}`,
               )
             : nextSteps
         };
+        const eventTitle =
+          markComplete && !wasAlreadyComplete
+            ? `${getFunctionMappingStepLabel(step)} complete.`
+            : `${getFunctionMappingStepLabel(step)} decision updated.`;
         const noteBody = normalizeRichTextForStorage(
-          `<p><strong>${escapeHtml(step.label)} complete.</strong></p>${normalizedNote}`,
+          `<p><strong>${escapeHtml(eventTitle)}</strong></p>${normalizedNote}`,
           "html"
         );
 
@@ -12460,7 +12866,7 @@ ${attachmentSummary}`,
           comments: [
             ...ticket.comments,
             {
-              id: `comment-${ticket.key}-function-map-step-${stepId}-${now.getTime()}`,
+              id: `comment-${ticket.key}-function-map-decision-${stepId}-${now.getTime()}`,
               author: actor.displayName,
               role: actor.roleLabel,
               body: noteBody,
@@ -12472,13 +12878,104 @@ ${attachmentSummary}`,
           audit: [
             ...ticket.audit,
             {
-              id: `audit-${ticket.key}-function-map-step-${stepId}-${now.getTime()}`,
-              eventType: "Internal function mapping step complete",
+              id: `audit-${ticket.key}-function-map-decision-${stepId}-${now.getTime()}`,
+              eventType:
+                markComplete && !wasAlreadyComplete
+                  ? "Internal function mapping step complete"
+                  : "Internal function mapping decision updated",
               actor: formatPersonaAuditActor(actor),
               createdAt: timestamp,
               visibility: "architecture_only",
-              newValue: step.label,
+              newValue: getFunctionMappingStepLabel(step),
               reason: htmlToPlainTextFallback(normalizedNote)
+            }
+          ]
+        };
+      })
+    );
+  }
+
+  function addFunctionMappingStepComment(
+    ticketKey: string,
+    reviewId: string,
+    stepId: FunctionMappingReviewStep["id"],
+    comment: string
+  ) {
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const actor = selectedPersona;
+    const normalizedComment = normalizeRichTextForStorage(comment);
+
+    if (!htmlToPlainTextFallback(normalizedComment).trim()) {
+      return;
+    }
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        const reviews = getTicketFunctionMappingReviews(ticket);
+        const review = reviews.find((candidate) => candidate.id === reviewId);
+        const step = review?.steps.find((candidate) => candidate.id === stepId);
+
+        if (
+          !review ||
+          !step ||
+          review.status === "closed" ||
+          !personaHasRole(actor, step.ownerRole) ||
+          !personaCanActOnTicketAsRole(actor, ticket, config, step.ownerRole)
+        ) {
+          return ticket;
+        }
+
+        const discussionEntry: FunctionMappingDiscussionEntry = {
+          id: `discussion-${ticket.key}-${reviewId}-${stepId}-${now.getTime()}`,
+          author: actor.displayName,
+          role: actor.roleLabel,
+          body: normalizedComment,
+          createdAt: timestamp
+        };
+        const nextStep: FunctionMappingReviewStep = {
+          ...step,
+          discussion: [...getFunctionMappingStepDiscussion(step), discussionEntry]
+        };
+        const nextReview: FunctionMappingReview = {
+          ...review,
+          steps: review.steps.map((candidate) => (candidate.id === stepId ? nextStep : candidate))
+        };
+        const commentBody = normalizeRichTextForStorage(
+          `<p><strong>${escapeHtml(getFunctionMappingStepLabel(step))} discussion comment.</strong></p>${normalizedComment}`,
+          "html"
+        );
+
+        return {
+          ...ticket,
+          functionMappingReviews: reviews.map((candidate) => (candidate.id === reviewId ? nextReview : candidate)),
+          updatedAt: timestamp,
+          comments: [
+            ...ticket.comments,
+            {
+              id: `comment-${ticket.key}-function-map-comment-${stepId}-${now.getTime()}`,
+              author: actor.displayName,
+              role: actor.roleLabel,
+              body: commentBody,
+              createdAt: timestamp,
+              visibility: "architecture_only",
+              source: "portal"
+            }
+          ],
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-function-map-comment-${stepId}-${now.getTime()}`,
+              eventType: "Internal function mapping comment added",
+              actor: formatPersonaAuditActor(actor),
+              createdAt: timestamp,
+              visibility: "architecture_only",
+              newValue: getFunctionMappingStepLabel(step),
+              reason: htmlToPlainTextFallback(normalizedComment)
             }
           ]
         };
@@ -13467,8 +13964,8 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
     }
 
     if (
-      (!replaceExisting && !canCreateJiraForTicket(ticketForCreation)) ||
-      (replaceExisting && !canReplaceJiraForTicket(ticketForCreation))
+      (!replaceExisting && !canCreateJiraForTicket(ticketForCreation, config)) ||
+      (replaceExisting && !canReplaceJiraForTicket(ticketForCreation, config))
     ) {
       throw new Error("Complete required workflow gates before creating the Jira issue.");
     }
@@ -14389,7 +14886,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           timestamp
         );
         const workflowComplete = hasCompletedRequiredWorkflow(workflow);
-        const nextState = getTicketStateAfterWorkflowOverride(ticket, workflow);
+        const nextState = getTicketStateAfterWorkflowOverride(config, ticket, workflow);
         const commentBody = `${targetStep.label} changed to ${nextStatusLabel}. Reason: ${htmlToPlainTextFallback(reason)}`;
 
         return {
@@ -14397,7 +14894,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           workflow,
           state: nextState,
           jiraDraft:
-            workflowComplete && !ticket.relatedJiraKey
+            workflowComplete && !ticket.relatedJiraKey && ticketUsesJira(config, ticket)
               ? {
                   ...ticket.jiraDraft,
                   status: "ready_to_create"
@@ -14735,11 +15232,13 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         onActingRoleAccessChange={changeActingRoleAccess}
         onPersonaChange={changePersona}
         onOpenModule={openModule}
+        onOpenNotification={openNotificationItem}
         onOpenNotifications={() => setActiveModule("notifications")}
         onTicketSearchChange={setQuery}
         onTicketSearchSubmit={searchAndOpenTicket}
         onToggleMenu={() => setIsSideMenuOpen((isOpen) => !isOpen)}
         notificationCount={visibleNotifications.filter((item) => item.unread).length}
+        notifications={visibleNotifications}
         isMounted={isTegelShellMounted}
       />
       <div className={`app-shell ${isSideNavCompact ? "is-side-nav-compact" : ""}`}>
@@ -14791,7 +15290,8 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               onCreateJira: createJiraForTicket,
               onCloseGlobalLpoApprovalRequest: closeGlobalLpoApprovalRequest,
               onCloseFunctionMappingReview: closeFunctionMappingReview,
-              onCompleteFunctionMappingStep: completeFunctionMappingStep,
+              onSaveFunctionMappingStepDecision: saveFunctionMappingStepDecision,
+              onAddFunctionMappingStepComment: addFunctionMappingStepComment,
               onUpdateFunctionMappingMaterials: updateFunctionMappingReviewMaterials,
               onPostJiraComment: postJiraCommentForTicket,
               onReopenTicket: reopenTicket,
@@ -14949,12 +15449,14 @@ function TopBar({
   ticketSearchOptions,
   ticketSearchQuery,
   notificationCount,
+  notifications,
   isMounted,
   onGoDashboard,
   onConfigChange,
   onActingRoleAccessChange,
   onPersonaChange,
   onOpenModule,
+  onOpenNotification,
   onTicketSearchChange,
   onTicketSearchSubmit,
   onToggleMenu,
@@ -14970,23 +15472,27 @@ function TopBar({
   ticketSearchOptions: Ticket[];
   ticketSearchQuery: string;
   notificationCount: number;
+  notifications: NotificationItem[];
   isMounted: boolean;
   onGoDashboard: () => void;
   onConfigChange: Dispatch<SetStateAction<AdminConfig>>;
   onActingRoleAccessChange: (enabled: boolean) => void;
   onPersonaChange: (personaId: string) => void;
   onOpenModule: (module: ModuleKey) => void;
+  onOpenNotification: (notification: NotificationItem) => void;
   onTicketSearchChange: (query: string) => void;
   onTicketSearchSubmit: (query: string) => void;
   onToggleMenu: () => void;
   onOpenNotifications: () => void;
 }) {
   const [isAttentionOpen, setIsAttentionOpen] = useState(false);
+  const [isNotificationPopoverOpen, setIsNotificationPopoverOpen] = useState(false);
   const [isTicketSearchOpen, setIsTicketSearchOpen] = useState(false);
-  const [activeProfileTab, setActiveProfileTab] = useState<"profile" | "notifications">("profile");
+  const [activeNotificationTab, setActiveNotificationTab] = useState<"attention" | "notifications">("attention");
   const [activeTicketSearchIndex, setActiveTicketSearchIndex] = useState(0);
   const ticketSearchListId = useId();
   const attentionTotal = attentionItems.reduce((total, item) => total + item.count, 0);
+  const headerNotificationBadgeCount = Math.max(attentionTotal, notificationCount);
   const selectedUser = useMemo(
     () => (selectedPersona.userId ? config.users.find((user) => user.id === selectedPersona.userId) : undefined),
     [config.users, selectedPersona.userId]
@@ -15029,14 +15535,39 @@ function TopBar({
   }, [normalizedTicketSearchQuery, visibleTicketSearchOptions.length]);
 
   useEffect(() => {
-    setActiveProfileTab("profile");
+    setIsAttentionOpen(false);
+    setIsNotificationPopoverOpen(false);
+    setActiveNotificationTab("attention");
   }, [selectedPersona.id]);
 
   function openTicketSearchResult(ticket: Ticket) {
     setIsAttentionOpen(false);
+    setIsNotificationPopoverOpen(false);
     setIsTicketSearchOpen(false);
     onTicketSearchChange(ticket.key);
     onTicketSearchSubmit(ticket.key);
+  }
+
+  function openNotificationPopover() {
+    setIsAttentionOpen(false);
+    setIsTicketSearchOpen(false);
+    setIsNotificationPopoverOpen((isOpen) => !isOpen);
+  }
+
+  function openProfilePopover() {
+    setIsNotificationPopoverOpen(false);
+    setIsTicketSearchOpen(false);
+    setIsAttentionOpen((isOpen) => !isOpen);
+  }
+
+  function openAttentionItem(item: HeaderAttentionItem) {
+    setIsNotificationPopoverOpen(false);
+    onOpenModule(item.module);
+  }
+
+  function openHeaderNotification(notification: NotificationItem) {
+    setIsNotificationPopoverOpen(false);
+    onOpenNotification(notification);
   }
 
   function updateSelectedUserNotificationPreferences(
@@ -15097,6 +15628,7 @@ function TopBar({
             onSubmit={(event) => {
               event.preventDefault();
               setIsAttentionOpen(false);
+              setIsNotificationPopoverOpen(false);
               setIsTicketSearchOpen(false);
               onTicketSearchSubmit(ticketSearchQuery);
             }}
@@ -15216,6 +15748,7 @@ function TopBar({
             value={selectedPersonaId}
             onChange={(event) => {
               setIsAttentionOpen(false);
+              setIsNotificationPopoverOpen(false);
               onPersonaChange(event.target.value);
             }}
           >
@@ -15230,12 +15763,14 @@ function TopBar({
           <button
             className="tegel-header-button"
             type="button"
-            aria-label="Notifications"
-            onClick={onOpenNotifications}
+            aria-controls="header-notification-panel"
+            aria-expanded={isNotificationPopoverOpen}
+            aria-label={`${headerNotificationBadgeCount} item${headerNotificationBadgeCount === 1 ? "" : "s"} in notifications and needs attention.`}
+            onClick={openNotificationPopover}
           >
             <TegelIcon name="notification" />
-            {notificationCount > 0 ? (
-              <span className="tegel-notification-count">{notificationCount}</span>
+            {headerNotificationBadgeCount > 0 ? (
+              <span className="tegel-notification-count">{headerNotificationBadgeCount}</span>
             ) : null}
           </button>
         </TdsHeaderItem>
@@ -15244,14 +15779,13 @@ function TopBar({
           <button
             aria-controls="header-attention-panel"
             aria-expanded={isAttentionOpen}
-            aria-label={`Signed in user ${selectedPersona.displayName}, active access ${activePersona.roleLabel}. ${attentionTotal} item${attentionTotal === 1 ? "" : "s"} need attention.`}
+            aria-label={`Signed in user ${selectedPersona.displayName}, active access ${activePersona.roleLabel}.`}
             className="tegel-user-button"
             type="button"
-            onClick={() => setIsAttentionOpen((isOpen) => !isOpen)}
+            onClick={openProfilePopover}
             title="Open user profile"
           >
             {selectedPersona.initials}
-            {attentionTotal > 0 ? <span className="tegel-user-ping">{attentionTotal}</span> : null}
           </button>
         </TdsHeaderItem>
         <TdsHeaderBrandSymbol slot="end">
@@ -15261,115 +15795,81 @@ function TopBar({
             onClick={(event) => {
               event.preventDefault();
               setIsAttentionOpen(false);
+              setIsNotificationPopoverOpen(false);
               onGoDashboard();
             }}
           />
         </TdsHeaderBrandSymbol>
       </TdsHeader>
       {isAttentionOpen ? (
-        <section className="tegel-attention-popover" id="header-attention-panel" aria-label="User profile">
+        <section className="tegel-attention-popover tegel-profile-popover" id="header-attention-panel" aria-label="User profile">
           <header>
             <span>{selectedPersona.displayName}</span>
             <strong>Profile</strong>
             <small>{activePersona.roleLabel}</small>
           </header>
-          <div className="tegel-profile-tabs" role="tablist" aria-label="Profile sections">
-            <button
-              className={activeProfileTab === "profile" ? "is-active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={activeProfileTab === "profile"}
-              onClick={() => setActiveProfileTab("profile")}
-            >
-              Profile
-            </button>
-            <button
-              className={activeProfileTab === "notifications" ? "is-active" : ""}
-              type="button"
-              role="tab"
-              aria-selected={activeProfileTab === "notifications"}
-              onClick={() => setActiveProfileTab("notifications")}
-            >
-              Notifications
-            </button>
-          </div>
-          {activeProfileTab === "profile" ? (
-            <div className="tegel-profile-tab-panel" role="tabpanel">
-              <div className="tegel-profile-details">
-                <span>
-                  <b>Primary role</b>
-                  {selectedPersona.roleLabel}
-                </span>
-                <span>
-                  <b>Acting roles</b>
-                  {formatPersonaSecondaryRoles(config, selectedPersona)}
-                </span>
-                <span>
-                  <b>Active access</b>
-                  {activePersona.roleLabel}
-                </span>
-                <span>
-                  <b>Email</b>
-                  {selectedPersona.email || "No email configured"}
-                </span>
-                <span>
-                  <b>Scope</b>
-                  {selectedPersona.region || ALL_SCOPE_LABEL} / {selectedPersona.site || ALL_SCOPE_LABEL}
-                </span>
-                <span>
-                  <b>Product scope</b>
-                  {formatProfileProductScope(config, selectedPersona.productIds)}
-                </span>
-                <span>
-                  <b>PRU scope</b>
-                  {formatProfilePruScope(selectedPersona.pruNames)}
-                </span>
-              </div>
-              {hasActingRoles ? (
-                <div className="tegel-acting-role-toggle">
-                  <AdminCheckbox
-                    checked={actingRoleAccessEnabled}
-                    label="Use acting role access"
-                    onChange={onActingRoleAccessChange}
-                  />
-                  <small>
-                    Off uses only the primary role. On uses the configured acting role
-                    {actingRoleLabels.length === 1 ? "" : "s"} for this session and resets after login, reload, or user change.
-                  </small>
-                </div>
-              ) : null}
-              <div className="tegel-profile-settings-header">
-                <strong>Needs attention</strong>
+          <div className="tegel-profile-tab-panel">
+            <div className="tegel-profile-card-grid">
+              <section className="tegel-profile-card">
+                <h3>Access</h3>
+                <dl className="tegel-profile-field-list">
+                  <div>
+                    <dt>Primary role</dt>
+                    <dd>{selectedPersona.roleLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>Active access</dt>
+                    <dd>{activePersona.roleLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>Acting roles</dt>
+                    <dd>{formatPersonaSecondaryRoles(config, selectedPersona)}</dd>
+                  </div>
+                </dl>
+              </section>
+              <section className="tegel-profile-card">
+                <h3>Contact & scope</h3>
+                <dl className="tegel-profile-field-list">
+                  <div>
+                    <dt>Email</dt>
+                    <dd>{selectedPersona.email || "No email configured"}</dd>
+                  </div>
+                  <div>
+                    <dt>Region / site</dt>
+                    <dd>
+                      {selectedPersona.region || ALL_SCOPE_LABEL} / {selectedPersona.site || ALL_SCOPE_LABEL}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+              <section className="tegel-profile-card">
+                <h3>Coverage</h3>
+                <dl className="tegel-profile-field-list">
+                  <div>
+                    <dt>Products</dt>
+                    <dd>{formatProfileProductScope(config, selectedPersona.productIds)}</dd>
+                  </div>
+                  <div>
+                    <dt>PRUs</dt>
+                    <dd>{formatProfilePruScope(selectedPersona.pruNames)}</dd>
+                  </div>
+                </dl>
+              </section>
+            </div>
+            {hasActingRoles ? (
+              <div className="tegel-acting-role-toggle">
+                <AdminCheckbox
+                  checked={actingRoleAccessEnabled}
+                  label="Use acting role access"
+                  onChange={onActingRoleAccessChange}
+                />
                 <small>
-                  Visible actions for this user&apos;s {actingRoleAccessEnabled ? "acting" : "primary"} access.
+                  Off uses only the primary role. On uses the configured acting role
+                  {actingRoleLabels.length === 1 ? "" : "s"} for this session and resets after login, reload, or user change.
                 </small>
               </div>
-              {attentionItems.length > 0 ? (
-                <div className="tegel-attention-list">
-                  {attentionItems.map((item) => (
-                    <button
-                      className={`tegel-attention-item tone-${item.tone}`}
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setIsAttentionOpen(false);
-                        onOpenModule(item.module);
-                      }}
-                    >
-                      <span>
-                        <strong>{item.title}</strong>
-                        <small>{item.meta}</small>
-                      </span>
-                      <em>{item.count}</em>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p>No visible modules require attention for this role.</p>
-              )}
-            </div>
-          ) : (
-            <section className="tegel-profile-settings" aria-label="Email notification settings" role="tabpanel">
+            ) : null}
+            <section className="tegel-profile-settings" aria-label="Email notification settings">
               <div className="tegel-profile-settings-header">
                 <strong>Email notifications</strong>
                 <small>Choose which automatic email actions this user receives.</small>
@@ -15422,6 +15922,106 @@ function TopBar({
                 </p>
               )}
             </section>
+          </div>
+        </section>
+      ) : null}
+      {isNotificationPopoverOpen ? (
+        <section className="tegel-attention-popover tegel-notification-popover" id="header-notification-panel" aria-label="Notifications and needs attention">
+          <header>
+            <span>{selectedPersona.displayName}</span>
+            <strong>Notifications</strong>
+            <small>
+              {formatCount(attentionTotal)} need attention - {formatCount(notificationCount)} unread
+            </small>
+          </header>
+          <div className="tegel-profile-tabs" role="tablist" aria-label="Notification sections">
+            <button
+              className={activeNotificationTab === "attention" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={activeNotificationTab === "attention"}
+              onClick={() => setActiveNotificationTab("attention")}
+            >
+              Needs attention
+            </button>
+            <button
+              className={activeNotificationTab === "notifications" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={activeNotificationTab === "notifications"}
+              onClick={() => setActiveNotificationTab("notifications")}
+            >
+              Notifications
+            </button>
+          </div>
+          {activeNotificationTab === "attention" ? (
+            <div className="tegel-profile-tab-panel" role="tabpanel">
+              <div className="tegel-profile-settings-header">
+                <strong>Needs attention</strong>
+                <small>
+                  Visible actions for this user&apos;s {actingRoleAccessEnabled ? "acting" : "primary"} access.
+                </small>
+              </div>
+              {attentionItems.length > 0 ? (
+                <div className="tegel-attention-list">
+                  {attentionItems.map((item) => (
+                    <button
+                      className={`tegel-attention-item tone-${item.tone}`}
+                      key={item.id}
+                      type="button"
+                      onClick={() => openAttentionItem(item)}
+                    >
+                      <span>
+                        <strong>{item.title}</strong>
+                        <small>{item.meta}</small>
+                      </span>
+                      <em>{item.count}</em>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p>No visible modules require attention for this role.</p>
+              )}
+            </div>
+          ) : (
+            <div className="tegel-profile-tab-panel" role="tabpanel">
+              <section className="tegel-header-notification-section">
+                <div className="tegel-profile-settings-header">
+                  <strong>Latest notifications</strong>
+                  <small>Recent role-visible updates and direct ticket actions.</small>
+                </div>
+                {notifications.length > 0 ? (
+                  <div className="tegel-header-notification-list" aria-label="Latest notifications">
+                    {notifications.slice(0, 5).map((notification) => (
+                      <button
+                        className={`tegel-header-notification-row ${notification.unread ? "is-unread" : ""}`}
+                        key={notification.id}
+                        type="button"
+                        onClick={() => openHeaderNotification(notification)}
+                      >
+                        <span>
+                          <strong>{notification.title}</strong>
+                          <small>{notification.body}</small>
+                        </span>
+                        <em>{notification.ticketKey}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p>No notifications for this role.</p>
+                )}
+                <button
+                  className="secondary-button tegel-open-notification-center"
+                  type="button"
+                  onClick={() => {
+                    setIsNotificationPopoverOpen(false);
+                    onOpenNotifications();
+                  }}
+                >
+                  Open notification center
+                </button>
+              </section>
+            </div>
           )}
         </section>
       ) : null}
@@ -16444,10 +17044,14 @@ function NewTicketModal({
   const activeRegions = uniqueSortedValues(regionSitesForSelectedProduct.map((site) => site.region));
   const activeRegionSites = regionSitesForSelectedProduct.filter((site) => !form.region || site.region === form.region);
   const selectedFormTemplate = getFormTemplateForTicket(config, form.product, form.typeId);
-  const templateFields = [...(selectedFormTemplate?.fields ?? [])].sort((left, right) => left.sortOrder - right.sortOrder);
+  const selectedProductUsesJira = selectedProduct ? productUsesJira(selectedProduct) : false;
+  const templateFields = [...(selectedFormTemplate?.fields ?? [])]
+    .filter((field) => selectedProductUsesJira || !isJiraTemplateOptionSource(field.optionSource))
+    .sort((left, right) => left.sortOrder - right.sortOrder);
+  const shouldLoadJiraTemplateMetadata = selectedProductUsesJira && templateHasJiraOptionSource(templateFields);
   const jiraTemplateMetadata = useJiraTemplateFieldMetadata(
     config,
-    templateHasJiraOptionSource(templateFields),
+    shouldLoadJiraTemplateMetadata,
     selectedProduct?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey
   );
 
@@ -16962,7 +17566,7 @@ function NewTicketModal({
                   ? selectedFormTemplate.description
                   : "No extra questions are configured for this product and request type."}
               </p>
-              {templateHasJiraOptionSource(templateFields) ? (
+              {shouldLoadJiraTemplateMetadata ? (
                 <small>
                   {jiraTemplateMetadata.status === "ready"
                     ? jiraTemplateMetadata.message
@@ -17021,7 +17625,8 @@ function renderModule({
   onCreateJira,
   onCloseGlobalLpoApprovalRequest,
   onCloseFunctionMappingReview,
-  onCompleteFunctionMappingStep,
+  onSaveFunctionMappingStepDecision,
+  onAddFunctionMappingStepComment,
   onUpdateFunctionMappingMaterials,
   onPostJiraComment,
   onReopenTicket,
@@ -17071,7 +17676,8 @@ function renderModule({
   onCreateJira: CreateJiraHandler;
   onCloseGlobalLpoApprovalRequest: CloseGlobalLpoApprovalRequestHandler;
   onCloseFunctionMappingReview: CloseFunctionMappingReviewHandler;
-  onCompleteFunctionMappingStep: CompleteFunctionMappingStepHandler;
+  onSaveFunctionMappingStepDecision: SaveFunctionMappingStepDecisionHandler;
+  onAddFunctionMappingStepComment: AddFunctionMappingStepCommentHandler;
   onUpdateFunctionMappingMaterials: UpdateFunctionMappingMaterialsHandler;
   onPostJiraComment: PostJiraCommentHandler;
   onReopenTicket: (ticketKey: string) => void;
@@ -17169,7 +17775,8 @@ function renderModule({
         onApprovalDecision={onApprovalDecision}
         onCloseGlobalLpoApprovalRequest={onCloseGlobalLpoApprovalRequest}
         onCloseFunctionMappingReview={onCloseFunctionMappingReview}
-        onCompleteFunctionMappingStep={onCompleteFunctionMappingStep}
+        onSaveFunctionMappingStepDecision={onSaveFunctionMappingStepDecision}
+        onAddFunctionMappingStepComment={onAddFunctionMappingStepComment}
         onUpdateFunctionMappingMaterials={onUpdateFunctionMappingMaterials}
         onCreateGlobalLpoApprovalRequest={onCreateGlobalLpoApprovalRequest}
         onCreateGlobalPotentialRequest={onCreateGlobalPotentialRequest}
@@ -17190,7 +17797,8 @@ function renderModule({
         onApprovalDecision={onApprovalDecision}
         onCloseGlobalLpoApprovalRequest={onCloseGlobalLpoApprovalRequest}
         onCloseFunctionMappingReview={onCloseFunctionMappingReview}
-        onCompleteFunctionMappingStep={onCompleteFunctionMappingStep}
+        onSaveFunctionMappingStepDecision={onSaveFunctionMappingStepDecision}
+        onAddFunctionMappingStepComment={onAddFunctionMappingStepComment}
         onUpdateFunctionMappingMaterials={onUpdateFunctionMappingMaterials}
         onCreateGlobalLpoApprovalRequest={onCreateGlobalLpoApprovalRequest}
         onCreateGlobalPotentialRequest={onCreateGlobalPotentialRequest}
@@ -17401,12 +18009,12 @@ function WorkspaceEmptyPanel() {
     <section className="panel workspace-empty-panel">
       <PanelHeader
         title="No tickets yet"
-        description="The workspace is clean. Create a ticket to start governed workflow, Jira sync, and escalation tracking."
+        description="The workspace is clean. Create a ticket to start governed workflow and escalation tracking."
         iconName="folder"
       />
       <EmptyState
         title="No predefined work"
-        body="Demo tickets, seeded notifications, escalations, Jira drafts, comments, attachments, and audit entries are not loaded."
+        body="Demo tickets, seeded notifications, escalations, comments, attachments, and audit entries are not loaded."
       />
     </section>
   );
@@ -17572,7 +18180,8 @@ function ApprovalCenter({
   onApprovalDecision,
   onCloseGlobalLpoApprovalRequest,
   onCloseFunctionMappingReview,
-  onCompleteFunctionMappingStep,
+  onSaveFunctionMappingStepDecision,
+  onAddFunctionMappingStepComment,
   onCreateGlobalLpoApprovalRequest,
   onCreateGlobalPotentialRequest,
   onOpenTicket,
@@ -17592,7 +18201,8 @@ function ApprovalCenter({
   ) => void;
   onCloseGlobalLpoApprovalRequest: CloseGlobalLpoApprovalRequestHandler;
   onCloseFunctionMappingReview: CloseFunctionMappingReviewHandler;
-  onCompleteFunctionMappingStep: CompleteFunctionMappingStepHandler;
+  onSaveFunctionMappingStepDecision: SaveFunctionMappingStepDecisionHandler;
+  onAddFunctionMappingStepComment: AddFunctionMappingStepCommentHandler;
   onCreateGlobalLpoApprovalRequest: CreateGlobalLpoApprovalRequestHandler;
   onCreateGlobalPotentialRequest: CreateGlobalPotentialRequestHandler;
   onOpenTicket: (ticketKey: string) => void;
@@ -17637,13 +18247,26 @@ function ApprovalCenter({
   const [globalLpoResponseDrafts, setGlobalLpoResponseDrafts] = useState<Record<string, string>>({});
   const [globalLpoCloseOutcomeDrafts, setGlobalLpoCloseOutcomeDrafts] = useState<Record<string, GlobalLpoApprovalOutcome>>({});
   const [globalLpoCloseNoteDrafts, setGlobalLpoCloseNoteDrafts] = useState<Record<string, string>>({});
-  const [functionMappingStepDrafts, setFunctionMappingStepDrafts] = useState<Record<string, string>>({});
-  const [functionMappingCloseDrafts, setFunctionMappingCloseDrafts] = useState<Record<string, string>>({});
-  const [expandedFunctionMappingItemId, setExpandedFunctionMappingItemId] = useState<string | null>(null);
+  const [functionMappingDecisionDrafts, setFunctionMappingDecisionDrafts] = useState<Record<string, string>>({});
+  const [functionMappingCommentDrafts, setFunctionMappingCommentDrafts] = useState<Record<string, string>>({});
+  const [selectedFunctionMappingItemId, setSelectedFunctionMappingItemId] = useState<string | null>(null);
+  const [functionMappingDetailTab, setFunctionMappingDetailTab] = useState<FunctionMappingDetailTab>("Overview");
   const [functionMappingMaterialDrafts, setFunctionMappingMaterialDrafts] = useState<
     Record<string, FunctionMappingMaterialUpdateInput>
   >({});
   const [functionMappingMaterialErrors, setFunctionMappingMaterialErrors] = useState<Record<string, string>>({});
+  const selectedFunctionMappingIndex = functionMappingItems.findIndex((item) => item.id === selectedFunctionMappingItemId);
+  const selectedFunctionMappingItem = selectedFunctionMappingIndex >= 0 ? functionMappingItems[selectedFunctionMappingIndex] : undefined;
+
+  useEffect(() => {
+    if (!selectedFunctionMappingItemId) {
+      return;
+    }
+
+    if (!showGlobalizationSections || !functionMappingItems.some((item) => item.id === selectedFunctionMappingItemId)) {
+      setSelectedFunctionMappingItemId(null);
+    }
+  }, [functionMappingItems, selectedFunctionMappingItemId, showGlobalizationSections]);
 
   function submitDecision(item: ApprovalQueueItem, action: ApprovalDecisionAction) {
     if (!item.actionable || item.step.status === "blocked") {
@@ -17789,35 +18412,66 @@ function ApprovalCenter({
     });
   }
 
-  function submitFunctionMappingStep(item: FunctionMappingReviewItem) {
-    if (!item.currentStep) {
+  function getFunctionMappingStepDraftKey(item: FunctionMappingReviewItem, step: FunctionMappingReviewStep): string {
+    return `${item.id}-${step.id}`;
+  }
+
+  function getFunctionMappingDecisionDraft(item: FunctionMappingReviewItem, step: FunctionMappingReviewStep): string {
+    return functionMappingDecisionDrafts[getFunctionMappingStepDraftKey(item, step)] ?? step.note ?? "";
+  }
+
+  function submitFunctionMappingDecision(item: FunctionMappingReviewItem, markComplete = false) {
+    if (!item.editableStep) {
       return;
     }
 
-    const draftKey = `${item.id}-${item.currentStep.id}`;
+    const draftKey = getFunctionMappingStepDraftKey(item, item.editableStep);
+    const decisionDraft = getFunctionMappingDecisionDraft(item, item.editableStep);
 
-    onCompleteFunctionMappingStep(
+    onSaveFunctionMappingStepDecision(
       item.ticket.key,
       item.review.id,
-      item.currentStep.id,
-      functionMappingStepDrafts[draftKey] ?? ""
+      item.editableStep.id,
+      decisionDraft,
+      { markComplete }
     );
-    setFunctionMappingStepDrafts((current) => ({
+    setFunctionMappingDecisionDrafts((current) => ({
+      ...current,
+      [draftKey]: decisionDraft
+    }));
+  }
+
+  function submitFunctionMappingComment(item: FunctionMappingReviewItem) {
+    if (!item.editableStep) {
+      return;
+    }
+
+    const draftKey = getFunctionMappingStepDraftKey(item, item.editableStep);
+
+    onAddFunctionMappingStepComment(
+      item.ticket.key,
+      item.review.id,
+      item.editableStep.id,
+      functionMappingCommentDrafts[draftKey] ?? ""
+    );
+    setFunctionMappingCommentDrafts((current) => ({
       ...current,
       [draftKey]: ""
     }));
   }
 
   function submitFunctionMappingClose(item: FunctionMappingReviewItem) {
-    onCloseFunctionMappingReview(
-      item.ticket.key,
-      item.review.id,
-      functionMappingCloseDrafts[item.id] ?? ""
-    );
-    setFunctionMappingCloseDrafts((current) => ({
-      ...current,
-      [item.id]: ""
-    }));
+    const gpoStep = item.review.steps.find((step) => step.id === "gpo_scope_decision");
+
+    onCloseFunctionMappingReview(item.ticket.key, item.review.id, gpoStep ? getFunctionMappingDecisionDraft(item, gpoStep) : "");
+    if (gpoStep) {
+      const draftKey = getFunctionMappingStepDraftKey(item, gpoStep);
+
+      setFunctionMappingDecisionDrafts((current) => ({
+        ...current,
+        [draftKey]: getFunctionMappingDecisionDraft(item, gpoStep)
+      }));
+    }
   }
 
   function getFunctionMappingMaterialDraft(item: FunctionMappingReviewItem): FunctionMappingMaterialUpdateInput {
@@ -17900,6 +18554,698 @@ function ApprovalCenter({
       ...current,
       [item.id]: ""
     }));
+  }
+
+  function getFunctionMappingWorkItemKey(item: FunctionMappingReviewItem, index: number): string {
+    const sourceRequest = getFunctionMappingSourceGlobalLpoRequest(item.ticket, item.review);
+
+    return sourceRequest
+      ? getGlobalLpoRequestTicketKey(item.ticket, sourceRequest)
+      : functionMappingItems.length === 1 ? `${item.ticket.key}-GLOB` : `${item.ticket.key}-G${index + 1}`;
+  }
+
+  function renderFunctionMappingDetailPage(item: FunctionMappingReviewItem, index: number) {
+    const sourceRequest = getFunctionMappingSourceGlobalLpoRequest(item.ticket, item.review);
+    const materialDraft = getFunctionMappingMaterialDraft(item);
+    const materialAttachments = getFunctionMappingMaterialAttachments(item.ticket, item.review);
+    const materialError = functionMappingMaterialErrors[item.id] ?? "";
+    const workItemKey = getFunctionMappingWorkItemKey(item, index);
+    const ticketHasJiraSource = ticketUsesJira(config, item.ticket);
+    const lifecycleState =
+      !ticketHasJiraSource && (item.ticket.state === "jira_draft" || item.ticket.state === "jira_synced")
+        ? "closed"
+        : item.ticket.state;
+    const dynamicFieldEntries = Object.entries(item.ticket.dynamicFields).filter(
+      ([label]) => !hiddenTicketDynamicFieldLabels.has(label)
+    );
+    const visibleRequests = getTicketGlobalLpoApprovalRequests(item.ticket).filter(
+      (request) =>
+        request.id === sourceRequest?.id ||
+        isGlobalLpoApprovalVisibleForPersona(item.ticket, request, selectedPersona, config)
+    );
+    const relatedRequests = sourceRequest
+      ? [
+          sourceRequest,
+          ...visibleRequests.filter((request) => request.id !== sourceRequest.id)
+        ]
+      : visibleRequests;
+    const materialUpdatedText = item.review.materialUpdatedAt
+      ? `Updated ${formatDateTimeDisplay(item.review.materialUpdatedAt)}${item.review.materialUpdatedBy ? ` by ${item.review.materialUpdatedBy}` : ""}`
+      : "Documents, meeting notes, and decision material";
+    const tabDescription: Record<FunctionMappingDetailTab, string> = {
+      Overview: "Source ticket summary, globalization status, dynamic fields, request, and answers.",
+      "Request & answers": "Product-owner globalization requests, responses, and final GPO decision.",
+      Workflow: "Internal architecture and business mapping steps for this globalization work item.",
+      Material: "Global requirement material, placement, notes, attachments, and current action."
+    };
+
+    function renderRequestAnswerSection() {
+      return (
+        <section className="function-mapping-request-answer-panel" aria-labelledby="function-mapping-request-answer-title">
+          <div className="function-mapping-section-heading">
+            <h3 id="function-mapping-request-answer-title">Product-owner globalization requests</h3>
+            <p>
+              {formatCount(relatedRequests.length)} request{relatedRequests.length === 1 ? "" : "s"} connected to{" "}
+              {item.ticket.key}
+            </p>
+          </div>
+          {relatedRequests.length === 0 ? (
+            <div className="dynamic-field">
+              <span>No globalization request</span>
+              <p>No product-owner request is connected to this internal mapping work item.</p>
+            </div>
+          ) : null}
+          <div className="function-mapping-request-list" role="list">
+            {relatedRequests.map((request) => {
+              const responseSummary = getGlobalLpoApprovalSummary(request);
+              const isSourceRequest = request.id === sourceRequest?.id;
+              const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, request);
+              const requestItemId = `${item.ticket.key}-${request.id}`;
+              const currentResponse = getGlobalLpoApprovalResponse(request, selectedPersona);
+              const needsResponse = request.status === "open" && isGlobalLpoApprovalTarget(request, selectedPersona) && !currentResponse;
+              const canClose = request.status === "open" && canManageGlobalLpoApprovalRequest(item.ticket, request, selectedPersona, config);
+              const requestActionItem: GlobalLpoApprovalItem = {
+                id: requestItemId,
+                ticket: item.ticket,
+                request,
+                currentResponse,
+                needsResponse,
+                canClose
+              };
+              const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(request);
+              const closeOutcomeDraft = globalLpoCloseOutcomeDrafts[requestItemId] ?? recommendedCloseOutcome;
+
+              return (
+                <article className={`global-lpo-request-card function-mapping-request-card is-${request.status}`} key={request.id} role="listitem">
+                  <div className="global-lpo-request-main">
+                    <div className="function-mapping-request-title">
+                      <strong>{globalTicketKey}</strong>
+                      {isSourceRequest ? <span>Source decision</span> : null}
+                    </div>
+                    <span>Source {item.ticket.key} - {item.ticket.title}</span>
+                    <small>
+                      {[item.ticket.product, item.ticket.pru, item.ticket.module].filter(Boolean).join(" - ") ||
+                        "No product scope"}{" "}
+                      - due {formatDateTimeDisplay(request.dueAt)}
+                    </small>
+                    <small>
+                      Requested by {request.requestedBy} - {formatDateTimeDisplay(request.createdAt)}
+                    </small>
+                  </div>
+                  <div className="global-lpo-request-context">
+                    <span className={`thread-state thread-${request.status}`}>{request.status}</span>
+                    <RichTextContent value={request.question} fallback="No request text provided." compact />
+                    <p>{responseSummary}</p>
+                    <div className="global-lpo-response-chip-list" aria-label="Product owner response summary">
+                      {request.responses.length === 0 ? (
+                        <span className="global-lpo-response-chip">No responses yet</span>
+                      ) : null}
+                      {request.responses.map((response) => (
+                        <span
+                          className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
+                          key={`${request.id}-${response.userId}`}
+                          title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
+                        >
+                          {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="function-mapping-answer-list">
+                    {needsResponse ? (
+                      <div className="global-lpo-response-box">
+                        <RichTextEditor
+                          label="Response note"
+                          value={globalLpoResponseDrafts[requestItemId] ?? ""}
+                          onChange={(value) =>
+                            setGlobalLpoResponseDrafts((current) => ({
+                              ...current,
+                              [requestItemId]: value
+                            }))
+                          }
+                          placeholder="Add area, site, or rollout context if needed."
+                          rows={2}
+                        />
+                        <div className="global-lpo-response-actions">
+                          <button
+                            className="primary-button"
+                            type="button"
+                            onClick={() => submitGlobalLpoResponse(requestActionItem, "needs_global")}
+                          >
+                            Needed in my area
+                          </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => submitGlobalLpoResponse(requestActionItem, "local_only")}
+                          >
+                            Not needed
+                          </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => submitGlobalLpoResponse(requestActionItem, "needs_discussion")}
+                          >
+                            Discuss
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {request.responses.map((response) => (
+                      <article
+                        className={`global-lpo-response-summary tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
+                        key={`${request.id}-${response.userId}-${response.respondedAt}`}
+                      >
+                        <strong>{response.displayName}</strong>
+                        <span>
+                          {getGlobalLpoApprovalDecisionLabel(response.decision)} - {formatDateTimeDisplay(response.respondedAt)}
+                        </span>
+                        {response.note ? <RichTextContent value={response.note} fallback="" compact /> : null}
+                      </article>
+                    ))}
+                    {request.responses.length === 0 ? (
+                      <div className="global-lpo-response-summary">
+                        <strong>No answers yet</strong>
+                        <span>Waiting for product-owner responses.</span>
+                      </div>
+                    ) : null}
+                    {request.status === "closed" ? (
+                      <div className={`global-lpo-final-decision tone-${getGlobalLpoApprovalOutcomeTone(request.finalOutcome)}`}>
+                        <strong>{getGlobalLpoApprovalOutcomeLabel(request.finalOutcome)}</strong>
+                        <span>
+                          {[request.closedBy ? `Closed by ${request.closedBy}` : "", request.closedAt ? formatDateTimeDisplay(request.closedAt) : ""]
+                            .filter(Boolean)
+                            .join(" - ")}
+                        </span>
+                        <p>{getGlobalLpoApprovalOutcomeNextStep(request.finalOutcome)}</p>
+                        {request.finalDecisionNote ? (
+                          <RichTextContent value={request.finalDecisionNote} fallback="" compact />
+                        ) : null}
+                      </div>
+                    ) : canClose ? (
+                      <div className="global-lpo-finalize-box">
+                        <div className="global-lpo-finalize-heading">
+                          <strong>GPO final decision</strong>
+                          <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                        </div>
+                        <label className="form-field">
+                          <span>Outcome</span>
+                          <select
+                            value={closeOutcomeDraft}
+                            onChange={(event) =>
+                              setGlobalLpoCloseOutcomeDrafts((current) => ({
+                                ...current,
+                                [requestItemId]: event.target.value as GlobalLpoApprovalOutcome
+                              }))
+                            }
+                          >
+                            {globalLpoApprovalOutcomeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <p className="global-lpo-next-step">{getGlobalLpoApprovalOutcomeNextStep(closeOutcomeDraft)}</p>
+                        <RichTextEditor
+                          label="Decision note"
+                          value={globalLpoCloseNoteDrafts[requestItemId] ?? ""}
+                          onChange={(value) =>
+                            setGlobalLpoCloseNoteDrafts((current) => ({
+                              ...current,
+                              [requestItemId]: value
+                            }))
+                          }
+                          placeholder="Add scope, PRU, rollout, or follow-up context."
+                          rows={2}
+                        />
+                        <div className="global-lpo-finalize-actions">
+                          <button className="secondary-button" type="button" onClick={() => submitGlobalLpoClose(requestActionItem)}>
+                            Close with decision
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="global-lpo-final-decision">
+                        <strong>GPO final decision pending</strong>
+                        <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                        <p>{getGlobalLpoApprovalOutcomeNextStep()}</p>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      );
+    }
+
+    function renderWorkflowSection() {
+      const solutionStep = item.review.steps.find((step) => step.id === "solution_architecture");
+      const businessStep = item.review.steps.find((step) => step.id === "business_architecture");
+      const gpoDecisionStep = item.review.steps.find((step) => step.id === "gpo_scope_decision");
+      const discussionSteps = [solutionStep, businessStep, gpoDecisionStep].filter(
+        (step): step is FunctionMappingReviewStep => Boolean(step)
+      );
+      const architectureComplete = Boolean(solutionStep?.status === "complete" && businessStep?.status === "complete");
+
+      return (
+        <div className="function-mapping-detail-grid function-mapping-detail-grid-workflow">
+          <section className="function-mapping-detail-section">
+            <div className="function-mapping-section-heading">
+              <h3>Internal discussion and decision map</h3>
+              <p>Solution Architect and Business Architect record mapping input before Global Product Owner closes scope.</p>
+            </div>
+            <div className="function-mapping-role-map" aria-label="Internal discussion and decision by role">
+              {discussionSteps.map((step) => {
+                const stepDiscussion = getFunctionMappingStepDiscussion(step);
+
+                return (
+                  <article className={`function-mapping-role-card is-${step.status}`} key={`${item.id}-${step.id}`}>
+                    <div className="function-mapping-role-card-header">
+                      <span>{getFunctionMappingStepOwnerLabel(config, step)}</span>
+                      <strong>{step.ownerName}</strong>
+                      <small>{getFunctionMappingStepStatusLabel(step.status)}</small>
+                    </div>
+                    <div className="function-mapping-role-card-body">
+                      <strong>{getFunctionMappingStepLabel(step)}</strong>
+                      <p>{getFunctionMappingStepResponsibility(step)}</p>
+                    </div>
+                    <div className="function-mapping-role-card-note">
+                      <span>Decision / mapping field</span>
+                      {step.note ? (
+                        <RichTextContent value={step.note} fallback="" compact />
+                      ) : (
+                        <p>{getFunctionMappingStepEmptyInput(step)}</p>
+                      )}
+                    </div>
+                    <div className="function-mapping-role-card-discussion">
+                      <span>Discussion</span>
+                      {stepDiscussion.length ? (
+                        <div className="function-mapping-discussion-list">
+                          {stepDiscussion.map((entry) => (
+                            <article className="function-mapping-discussion-entry" key={entry.id}>
+                              <div>
+                                <strong>{entry.author}</strong>
+                                <small>
+                                  {entry.role} - {formatDateTimeDisplay(entry.createdAt)}
+                                </small>
+                              </div>
+                              <RichTextContent value={entry.body} fallback="" compact />
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p>No discussion comments yet.</p>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <div className={`function-mapping-decision-rule ${architectureComplete ? "is-ready" : "is-waiting"}`}>
+              <span>Decision rule</span>
+              <strong>
+                {architectureComplete
+                  ? "GPO can make the final scope decision."
+                  : "GPO waits until Solution Architect and Business Architect mappings are complete."}
+              </strong>
+              <p>
+                Solution: {solutionStep ? getFunctionMappingStepStatusLabel(solutionStep.status) : "Missing"} - Business:{" "}
+                {businessStep ? getFunctionMappingStepStatusLabel(businessStep.status) : "Missing"} - GPO:{" "}
+                {gpoDecisionStep ? getFunctionMappingStepStatusLabel(gpoDecisionStep.status) : "Missing"}
+              </p>
+            </div>
+            <h3>Internal decision workflow</h3>
+            <div className="function-mapping-step-list" aria-label="Internal mapping steps">
+              {item.review.steps.map((step) => (
+                <div className={`function-mapping-step is-${step.status}`} key={step.id}>
+                  <div>
+                    <strong>{getFunctionMappingStepLabel(step)}</strong>
+                    <span>{getFunctionMappingStepOwnerLabel(config, step)} - {step.ownerName}</span>
+                    {step.completedBy || step.completedAt ? (
+                      <small>
+                        {[step.completedBy ? `Completed by ${step.completedBy}` : "", step.completedAt ? formatDateTimeDisplay(step.completedAt) : ""]
+                          .filter(Boolean)
+                          .join(" - ")}
+                      </small>
+                    ) : null}
+                  </div>
+                  <small>{getFunctionMappingStepStatusLabel(step.status)}</small>
+                  {step.note ? <RichTextContent value={step.note} fallback="" compact /> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+          {renderCurrentActionSection()}
+        </div>
+      );
+    }
+
+    function renderMaterialSection() {
+      return (
+        <div className="function-mapping-detail-grid function-mapping-detail-grid-material">
+          <section className="function-mapping-detail-section function-mapping-material-editor">
+            <h3>Global requirement material</h3>
+            {item.canUpdateMaterials ? (
+              <>
+                <label className="form-field">
+                  <span>Where module or function will be placed</span>
+                  <input
+                    value={materialDraft.targetPlacement}
+                    onChange={(event) =>
+                      updateFunctionMappingMaterialDraft(item, {
+                        targetPlacement: event.currentTarget.value
+                      })
+                    }
+                    placeholder="Product / PRU / module, repository, service, or owner area"
+                  />
+                </label>
+                <RichTextEditor
+                  label="Meeting notes"
+                  value={materialDraft.meetingNotes}
+                  onChange={(value) => updateFunctionMappingMaterialDraft(item, { meetingNotes: value })}
+                  placeholder="Add meeting notes, attendees, decisions, and open points."
+                  rows={3}
+                />
+                <RichTextEditor
+                  label="Decision material"
+                  value={materialDraft.decisionMaterials}
+                  onChange={(value) =>
+                    updateFunctionMappingMaterialDraft(item, { decisionMaterials: value })
+                  }
+                  placeholder="Add links, architecture context, rollout notes, or decision basis."
+                  rows={3}
+                />
+                <div className="function-mapping-upload-row">
+                  <label className="secondary-button function-mapping-upload-button">
+                    <TegelIcon name="paperclip" size="16px" />
+                    Upload material
+                    <input
+                      multiple
+                      type="file"
+                      onChange={(event) => {
+                        void updateFunctionMappingMaterialFiles(item, event.currentTarget.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => submitFunctionMappingMaterials(item)}
+                  >
+                    Save material
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="function-mapping-readonly-material">
+                <strong>{getFunctionMappingPlacementValue(item.ticket, item.review)}</strong>
+                {item.review.meetingNotes ? (
+                  <RichTextContent value={item.review.meetingNotes} fallback="" compact />
+                ) : null}
+                {item.review.decisionMaterials ? (
+                  <RichTextContent value={item.review.decisionMaterials} fallback="" compact />
+                ) : null}
+              </div>
+            )}
+            {materialError ? <p className="approval-clarification-error">{materialError}</p> : null}
+            <div className="function-mapping-material-file-list" aria-label="Globalization material files">
+              {materialAttachments.map((attachment) => (
+                <span key={attachment.id}>
+                  {attachment.fileName} - {getAttachmentKindLabel(attachment)} - {attachment.sizeLabel}
+                </span>
+              ))}
+              {materialDraft.attachments.map((attachment) => (
+                <span key={`${attachment.fileName}-${attachment.byteSize}`}>
+                  {attachment.fileName} - ready to upload - {formatByteSize(attachment.byteSize)}
+                </span>
+              ))}
+              {!materialAttachments.length && !materialDraft.attachments.length ? (
+                <span>No documents uploaded yet.</span>
+              ) : null}
+            </div>
+          </section>
+          {renderCurrentActionSection()}
+        </div>
+      );
+    }
+
+    function renderCurrentActionSection() {
+      const editableStep = item.editableStep;
+      const editableDraftKey = editableStep ? getFunctionMappingStepDraftKey(item, editableStep) : "";
+      const canMarkStepComplete =
+        editableStep ? editableStep.id !== "gpo_scope_decision" && editableStep.status !== "complete" : false;
+      const decisionActionLabel =
+        editableStep?.status === "complete" || editableStep?.id === "gpo_scope_decision"
+          ? "Update decision"
+          : "Save decision";
+      const actionStatusText = editableStep
+        ? editableStep.id === "gpo_scope_decision"
+          ? item.canClose
+            ? "Architecture and business mappings are complete. Save the final decision or close the internal process."
+            : "You can prepare the GPO decision and discuss it, but final close waits for Solution Architect and Business Architect mapping."
+          : editableStep.status === "complete"
+            ? "This mapping is complete, but you can still update the decision or add comments until GPO closes the process."
+            : "Record the mapping decision, add discussion comments, or mark the mapping complete."
+        : "";
+
+      return (
+        <section className="function-mapping-detail-section function-mapping-action">
+          <h3>Current action</h3>
+          {item.review.status === "closed" ? (
+            <div className="function-mapping-ready">
+              <strong>Internal process closed</strong>
+              <span>
+                {[item.review.closedBy ? `Closed by ${item.review.closedBy}` : "", item.review.closedAt ? formatDateTimeDisplay(item.review.closedAt) : ""]
+                  .filter(Boolean)
+                  .join(" - ")}
+              </span>
+              {item.review.finalDecisionNote ? (
+                <RichTextContent value={item.review.finalDecisionNote} fallback="" compact />
+              ) : null}
+            </div>
+          ) : item.canEditStep && editableStep ? (
+            <>
+              <div className="function-mapping-ready">
+                <strong>{getFunctionMappingStepLabel(editableStep)}</strong>
+                <span>{actionStatusText}</span>
+              </div>
+              <RichTextEditor
+                label="Decision / mapping input"
+                value={getFunctionMappingDecisionDraft(item, editableStep)}
+                onChange={(value) =>
+                  setFunctionMappingDecisionDrafts((current) => ({
+                    ...current,
+                    [editableDraftKey]: value
+                  }))
+                }
+                placeholder={
+                  editableStep.id === "gpo_scope_decision"
+                    ? "Record final global/local scope, Jira handoff decision, or follow-up action."
+                    : "Map impacted function, process ownership, dependencies, and scope recommendation."
+                }
+                rows={3}
+              />
+              <RichTextEditor
+                label="Discussion comment"
+                value={functionMappingCommentDrafts[editableDraftKey] ?? ""}
+                onChange={(value) =>
+                  setFunctionMappingCommentDrafts((current) => ({
+                    ...current,
+                    [editableDraftKey]: value
+                  }))
+                }
+                placeholder="Ask a question, add an answer, or leave follow-up context without changing completion status."
+                rows={2}
+              />
+              <div className="function-mapping-action-row">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => submitFunctionMappingComment(item)}
+                >
+                  Add comment
+                </button>
+                <button
+                  className={canMarkStepComplete || item.canClose ? "secondary-button" : "primary-button"}
+                  type="button"
+                  onClick={() => submitFunctionMappingDecision(item)}
+                >
+                  {decisionActionLabel}
+                </button>
+                {canMarkStepComplete ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => submitFunctionMappingDecision(item, true)}
+                  >
+                    Save decision and mark complete
+                  </button>
+                ) : null}
+                {item.canClose && editableStep.id === "gpo_scope_decision" ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => submitFunctionMappingClose(item)}
+                  >
+                    Close internal process
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <div className="function-mapping-ready">
+              <strong>Waiting for mapping</strong>
+              <span>Solution Architect and Business Architect mapping must be completed before Global Product Owner final scope decision.</span>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    return (
+      <div className="ticket-list-workspace ticket-list-detail-mode function-mapping-detail-page">
+        <div className="ticket-detail-toolbar">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => setSelectedFunctionMappingItemId(null)}
+          >
+            <TegelIcon name="arrow_left" size="16px" />
+            Back to globalization list
+          </button>
+          <span>
+            {workItemKey} - Source {item.ticket.key} - {item.ticket.title}
+          </span>
+        </div>
+        <section className="panel ticket-detail function-mapping-ticket-detail" aria-labelledby="function-mapping-detail-title">
+          <div className="ticket-hero">
+            <div>
+              <span className="ticket-key">{workItemKey}</span>
+              <h2 id="function-mapping-detail-title">{item.ticket.title}</h2>
+              <RichTextContent value={item.ticket.description} fallback="No description provided." compact />
+            </div>
+            <div className="ticket-hero-actions">
+              <div className="ticket-badges" aria-label="Globalization ticket status">
+                <span className={`ticket-status-chip tag-variant-${getStatusColorVariant(config, getTicketCurrentStatusLabel(item.ticket))}`}>
+                  {getTicketCurrentStatusLabel(item.ticket)}
+                </span>
+                <span className={`priority priority-${getPriorityToneClassName(item.ticket.priority)}`}>
+                  {item.ticket.priority}
+                </span>
+                <span className={`risk risk-${toClassName(item.ticket.risk)}`}>{item.ticket.risk} risk</span>
+                <span className={`sla-chip state-${item.ticket.slaState}`}>{item.ticket.slaLabel}</span>
+                <span className="ticket-status-chip function-mapping-status-chip">
+                  {getFunctionMappingReviewStatusLabel(item.review.status)}
+                </span>
+              </div>
+              <button
+                className="secondary-button ticket-reopen-button"
+                type="button"
+                onClick={() => onOpenTicket(item.ticket.key)}
+              >
+                Open source ticket
+              </button>
+            </div>
+          </div>
+          <div className="tabs" role="tablist" aria-label="Globalization detail sections">
+            {functionMappingDetailTabs.map((tab) => (
+              <button
+                aria-selected={functionMappingDetailTab === tab}
+                className={functionMappingDetailTab === tab ? "is-active" : ""}
+                key={tab}
+                onClick={() => setFunctionMappingDetailTab(tab)}
+                role="tab"
+                type="button"
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          <p className="tab-helper">{tabDescription[functionMappingDetailTab]}</p>
+          <div className="tab-content">
+            {functionMappingDetailTab === "Overview" ? (
+              <div className="overview-grid function-mapping-overview-grid">
+                <div className="field-list">
+                  {[
+                    ["Global work item", workItemKey],
+                    ["Source ticket", item.ticket.key],
+                    ["Type", getTicketTypeLabel(item.ticket.typeId)],
+                    ["PRU", item.ticket.pru],
+                    ["Site", item.ticket.site],
+                    ["Product", item.ticket.product],
+                    ["Module", item.ticket.module],
+                    ["Current status", getTicketCurrentStatusLabel(item.ticket)],
+                    ["Lifecycle state", lifecycleState.replace("_", " ")],
+                    ["Globalization status", getFunctionMappingReviewStatusLabel(item.review.status)],
+                    ["Placement", getFunctionMappingPlacementValue(item.ticket, item.review)],
+                    ["Material", getFunctionMappingMaterialSummary(item.ticket, item.review)]
+                  ].map(([label, value]) => (
+                    <div className="field-row" key={label}>
+                      <span>{label}</span>
+                      <strong>{value}</strong>
+                    </div>
+                  ))}
+                </div>
+                <div className="dynamic-fields">
+                  <h3>Dynamic fields</h3>
+                  {dynamicFieldEntries.length === 0 ? (
+                    <div className="dynamic-field">
+                      <span>Not provided</span>
+                      <p>No dynamic request fields are available for this source ticket.</p>
+                    </div>
+                  ) : null}
+                  {dynamicFieldEntries.map(([label, value]) => (
+                    <div className="dynamic-field" key={label}>
+                      <span>{label}</span>
+                      <RichTextContent value={value} />
+                    </div>
+                  ))}
+                </div>
+                <div className="function-mapping-overview-summary">
+                  <section className="dynamic-field">
+                    <span>Source decision</span>
+                    <strong>
+                      {sourceRequest?.finalOutcome
+                        ? getGlobalLpoApprovalOutcomeLabel(sourceRequest.finalOutcome)
+                        : "Architecture review"}
+                    </strong>
+                    <RichTextContent value={item.review.decisionContext} fallback="No decision context recorded." compact />
+                  </section>
+                  <section className="dynamic-field">
+                    <span>Scope summary</span>
+                    <RichTextContent value={item.review.scopeSummary} fallback="No scope summary recorded." compact />
+                  </section>
+                  <section className="dynamic-field">
+                    <span>Due date</span>
+                    <p>{formatDateTimeDisplay(item.review.dueAt)}</p>
+                  </section>
+                  <section className="dynamic-field">
+                    <span>Material updated</span>
+                    <p>{materialUpdatedText}</p>
+                  </section>
+                </div>
+                {renderRequestAnswerSection()}
+              </div>
+            ) : null}
+            {functionMappingDetailTab === "Request & answers" ? renderRequestAnswerSection() : null}
+            {functionMappingDetailTab === "Workflow" ? renderWorkflowSection() : null}
+            {functionMappingDetailTab === "Material" ? renderMaterialSection() : null}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (showGlobalizationSections && selectedFunctionMappingItem) {
+    return (
+      <section className="approval-workbench approval-workbench-table globalization-workbench">
+        {renderFunctionMappingDetailPage(selectedFunctionMappingItem, selectedFunctionMappingIndex)}
+      </section>
+    );
   }
 
   return (
@@ -18062,20 +19408,12 @@ function ApprovalCenter({
               </thead>
               <tbody>
                 {functionMappingItems.map((item, index) => {
-                  const closeDraft = functionMappingCloseDrafts[item.id] ?? "";
-                  const gpoStep = item.review.steps.find((step) => step.id === "gpo_scope_decision");
                   const sourceRequest = getFunctionMappingSourceGlobalLpoRequest(item.ticket, item.review);
-                  const isExpanded = expandedFunctionMappingItemId === item.id;
-                  const materialDraft = getFunctionMappingMaterialDraft(item);
-                  const materialAttachments = getFunctionMappingMaterialAttachments(item.ticket, item.review);
-                  const materialError = functionMappingMaterialErrors[item.id] ?? "";
-                  const workItemKey = sourceRequest
-                    ? getGlobalLpoRequestTicketKey(item.ticket, sourceRequest)
-                    : functionMappingItems.length === 1 ? `${item.ticket.key}-GLOB` : `${item.ticket.key}-G${index + 1}`;
+                  const workItemKey = getFunctionMappingWorkItemKey(item, index);
 
                   return (
                     <Fragment key={item.id}>
-                      <tr className={`function-mapping-row is-${item.review.status}${isExpanded ? " is-expanded" : ""}`}>
+                      <tr className={`function-mapping-row is-${item.review.status}`}>
                         <td data-label="Internal ticket">
                           <button
                             className="approval-ticket-link"
@@ -18129,362 +19467,20 @@ function ApprovalCenter({
                           <button
                             className="secondary-button"
                             type="button"
-                            onClick={() => setExpandedFunctionMappingItemId(isExpanded ? null : item.id)}
+                            onClick={() => {
+                              setFunctionMappingDetailTab("Overview");
+                              setSelectedFunctionMappingItemId(item.id);
+                            }}
                           >
-                            {isExpanded ? "Hide" : "Open"}
+                            Open
                           </button>
                         </td>
                       </tr>
-                      {isExpanded ? (
-                        <tr className="function-mapping-detail-row">
-                          <td colSpan={7}>
-                            <div className="function-mapping-detail-grid">
-                              <section className="function-mapping-detail-section">
-                                <h3>Internal decision workflow</h3>
-                                <div className="function-mapping-step-list" aria-label="Internal mapping steps">
-                                  {item.review.steps.map((step) => (
-                                    <div className={`function-mapping-step is-${step.status}`} key={step.id}>
-                                      <div>
-                                        <strong>{step.label}</strong>
-                                        <span>{getFunctionMappingStepOwnerLabel(config, step)} - {step.ownerName}</span>
-                                      </div>
-                                      <small>{getFunctionMappingStepStatusLabel(step.status)}</small>
-                                      {step.note ? <RichTextContent value={step.note} fallback="" compact /> : null}
-                                    </div>
-                                  ))}
-                                </div>
-                              </section>
-                              <section className="function-mapping-detail-section function-mapping-material-editor">
-                                <h3>Global requirement material</h3>
-                                {item.canUpdateMaterials ? (
-                                  <>
-                                    <label className="form-field">
-                                      <span>Where module or function will be placed</span>
-                                      <input
-                                        value={materialDraft.targetPlacement}
-                                        onChange={(event) =>
-                                          updateFunctionMappingMaterialDraft(item, {
-                                            targetPlacement: event.currentTarget.value
-                                          })
-                                        }
-                                        placeholder="Product / PRU / module, repository, service, or owner area"
-                                      />
-                                    </label>
-                                    <RichTextEditor
-                                      label="Meeting notes"
-                                      value={materialDraft.meetingNotes}
-                                      onChange={(value) => updateFunctionMappingMaterialDraft(item, { meetingNotes: value })}
-                                      placeholder="Add meeting notes, attendees, decisions, and open points."
-                                      rows={2}
-                                    />
-                                    <RichTextEditor
-                                      label="Decision material"
-                                      value={materialDraft.decisionMaterials}
-                                      onChange={(value) =>
-                                        updateFunctionMappingMaterialDraft(item, { decisionMaterials: value })
-                                      }
-                                      placeholder="Add links, architecture context, rollout notes, or decision basis."
-                                      rows={2}
-                                    />
-                                    <div className="function-mapping-upload-row">
-                                      <label className="secondary-button function-mapping-upload-button">
-                                        <TegelIcon name="paperclip" size="16px" />
-                                        Upload material
-                                        <input
-                                          multiple
-                                          type="file"
-                                          onChange={(event) => {
-                                            void updateFunctionMappingMaterialFiles(item, event.currentTarget.files);
-                                            event.currentTarget.value = "";
-                                          }}
-                                        />
-                                      </label>
-                                      <button
-                                        className="primary-button"
-                                        type="button"
-                                        onClick={() => submitFunctionMappingMaterials(item)}
-                                      >
-                                        Save material
-                                      </button>
-                                    </div>
-                                  </>
-                                ) : (
-                                  <div className="function-mapping-readonly-material">
-                                    <strong>{getFunctionMappingPlacementValue(item.ticket, item.review)}</strong>
-                                    {item.review.meetingNotes ? (
-                                      <RichTextContent value={item.review.meetingNotes} fallback="" compact />
-                                    ) : null}
-                                    {item.review.decisionMaterials ? (
-                                      <RichTextContent value={item.review.decisionMaterials} fallback="" compact />
-                                    ) : null}
-                                  </div>
-                                )}
-                                {materialError ? <p className="approval-clarification-error">{materialError}</p> : null}
-                                <div className="function-mapping-material-file-list" aria-label="Globalization material files">
-                                  {materialAttachments.map((attachment) => (
-                                    <span key={attachment.id}>
-                                      {attachment.fileName} - {getAttachmentKindLabel(attachment)} - {attachment.sizeLabel}
-                                    </span>
-                                  ))}
-                                  {materialDraft.attachments.map((attachment) => (
-                                    <span key={`${attachment.fileName}-${attachment.byteSize}`}>
-                                      {attachment.fileName} - ready to upload - {formatByteSize(attachment.byteSize)}
-                                    </span>
-                                  ))}
-                                  {!materialAttachments.length && !materialDraft.attachments.length ? (
-                                    <span>No documents uploaded yet.</span>
-                                  ) : null}
-                                </div>
-                              </section>
-                              <section className="function-mapping-detail-section function-mapping-action">
-                                <h3>Current action</h3>
-                                {item.canCompleteStep && item.currentStep ? (
-                                  <>
-                                    <RichTextEditor
-                                      label={`${item.currentStep.label} note`}
-                                      value={functionMappingStepDrafts[`${item.id}-${item.currentStep.id}`] ?? ""}
-                                      onChange={(value) =>
-                                        setFunctionMappingStepDrafts((current) => ({
-                                          ...current,
-                                          [`${item.id}-${item.currentStep?.id ?? ""}`]: value
-                                        }))
-                                      }
-                                      placeholder="Map impacted function, process ownership, dependencies, and scope recommendation."
-                                      rows={2}
-                                    />
-                                    <button
-                                      className="primary-button"
-                                      type="button"
-                                      onClick={() => submitFunctionMappingStep(item)}
-                                    >
-                                      Complete mapping
-                                    </button>
-                                  </>
-                                ) : item.canClose ? (
-                                  <>
-                                    <div className="function-mapping-ready">
-                                      <strong>{gpoStep?.label ?? "GPO scope decision"}</strong>
-                                      <span>Architecture and business mappings are complete.</span>
-                                    </div>
-                                    <RichTextEditor
-                                      label="GPO final scope decision"
-                                      value={closeDraft}
-                                      onChange={(value) =>
-                                        setFunctionMappingCloseDrafts((current) => ({
-                                          ...current,
-                                          [item.id]: value
-                                        }))
-                                      }
-                                      placeholder="Record final global/local scope, Jira handoff decision, or follow-up action."
-                                      rows={2}
-                                    />
-                                    <button
-                                      className="primary-button"
-                                      type="button"
-                                      onClick={() => submitFunctionMappingClose(item)}
-                                    >
-                                      Close internal process
-                                    </button>
-                                  </>
-                                ) : item.review.status === "closed" ? (
-                                  <div className="function-mapping-ready">
-                                    <strong>Internal process closed</strong>
-                                    <span>
-                                      {[item.review.closedBy ? `Closed by ${item.review.closedBy}` : "", item.review.closedAt ? formatDateTimeDisplay(item.review.closedAt) : ""]
-                                        .filter(Boolean)
-                                        .join(" - ")}
-                                    </span>
-                                    {item.review.finalDecisionNote ? (
-                                      <RichTextContent value={item.review.finalDecisionNote} fallback="" compact />
-                                    ) : null}
-                                  </div>
-                                ) : (
-                                  <div className="function-mapping-ready">
-                                    <strong>Waiting for mapping</strong>
-                                    <span>Architect input must be completed before GPO final scope decision.</span>
-                                  </div>
-                                )}
-                              </section>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
                     </Fragment>
                   );
                 })}
               </tbody>
             </table>
-          </div>
-        </div>
-      ) : null}
-      {showGlobalizationSections && globalLpoApprovalItems.length > 0 ? (
-        <div className="approval-table-card global-lpo-approval-panel" aria-labelledby="global-lpo-approval-title">
-          <header className="approval-table-header">
-            <div>
-              <h2 id="global-lpo-approval-title">Product owner globalization requests</h2>
-              <p>
-                {formatCount(globalLpoApprovalItems.length)} request{globalLpoApprovalItems.length === 1 ? "" : "s"} for cross-area approval or globalization input
-              </p>
-            </div>
-          </header>
-          <div className="global-lpo-request-list" role="list">
-            {globalLpoApprovalItems.map((item) => {
-              const responseSummary = getGlobalLpoApprovalSummary(item.request);
-              const isManagerView = canManageGlobalLpoApprovalRequest(item.ticket, item.request, selectedPersona, config);
-              const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(item.request);
-              const closeOutcomeDraft = globalLpoCloseOutcomeDrafts[item.id] ?? recommendedCloseOutcome;
-              const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, item.request);
-
-              return (
-                <article className={`global-lpo-request-card is-${item.request.status}`} key={item.id} role="listitem">
-                  <div className="global-lpo-request-main">
-                    <button
-                      className="approval-ticket-link"
-                      type="button"
-                      title="Select ticket"
-                      onClick={() => onOpenTicket(item.ticket.key)}
-                    >
-                      <strong>{globalTicketKey}</strong>
-                      <span>Source {item.ticket.key} - {item.ticket.title}</span>
-                    </button>
-                    <small>
-                      {[item.ticket.product, item.ticket.pru, item.ticket.module].filter(Boolean).join(" - ") ||
-                        "No product scope"}{" "}
-                      · due {formatDateTimeDisplay(item.request.dueAt)}
-                    </small>
-                  </div>
-                  <div className="global-lpo-request-context">
-                    <span className={`thread-state thread-${item.request.status}`}>
-                      {item.request.status}
-                    </span>
-                    <RichTextContent value={item.request.question} fallback="No question provided." compact />
-                    <p>{responseSummary}</p>
-                  </div>
-                  {item.needsResponse ? (
-                    <div className="global-lpo-response-box">
-                      <RichTextEditor
-                        label="Response note"
-                        value={globalLpoResponseDrafts[item.id] ?? ""}
-                        onChange={(value) =>
-                          setGlobalLpoResponseDrafts((current) => ({
-                            ...current,
-                            [item.id]: value
-                          }))
-                        }
-                        placeholder="Add area, site, or rollout context if needed."
-                        rows={2}
-                      />
-                      <div className="global-lpo-response-actions">
-                        <button
-                          className="primary-button"
-                          type="button"
-                          onClick={() => submitGlobalLpoResponse(item, "needs_global")}
-                        >
-                          Needed in my area
-                        </button>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => submitGlobalLpoResponse(item, "local_only")}
-                        >
-                          Not needed
-                        </button>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => submitGlobalLpoResponse(item, "needs_discussion")}
-                        >
-                          Discuss
-                        </button>
-                      </div>
-                    </div>
-                  ) : item.currentResponse ? (
-                    <div className={`global-lpo-response-summary tone-${getGlobalLpoApprovalDecisionTone(item.currentResponse.decision)}`}>
-                      <strong>{getGlobalLpoApprovalDecisionLabel(item.currentResponse.decision)}</strong>
-                      <span>{formatDateTimeDisplay(item.currentResponse.respondedAt)}</span>
-                      {item.currentResponse.note ? (
-                        <RichTextContent value={item.currentResponse.note} fallback="" compact />
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {isManagerView ? (
-                    <div className="global-lpo-manager-summary">
-                      <div className="global-lpo-response-chip-list" aria-label="Product owner responses">
-                        {item.request.responses.length === 0 ? (
-                          <span className="global-lpo-response-chip">No responses yet</span>
-                        ) : null}
-                        {item.request.responses.map((response) => (
-                          <span
-                            className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
-                            key={`${item.request.id}-${response.userId}`}
-                            title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
-                          >
-                            {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
-                          </span>
-                        ))}
-                      </div>
-                      {item.canClose ? (
-                        <div className="global-lpo-finalize-box">
-                          <div className="global-lpo-finalize-heading">
-                            <strong>GPO final decision</strong>
-                            <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
-                          </div>
-                          <label className="form-field">
-                            <span>Outcome</span>
-                            <select
-                              value={closeOutcomeDraft}
-                              onChange={(event) =>
-                                setGlobalLpoCloseOutcomeDrafts((current) => ({
-                                  ...current,
-                                  [item.id]: event.target.value as GlobalLpoApprovalOutcome
-                                }))
-                              }
-                            >
-                              {globalLpoApprovalOutcomeOptions.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <p className="global-lpo-next-step">{getGlobalLpoApprovalOutcomeNextStep(closeOutcomeDraft)}</p>
-                          <RichTextEditor
-                            label="Decision note"
-                            value={globalLpoCloseNoteDrafts[item.id] ?? ""}
-                            onChange={(value) =>
-                              setGlobalLpoCloseNoteDrafts((current) => ({
-                                ...current,
-                                [item.id]: value
-                              }))
-                            }
-                            placeholder="Add scope, PRU, rollout, or follow-up context."
-                            rows={2}
-                          />
-                          <div className="global-lpo-finalize-actions">
-                            <button className="secondary-button" type="button" onClick={() => submitGlobalLpoClose(item)}>
-                              Close with decision
-                            </button>
-                          </div>
-                        </div>
-                      ) : item.request.status === "closed" ? (
-                        <div className={`global-lpo-final-decision tone-${getGlobalLpoApprovalOutcomeTone(item.request.finalOutcome)}`}>
-                          <strong>{getGlobalLpoApprovalOutcomeLabel(item.request.finalOutcome)}</strong>
-                          <span>
-                            {[item.request.closedBy ? `Closed by ${item.request.closedBy}` : "", item.request.closedAt ? formatDateTimeDisplay(item.request.closedAt) : ""]
-                              .filter(Boolean)
-                              .join(" - ")}
-                          </span>
-                          <p>{getGlobalLpoApprovalOutcomeNextStep(item.request.finalOutcome)}</p>
-                          {item.request.finalDecisionNote ? (
-                            <RichTextContent value={item.request.finalDecisionNote} fallback="" compact />
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })}
           </div>
         </div>
       ) : null}
@@ -19011,6 +20007,7 @@ function useReleasePlanJiraMetadata(config: AdminConfig, tickets: Ticket[]): Rel
       Array.from(
         new Set(
           tickets
+            .filter((ticket) => ticketUsesJira(config, ticket))
             .map((ticket) =>
               getValidJiraProjectKey(ticket.jiraDraft.project) ||
               getValidJiraProjectKey(config.integrations.jira.defaultProjectKey)
@@ -19018,7 +20015,7 @@ function useReleasePlanJiraMetadata(config: AdminConfig, tickets: Ticket[]): Rel
             .filter((projectKey): projectKey is string => Boolean(projectKey))
         )
       ).sort(),
-    [config.integrations.jira.defaultProjectKey, tickets]
+    [config, tickets]
   );
 
   useEffect(() => {
@@ -19631,7 +20628,7 @@ function DashboardFocusPanel({
       label: "Jira handoff",
       iconName: "route" as TegelIconName,
       module: "jira" as ModuleKey,
-      visible: (ticket.state === "jira_draft" || Boolean(ticket.relatedJiraKey)) && canAccessModule(role, "jira")
+      visible: ticketUsesJira(config, ticket) && (ticket.state === "jira_draft" || Boolean(ticket.relatedJiraKey)) && canAccessModule(role, "jira")
     },
     {
       label: "Escalations",
@@ -19662,7 +20659,7 @@ function DashboardFocusPanel({
           </span>
           <span className={`priority priority-${getPriorityToneClassName(ticket.priority)}`}>{ticket.priority}</span>
           <span className={`sla-chip state-${ticket.slaState}`}>{ticket.slaLabel}</span>
-          {ticket.relatedJiraKey ? (
+          {ticketUsesJira(config, ticket) && ticket.relatedJiraKey ? (
             <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} className="jira-issue-link ticket-jira-link" />
           ) : null}
         </div>
@@ -21001,7 +21998,7 @@ function TicketListWorkspace({
                 <th>Type</th>
                 <th>Priority</th>
                 <th>Product / PRU / Module</th>
-                <th>Jira</th>
+                <th>Source</th>
                 <th>Submitted by</th>
                 <th>Created</th>
                 <th>Remaining SLA</th>
@@ -21064,7 +22061,9 @@ function TicketListWorkspace({
                       </span>
                     </td>
                     <td>
-                      {row.ticket.relatedJiraKey ? (
+                      {!ticketUsesJira(config, row.ticket) ? (
+                        <span className="jira-issue-empty">NEXUS</span>
+                      ) : row.ticket.relatedJiraKey ? (
                         <JiraIssueLink config={config} jiraKey={row.ticket.relatedJiraKey} />
                       ) : (
                         <span className="jira-issue-empty">Not linked</span>
@@ -21286,6 +22285,9 @@ function TicketDetail({
 }) {
   const canReopenTicket = canReopenTicketForRole(ticket, role);
   const currentStatusLabel = getTicketCurrentStatusLabel(ticket);
+  const ticketHasJiraTab = ticketUsesJira(config, ticket);
+  const visibleTabItems = ticketHasJiraTab ? tabItems : tabItems.filter((tab) => tab !== "Jira");
+  const effectiveActiveTab = ticketHasJiraTab || activeTab !== "Jira" ? activeTab : "Overview";
 
   return (
     <section className="panel ticket-detail">
@@ -21305,7 +22307,7 @@ function TicketDetail({
             </span>
             <span className={`risk risk-${toClassName(ticket.risk)}`}>{ticket.risk} risk</span>
             <span className={`sla-chip state-${ticket.slaState}`}>{ticket.slaLabel}</span>
-            {ticket.relatedJiraKey ? (
+            {ticketHasJiraTab && ticket.relatedJiraKey ? (
               <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} className="jira-issue-link ticket-jira-link" />
             ) : null}
           </div>
@@ -21318,22 +22320,22 @@ function TicketDetail({
         </div>
       </div>
       <div className="tabs" role="tablist" aria-label="Ticket detail sections">
-        {tabItems.map((tab) => (
+        {visibleTabItems.map((tab) => (
           <button
-            className={activeTab === tab ? "is-active" : ""}
+            className={effectiveActiveTab === tab ? "is-active" : ""}
             key={tab}
             onClick={() => onTabChange(tab)}
             type="button"
             role="tab"
-            aria-selected={activeTab === tab}
+            aria-selected={effectiveActiveTab === tab}
           >
             {tab}
           </button>
         ))}
       </div>
-      <p className="tab-helper">{getTicketTabDescription(activeTab)}</p>
+      <p className="tab-helper">{getTicketTabDescription(effectiveActiveTab)}</p>
       <div className="tab-content">
-        {activeTab === "Overview" ? (
+        {effectiveActiveTab === "Overview" ? (
           <OverviewPanel
           ticket={ticket}
           config={config}
@@ -21342,7 +22344,7 @@ function TicketDetail({
           selectedPersona={selectedPersona}
         />
         ) : null}
-        {activeTab === "Workflow" ? (
+        {effectiveActiveTab === "Workflow" ? (
           <WorkflowPanel
             ticket={ticket}
             config={config}
@@ -21356,7 +22358,7 @@ function TicketDetail({
             onUpdateWorkflowStatus={onUpdateWorkflowStatus}
           />
         ) : null}
-        {activeTab === "Clarifications" ? (
+        {effectiveActiveTab === "Clarifications" ? (
           <ClarificationPanel
             ticket={ticket}
             config={config}
@@ -21368,7 +22370,7 @@ function TicketDetail({
             role={role}
           />
         ) : null}
-        {activeTab === "Comments" ? (
+        {effectiveActiveTab === "Comments" ? (
           <CommentPanel
             ticket={ticket}
             comments={visibleComments}
@@ -21378,7 +22380,7 @@ function TicketDetail({
             role={role}
           />
         ) : null}
-        {activeTab === "Jira" ? (
+        {effectiveActiveTab === "Jira" && ticketHasJiraTab ? (
           <JiraSyncPanel
             ticket={ticket}
             config={config}
@@ -21391,7 +22393,7 @@ function TicketDetail({
             surface="ticket"
           />
         ) : null}
-        {activeTab === "Escalations" ? (
+        {effectiveActiveTab === "Escalations" ? (
           <EscalationPanel
             ticket={ticket}
             config={config}
@@ -21404,8 +22406,8 @@ function TicketDetail({
             selectedPersona={selectedPersona}
           />
         ) : null}
-        {activeTab === "Audit" ? <AuditTimeline entries={visibleAudit} embedded expanded /> : null}
-        {activeTab === "Attachments" ? (
+        {effectiveActiveTab === "Audit" ? <AuditTimeline entries={visibleAudit} embedded expanded /> : null}
+        {effectiveActiveTab === "Attachments" ? (
           <AttachmentPanel
             ticket={ticket}
             embedded
@@ -21444,11 +22446,29 @@ function TicketUpdatePanel({
     () => getTicketUpdateOptionLabels(config.riskOptions, ticket.risk),
     [config.riskOptions, ticket.risk]
   );
+  const stateOptions = useMemo(
+    () =>
+      ticketUsesJira(config, ticket)
+        ? ticketStateOptions
+        : ticketStateOptions.filter((option) => option.value !== "jira_draft" && option.value !== "jira_synced"),
+    [config, ticket]
+  );
 
   useEffect(() => {
     setForm(buildTicketUpdateForm(ticket));
     setFormError("");
   }, [ticket]);
+
+  useEffect(() => {
+    if (stateOptions.some((option) => option.value === form.state)) {
+      return;
+    }
+
+    setForm((currentForm) => ({
+      ...currentForm,
+      state: "closed"
+    }));
+  }, [form.state, stateOptions]);
 
   useEffect(() => {
     setSuccessMessage("");
@@ -21515,7 +22535,7 @@ function TicketUpdatePanel({
                 }))
               }
             >
-              {ticketStateOptions.map((option) => (
+              {stateOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -21647,6 +22667,11 @@ function OverviewPanel({
   const dynamicFieldEntries = Object.entries(ticket.dynamicFields).filter(
     ([label]) => !hiddenTicketDynamicFieldLabels.has(label)
   );
+  const ticketHasJiraSource = ticketUsesJira(config, ticket);
+  const lifecycleState =
+    !ticketHasJiraSource && (ticket.state === "jira_draft" || ticket.state === "jira_synced")
+      ? "closed"
+      : ticket.state;
 
   return (
     <div className="overview-grid">
@@ -21658,19 +22683,21 @@ function OverviewPanel({
           ["Product", ticket.product],
           ["Module", ticket.module],
           ["Current status", getTicketCurrentStatusLabel(ticket)],
-          ["Lifecycle state", ticket.state.replace("_", " ")]
+          ["Lifecycle state", lifecycleState.replace("_", " ")]
         ].map(([label, value]) => (
           <div className="field-row" key={label}>
             <span>{label}</span>
             <strong>{value}</strong>
           </div>
         ))}
-        <div className="field-row">
-          <span>Jira issue</span>
-          <strong>
-            <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} />
-          </strong>
-        </div>
+        {ticketHasJiraSource && ticket.relatedJiraKey ? (
+          <div className="field-row">
+            <span>Jira issue</span>
+            <strong>
+              <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} />
+            </strong>
+          </div>
+        ) : null}
       </div>
       <div className="dynamic-fields">
         <h3>Dynamic fields</h3>
@@ -22384,9 +23411,9 @@ function JiraWorkspace({
   const readyTickets = useMemo(
     () =>
       tickets
-        .filter((ticket) => canCreateJiraForTicket(ticket))
+        .filter((ticket) => canCreateJiraForTicket(ticket, config))
         .sort((left, right) => parseTicketTimestamp(right.updatedAt) - parseTicketTimestamp(left.updatedAt)),
-    [tickets]
+    [config, tickets]
   );
   const followUpTickets = useMemo(
     () =>
@@ -22582,8 +23609,8 @@ function JiraSyncPanel({
   const [gitLabReviewState, setGitLabReviewState] = useState<"idle" | "reviewing">("idle");
   const [jiraFieldMetadata, setJiraFieldMetadata] = useState<JiraFieldMetadata>(emptyJiraFieldMetadata);
   const isJiraSyncSurface = surface === "sync";
-  const canCreateJira = canCreateJiraForTicket(ticket);
-  const canReplaceJira = canReplaceJiraForTicket(ticket);
+  const canCreateJira = canCreateJiraForTicket(ticket, config);
+  const canReplaceJira = canReplaceJiraForTicket(ticket, config);
   const canManageJira = Boolean(
     isJiraSyncSurface &&
       canManageJiraActions &&
@@ -30304,6 +31331,7 @@ type RegionSiteFormState = {
 type ProductFormState = {
   productName: string;
   productOwnerName: string;
+  ticketSource: ProductTicketSource;
   jiraProjectKey: string;
   active: boolean;
 };
@@ -30653,6 +31681,7 @@ const workflowRoleTypeOptions = [
   { value: "inform", label: "Inform only" }
 ] as const satisfies readonly { value: WorkflowRoleType; label: string }[];
 const workflowRoleTypeCompatibility: Partial<Record<RoleKey, readonly WorkflowRoleType[]>> = {
+  solution_architect: ["approval", "review"],
   software_architect: ["approval", "review"]
 };
 const tagVariantOptions: TegelTagVariant[] = [
@@ -31240,6 +32269,7 @@ function buildProductForm(product?: ProductConfig): ProductFormState {
   return {
     productName: product?.productName ?? "",
     productOwnerName: product?.productOwnerName ?? "",
+    ticketSource: getProductTicketSource(product),
     jiraProjectKey: product?.jiraProjectKey ?? "",
     active: product?.active ?? true
   };
@@ -31484,6 +32514,7 @@ function buildWorkflowRouteForm(
   const firstTemplate = workflowTemplates[0];
   const template = getWorkflowTemplateById(workflow?.workflowTemplateId ?? "") ?? firstTemplate;
   const stepIds = workflow?.stepIds?.length ? workflow.stepIds : template.steps.map((step) => step.id);
+  const hasJiraProducts = config.products.some((product) => productUsesJira(product));
   const stepOverrides = Object.fromEntries(
     stepIds.flatMap((stepId) => {
       const templateStep = template.steps.find((step) => step.id === stepId);
@@ -31493,15 +32524,17 @@ function buildWorkflowRouteForm(
       return step ? ([[stepId, buildWorkflowStepForm(step, override)] as const]) : [];
     })
   );
-  const jiraCreatorStepIds = getJiraCreatorStepIds({
-    stepIds,
-    jiraCreatorStepId: workflow?.jiraCreatorStepId ?? "",
-    jiraCreatorStepIds: workflow?.jiraCreatorStepIds
-  }).filter((stepId) => {
-    const stepForm = stepOverrides[stepId];
+  const jiraCreatorStepIds = hasJiraProducts
+    ? getJiraCreatorStepIds({
+        stepIds,
+        jiraCreatorStepId: workflow?.jiraCreatorStepId ?? "",
+        jiraCreatorStepIds: workflow?.jiraCreatorStepIds
+      }).filter((stepId) => {
+        const stepForm = stepOverrides[stepId];
 
-    return stepForm ? workflowStepCanCreateJira(config, stepForm) : false;
-  });
+        return stepForm ? workflowStepCanCreateJira(config, stepForm) : false;
+      })
+    : [];
 
   return {
     ticketTypeId: workflow?.ticketTypeId ?? firstRequestType?.id ?? "",
@@ -32775,6 +33808,8 @@ function AdminMasterDataManager({
   const selectedModuleProducts = selectedModuleProductIds
     .map((productId) => getConfigProductById(config, productId))
     .filter((product): product is ProductConfig => Boolean(product));
+  const selectedModuleProductsUseJira = selectedModuleProducts.some((product) => productUsesJira(product));
+  const hasJiraConfiguredProducts = config.products.some((product) => productUsesJira(product));
   const modulePruOptions = uniqueSortedValues(
     selectedModuleProducts.flatMap((product) => (product.prus ?? []).map((pru) => pru.name))
   );
@@ -32826,6 +33861,7 @@ function AdminMasterDataManager({
     matchesMasterSearch(
       product.productName,
       product.productOwnerName,
+      getProductTicketSource(product),
       product.jiraProjectKey,
       `${product.prus.length} PRUs`,
       `${product.roleAssignments.length} role assignments`
@@ -33827,9 +34863,10 @@ function AdminMasterDataManager({
     event.preventDefault();
 
     const productName = productForm.productName.trim();
+    const ticketSource = productForm.ticketSource === "nexus" ? "nexus" : "jira";
     const jiraProjectKey = productForm.jiraProjectKey.trim().toUpperCase();
 
-    if (!productName || !jiraProjectKey) {
+    if (!productName || (ticketSource === "jira" && !jiraProjectKey)) {
       return;
     }
 
@@ -33846,7 +34883,8 @@ function AdminMasterDataManager({
       id,
       productName,
       productOwnerName: productForm.productOwnerName.trim(),
-      jiraProjectKey,
+      ticketSource,
+      jiraProjectKey: ticketSource === "jira" ? jiraProjectKey : "",
       roleAssignments: previousProduct?.roleAssignments ?? [],
       prus: previousProduct?.prus ?? [],
       active: productForm.active
@@ -34097,7 +35135,7 @@ function AdminMasterDataManager({
               const updatedModule: ProductModuleConfig = {
                 id,
                 name,
-                jiraComponent: moduleForm.jiraComponent.trim() || undefined,
+                jiraComponent: productUsesJira(product) ? moduleForm.jiraComponent.trim() || undefined : undefined,
                 active: moduleForm.active
               };
 
@@ -34593,7 +35631,7 @@ function AdminMasterDataManager({
     return renderMasterEditorModal({
       isOpen: isProductEditorOpen,
       title: editingProductId ? "Edit product" : "Create product",
-      description: "Manage product ownership, Jira project routing, and active status.",
+      description: "Manage product ownership, ticket source, and active status.",
       titleId: "admin-product-editor-title",
       onClose: resetProductForm,
       onSubmit: saveProduct,
@@ -34617,13 +35655,33 @@ function AdminMasterDataManager({
               />
             </label>
             <label className="form-field">
-              <span>Jira project key</span>
-              <input
-                value={productForm.jiraProjectKey}
-                onChange={(event) => setProductForm({ ...productForm, jiraProjectKey: event.target.value })}
-                placeholder="NEXUS"
-              />
+              <span>Ticket source of truth</span>
+              <select
+                value={productForm.ticketSource}
+                onChange={(event) => {
+                  const ticketSource = event.target.value as ProductTicketSource;
+
+                  setProductForm({
+                    ...productForm,
+                    ticketSource,
+                    jiraProjectKey: ticketSource === "nexus" ? "" : productForm.jiraProjectKey
+                  });
+                }}
+              >
+                <option value="jira">Jira</option>
+                <option value="nexus">NEXUS</option>
+              </select>
             </label>
+            {productForm.ticketSource === "jira" ? (
+              <label className="form-field">
+                <span>Jira project key</span>
+                <input
+                  value={productForm.jiraProjectKey}
+                  onChange={(event) => setProductForm({ ...productForm, jiraProjectKey: event.target.value })}
+                  placeholder="NEXUS"
+                />
+              </label>
+            ) : null}
           </div>
           <AdminCheckbox
             checked={productForm.active}
@@ -34725,7 +35783,9 @@ function AdminMasterDataManager({
     return renderMasterEditorModal({
       isOpen: isModuleEditorOpen,
       title: editingModuleRef ? "Edit module" : "Create module",
-      description: "Manage module names, selected product/PRU scope, Jira component, and active status.",
+      description: selectedModuleProductsUseJira
+        ? "Manage module names, selected product/PRU scope, Jira component, and active status."
+        : "Manage module names, selected product/PRU scope, and active status.",
       titleId: "admin-module-editor-title",
       onClose: resetModuleForm,
       onSubmit: saveModule,
@@ -34752,6 +35812,7 @@ function AdminMasterDataManager({
                 const selectedProducts = expandedProductIds
                   .map((productId) => getConfigProductById(config, productId))
                   .filter((product): product is ProductConfig => Boolean(product));
+                const selectedProductsUseJira = selectedProducts.some((product) => productUsesJira(product));
                 const nextPruOptions = uniqueSortedValues(
                   selectedProducts.flatMap((product) => (product.prus ?? []).map((pru) => pru.name))
                 );
@@ -34762,7 +35823,8 @@ function AdminMasterDataManager({
                 setModuleForm({
                   ...moduleForm,
                   productIds,
-                  pruNames: nextPruNames.length > 0 ? nextPruNames : nextPruOptions[0] ? [nextPruOptions[0]] : []
+                  pruNames: nextPruNames.length > 0 ? nextPruNames : nextPruOptions[0] ? [nextPruOptions[0]] : [],
+                  jiraComponent: selectedProductsUseJira ? moduleForm.jiraComponent : ""
                 });
               }}
             />
@@ -34787,6 +35849,7 @@ function AdminMasterDataManager({
                 placeholder="Module name"
               />
             </label>
+            {selectedModuleProductsUseJira ? (
             <label className="form-field">
               <span>Jira component</span>
               <input
@@ -34796,6 +35859,7 @@ function AdminMasterDataManager({
               />
               <small>Leave empty to create or update Jira without a component for this module.</small>
             </label>
+            ) : null}
           </div>
           <AdminCheckbox
             checked={moduleForm.active}
@@ -35358,7 +36422,8 @@ function AdminMasterDataManager({
               },
               { key: "product", label: "Product", className: "admin-product-column-name", width: 220, minWidth: 170 },
               { key: "owner", label: "Owner", className: "admin-product-column-owner", width: 150, minWidth: 120 },
-              { key: "jira", label: "Jira project", className: "admin-product-column-jira", width: 340, minWidth: 220 },
+              { key: "source", label: "Source", className: "admin-product-column-jira", width: 180, minWidth: 140 },
+              { key: "jira", label: "Jira project", className: "admin-product-column-jira", width: 220, minWidth: 160 },
               { key: "prus", label: "PRUs", className: "admin-product-column-prus", width: 240, minWidth: 160 },
               { key: "assignments", label: "Assignments", className: "admin-product-column-assignments", width: 126, minWidth: 112 },
               {
@@ -35391,7 +36456,12 @@ function AdminMasterDataManager({
                   </div>
                 ),
                 owner: product.productOwnerName || "No owner",
-                jira: <span className="admin-config-url-cell">{product.jiraProjectKey || "No Jira project"}</span>,
+                source: getProductTicketSource(product) === "jira" ? "Jira" : "NEXUS",
+                jira: (
+                  <span className="admin-config-url-cell">
+                    {productUsesJira(product) ? product.jiraProjectKey || "No Jira project" : "Not used"}
+                  </span>
+                ),
                 prus: (
                   <div className="admin-config-cell-stack admin-product-pru-cell">
                     <strong>{formatScopedCount(product.prus.map((pru) => pru.name), "PRU", "PRUs")}</strong>
@@ -35531,7 +36601,7 @@ function AdminMasterDataManager({
               { key: "module", label: "Module" },
               { key: "product", label: "Product" },
               { key: "pru", label: "PRU" },
-              { key: "jira", label: "Jira component" },
+              ...(hasJiraConfiguredProducts ? [{ key: "jira", label: "Jira component" }] : []),
               { key: "status", label: "Status", className: "admin-config-table-status" }
             ]}
             rows={filteredVisibleModules.map((module) => {
@@ -35562,7 +36632,9 @@ function AdminMasterDataManager({
                 ),
                 product: module.productName,
                 pru: module.pruName,
-                jira: module.jiraComponent || "No Jira component",
+                jira: productUsesJira(getConfigProductById(config, module.productId))
+                  ? module.jiraComponent || "No Jira component"
+                  : "Not used",
                 status: <AdminStatusPill active={module.active} />
                 }
               };
@@ -35709,12 +36781,17 @@ function TicketWorkflowManager({
     })
   );
   const availableWorkflowRoles = getWorkflowRoleOptions(config).filter((role) => !selectedOwnerRoles.has(role.key));
+  const hasJiraProducts = config.products.some((product) => productUsesJira(product));
   const selectedJiraCreatorSteps = selectedSteps.filter((step) => workflowForm.jiraCreatorStepIds.includes(step.id));
   const selectedJiraCreatorLabels = selectedJiraCreatorSteps.map(
     (step) => workflowForm.stepOverrides[step.id]?.label || step.label
   );
 
   function getEligibleJiraCreatorStepIds(stepIds: string[], stepOverrides: Record<string, WorkflowStepFormState>): string[] {
+    if (!hasJiraProducts) {
+      return [];
+    }
+
     return stepIds.filter((stepId) => {
       const stepForm = stepOverrides[stepId];
 
@@ -35948,7 +37025,7 @@ function TicketWorkflowManager({
       workflowForm.jiraCreatorStepIds
     );
 
-    if (!jiraCreatorStepIds.length) {
+    if (hasJiraProducts && !jiraCreatorStepIds.length) {
       setWorkflowError("Select at least one IT-domain approval or review step as Jira creator.");
       return;
     }
@@ -35974,7 +37051,7 @@ function TicketWorkflowManager({
       workflowTemplateId: selectedTemplate.id,
       escalationPolicyId: workflowForm.escalationPolicyId,
       stepIds: workflowForm.stepIds,
-      jiraCreatorStepId: jiraCreatorStepIds[0],
+      jiraCreatorStepId: jiraCreatorStepIds[0] ?? "",
       jiraCreatorStepIds,
       stepOverrides: buildWorkflowStepOverridesFromForm(workflowForm, selectedTemplate),
       active: workflowForm.active,
@@ -36057,11 +37134,13 @@ function TicketWorkflowManager({
                 ))}
               </select>
             </label>
+            {hasJiraProducts ? (
             <div className="form-field workflow-jira-summary">
               <span>Jira creators</span>
               <strong>{selectedJiraCreatorLabels.length ? selectedJiraCreatorLabels.join(", ") : "Select IT steps below"}</strong>
               <small>Only IT-domain approval or review levels can create Jira tickets.</small>
             </div>
+            ) : null}
             <div className="workflow-route-toggle-cell">
               <AdminCheckbox
                 checked={workflowForm.active}
@@ -36081,8 +37160,8 @@ function TicketWorkflowManager({
               <div className="workflow-level-list">
                 {selectedSteps.map((step, index) => {
                   const stepForm = workflowForm.stepOverrides[step.id] ?? buildWorkflowStepForm(step);
-                  const isJiraCreator = workflowForm.jiraCreatorStepIds.includes(step.id);
-                  const canStepCreateJira = workflowStepCanCreateJira(config, stepForm);
+                  const isJiraCreator = hasJiraProducts && workflowForm.jiraCreatorStepIds.includes(step.id);
+                  const canStepCreateJira = hasJiraProducts && workflowStepCanCreateJira(config, stepForm);
                   const ownerRoleOptions = getWorkflowRoleOptionsForStep(
                     config,
                     stepForm.workflowType,
@@ -36097,7 +37176,7 @@ function TicketWorkflowManager({
                           <strong>Level {index + 1}</strong>
                           <small>{step.id}</small>
                         </div>
-                        {canStepCreateJira ? (
+                        {hasJiraProducts && canStepCreateJira ? (
                           <label className="workflow-jira-radio">
                             <input
                               checked={isJiraCreator}
@@ -36106,9 +37185,9 @@ function TicketWorkflowManager({
                             />
                             Jira creator
                           </label>
-                        ) : (
+                        ) : hasJiraProducts ? (
                           <span className="workflow-jira-domain-note">Not IT domain</span>
-                        )}
+                        ) : null}
                       </div>
                       <div className="workflow-level-field-grid">
                         <label className="form-field">
@@ -36259,8 +37338,12 @@ function TicketWorkflowManager({
                   const nextStep = selectedSteps[index + 1];
                   const nextStepForm = nextStep ? workflowForm.stepOverrides[nextStep.id] ?? buildWorkflowStepForm(nextStep) : undefined;
                   const ownerLabel = getConfigRoleLabel(config, stepForm.ownerRole);
-                  const nextOwnerLabel = nextStepForm ? getConfigRoleLabel(config, nextStepForm.ownerRole) : "Jira draft";
-                  const isJiraCreator = workflowForm.jiraCreatorStepIds.includes(step.id);
+                  const nextOwnerLabel = nextStepForm
+                    ? getConfigRoleLabel(config, nextStepForm.ownerRole)
+                    : hasJiraProducts
+                      ? "Jira draft"
+                      : "Completion";
+                  const isJiraCreator = hasJiraProducts && workflowForm.jiraCreatorStepIds.includes(step.id);
                   const workflowTypeLabel = getWorkflowRoleTypeLabel(stepForm.workflowType);
                   const waitingAction =
                     stepForm.workflowType === "inform"
@@ -36285,7 +37368,7 @@ function TicketWorkflowManager({
                         </div>
                         <div>
                           <span>Proceed</span>
-                          <strong>{isJiraCreator ? "Create Jira ticket" : `${nextOwnerLabel} approval next`}</strong>
+                          <strong>{isJiraCreator ? "Create Jira ticket" : `${nextOwnerLabel} ${nextStepForm ? "approval next" : "next"}`}</strong>
                         </div>
                         <div>
                           <span>More info</span>
@@ -36328,7 +37411,10 @@ function TicketWorkflowManager({
                   <div>
                     <strong>{getConfigTicketTypeLabel(config, workflow.ticketTypeId)}</strong>
                     <span>
-                      {template?.name ?? workflow.workflowTemplateId} - {escalationPolicy?.name ?? "No escalation policy"} - Jira creators: {jiraCreatorSteps.length ? jiraCreatorSteps.map((step) => step.label).join(", ") : "Not set"}
+                      {template?.name ?? workflow.workflowTemplateId} - {escalationPolicy?.name ?? "No escalation policy"}
+                      {hasJiraProducts
+                        ? ` - Jira creators: ${jiraCreatorSteps.length ? jiraCreatorSteps.map((step) => step.label).join(", ") : "Not set"}`
+                        : ""}
                     </span>
                   </div>
                   <AdminStatusPill active={workflow.active} />
@@ -40802,6 +41888,7 @@ function AnalyticsPanel({
   const bugTickets = reportTickets.filter((ticket) => isBugReportTicket(config, ticket)).length;
   const openTickets = reportTickets.filter((ticket) => ticket.state !== "closed").length;
   const slaBreaches = reportTickets.filter((ticket) => ticket.slaState === "breach").length;
+  const hasJiraReportTickets = reportTickets.some((ticket) => ticketUsesJira(config, ticket));
   const typeBuckets = useMemo(
     () => buildReportBuckets(reportTickets, (ticket) => getReportTicketTypeLabel(config, ticket)),
     [config, reportTickets]
@@ -40839,6 +41926,12 @@ function AnalyticsPanel({
     setReportSnapshot(null);
   }
 
+  useEffect(() => {
+    if (activeReportTab === "jiraInsights" && !hasJiraReportTickets) {
+      setActiveReportTab("analytics");
+    }
+  }, [activeReportTab, hasJiraReportTickets]);
+
   return (
     <section className={`panel analytics-panel ${expanded ? "is-expanded" : ""}`}>
       <PanelHeader
@@ -40865,15 +41958,17 @@ function AnalyticsPanel({
         >
           Lead time
         </button>
-        <button
-          aria-selected={activeReportTab === "jiraInsights"}
-          className={activeReportTab === "jiraInsights" ? "is-active" : ""}
-          role="tab"
-          type="button"
-          onClick={() => setActiveReportTab("jiraInsights")}
-        >
-          Jira insights
-        </button>
+        {hasJiraReportTickets ? (
+          <button
+            aria-selected={activeReportTab === "jiraInsights"}
+            className={activeReportTab === "jiraInsights" ? "is-active" : ""}
+            role="tab"
+            type="button"
+            onClick={() => setActiveReportTab("jiraInsights")}
+          >
+            Jira insights
+          </button>
+        ) : null}
       </div>
 
       <ReportScopeFilterPanel
@@ -40943,7 +42038,7 @@ function AnalyticsPanel({
         <LeadTimeReport config={config} tickets={reportTickets} />
       ) : null}
 
-      {activeReportTab === "jiraInsights" ? (
+      {activeReportTab === "jiraInsights" && hasJiraReportTickets ? (
         <JiraInsightsReport config={config} tickets={reportTickets} />
       ) : null}
     </section>
@@ -41655,8 +42750,12 @@ function getJiraInsightReleaseRows(tickets: Ticket[]) {
     .slice(0, 8);
 }
 
-function JiraInsightsReport({ config, tickets }: { config: AdminConfig; tickets: Ticket[] }) {
+function JiraInsightsReport({ config, tickets: reportTickets }: { config: AdminConfig; tickets: Ticket[] }) {
   const [activeView, setActiveView] = useState<JiraInsightsView>("overview");
+  const tickets = useMemo(
+    () => reportTickets.filter((ticket) => ticketUsesJira(config, ticket)),
+    [config, reportTickets]
+  );
   const currentWindowTickets = useMemo(() => getJiraInsightWindowTickets(tickets, 30), [tickets]);
   const previousWindowTickets = useMemo(() => getJiraInsightWindowTickets(tickets, 30, true), [tickets]);
   const resolvedTickets = tickets.filter(isTicketResolvedForInsights);
@@ -41852,7 +42951,7 @@ function JiraInsightsReport({ config, tickets }: { config: AdminConfig; tickets:
         <div className="jira-insight-split-grid">
           <div className="jira-insight-kpi-grid compact">
             <JiraInsightKpiCard label="Linked Jira issues" value={tickets.filter((ticket) => ticket.relatedJiraKey).length} trend="portal tickets with Jira key" />
-            <JiraInsightKpiCard label="Ready to create" value={tickets.filter(canCreateJiraForTicket).length} trend="workflow gates complete" tone="warning" />
+            <JiraInsightKpiCard label="Ready to create" value={tickets.filter((ticket) => canCreateJiraForTicket(ticket, config)).length} trend="workflow gates complete" tone="warning" />
             <JiraInsightKpiCard label="In progress" value={tickets.filter((ticket) => getTicketJiraFollowUpStatus(ticket) === "in_progress").length} trend="active Jira development" />
           </div>
           <JiraInsightTable

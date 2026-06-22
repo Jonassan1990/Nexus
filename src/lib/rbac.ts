@@ -6,6 +6,7 @@ const visibilityMatrix: Record<VisibilityLevel, RoleKey[]> = {
     "local_product_owner",
     "global_product_owner",
     "business_architect",
+    "solution_architect",
     "software_architect",
     "release_manager",
     "developer",
@@ -17,6 +18,7 @@ const visibilityMatrix: Record<VisibilityLevel, RoleKey[]> = {
     "local_product_owner",
     "global_product_owner",
     "business_architect",
+    "solution_architect",
     "software_architect",
     "release_manager",
     "security_reviewer",
@@ -25,6 +27,7 @@ const visibilityMatrix: Record<VisibilityLevel, RoleKey[]> = {
   it_only: ["it_reviewer", "security_reviewer", "release_manager", "admin"],
   architecture_only: [
     "business_architect",
+    "solution_architect",
     "software_architect",
     "security_reviewer",
     "release_manager",

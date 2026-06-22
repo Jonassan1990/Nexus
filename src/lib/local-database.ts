@@ -241,7 +241,21 @@ function normalizeStoredFunctionMappingReviews(ticket: Ticket): NonNullable<Tick
 
   return ticket.functionMappingReviews.map((review) => ({
     ...review,
-    materialAttachmentIds: Array.isArray(review.materialAttachmentIds) ? review.materialAttachmentIds : []
+    materialAttachmentIds: Array.isArray(review.materialAttachmentIds) ? review.materialAttachmentIds : [],
+    steps: review.steps.map((step) =>
+      step.id === "solution_architecture"
+        ? {
+            ...step,
+            label: "Solution architecture mapping",
+            ownerRole: "solution_architect",
+            ownerName: step.ownerRole === "solution_architect" && step.ownerName ? step.ownerName : "Solution Architect",
+            discussion: Array.isArray(step.discussion) ? step.discussion : []
+          }
+        : {
+            ...step,
+            discussion: Array.isArray(step.discussion) ? step.discussion : []
+          }
+    )
   }));
 }
 
