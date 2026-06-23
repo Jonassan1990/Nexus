@@ -1,4 +1,4 @@
-# NEXUS Portal
+# Nexus-support portal
 
 Modern enterprise governance and support portal prototype built with Next.js,
 React, and TypeScript.
@@ -24,7 +24,7 @@ local database file. The generated SQLite files are intentionally ignored by git
 
 ## Useful routes
 
-- `/` - NEXUS Portal operational workspace
+- `/` - Nexus-support portal operational workspace
 - `/tv` - SLA and escalation wallboard view
 - `/api/tickets` - ticket list API shape
 - `/api/workflows` - workflow template API shape

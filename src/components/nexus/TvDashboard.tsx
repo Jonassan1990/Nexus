@@ -12,7 +12,7 @@ export function TvDashboard() {
     <main className="tv-shell">
       <header className="tv-header">
         <div>
-          <h1>NEXUS Portal Operations</h1>
+          <h1>Nexus-support portal operations</h1>
           <p>SLA monitoring, escalation focus, and governed workflow throughput</p>
         </div>
         <span>Live governance board</span>

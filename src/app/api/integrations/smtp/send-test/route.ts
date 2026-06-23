@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
   try {
     const result = await transporter.sendMail({
       from: {
-        name: config.fromName.trim() || "NEXUS Portal",
+        name: config.fromName.trim() || "Nexus-support portal",
         address: config.fromEmail.trim()
       },
       to: message.to.trim(),

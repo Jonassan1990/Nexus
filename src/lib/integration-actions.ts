@@ -210,7 +210,7 @@ export function validateJiraActionConfig(config: JiraActionConfig): string[] {
 
 export function buildJiraDescription(summary: string, sourceTicketKey?: string): string {
   const lines = [
-    "Created from NEXUS Portal integration test.",
+    "Created from Nexus-support portal integration test.",
     "",
     `Summary: ${summary}`,
     sourceTicketKey ? `Source ticket: ${sourceTicketKey}` : ""

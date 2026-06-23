@@ -8870,7 +8870,7 @@ function isPortalAuthoredImportedJiraComment(comment: CommentItem): boolean {
 }
 
 function formatPortalAuthoredJiraComment(actor: RolePersonaOption, body: string): string {
-  return `${actor.displayName} via NEXUS Portal:\n\n${body}`;
+  return `${actor.displayName} via Nexus-support portal:\n\n${body}`;
 }
 
 function mergeImportedJiraComments(
@@ -10999,7 +10999,7 @@ function buildTicketDynamicFields(
     "Expected completion date": form.expectedCompletionDate || "Not provided",
     "Form template": formTemplate?.title ?? "No product-specific template matched",
     "User role": roleLabel,
-    "Created from": "NEXUS Portal intake form"
+    "Created from": "Nexus-support portal intake form"
   };
 
   const templateFields = [...(formTemplate?.fields ?? [])].sort((left, right) => left.sortOrder - right.sortOrder);
@@ -11107,7 +11107,7 @@ function createTicketFromForm(
         createdAt: timestamp,
         visibility: "admin_only",
         newValue: ticketKey,
-        reason: "Created from NEXUS Portal intake form."
+        reason: "Created from Nexus-support portal intake form."
       }
     ],
     comments: [
@@ -13420,7 +13420,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       "Latest status update:",
       statusUpdateText,
       "",
-      ticketUrl ? `Open ticket: ${ticketUrl}` : "Open the ticket in NEXUS Portal."
+      ticketUrl ? `Open ticket: ${ticketUrl}` : "Open the ticket in Nexus-support portal."
     ].join("\n");
     const localSecrets = readLocalIntegrationSecrets();
     const idempotencyKey = [
@@ -15596,7 +15596,7 @@ function TopBar({
 
   return (
     <div className="tegel-header-shell">
-      <div className="mobile-tegel-header" aria-label="NEXUS Portal mobile header">
+      <div className="mobile-tegel-header" aria-label="Nexus-support portal mobile header">
         <button
           className="mobile-header-button"
           type="button"
@@ -15605,7 +15605,7 @@ function TopBar({
         >
           <span className="mobile-menu-lines" aria-hidden="true" />
         </button>
-        <strong>NEXUS PORTAL</strong>
+        <strong>Nexus-support portal</strong>
         <button
           className="mobile-header-button"
           type="button"
@@ -15614,13 +15614,13 @@ function TopBar({
           <span className="mobile-launcher-dots" aria-hidden="true" />
         </button>
       </div>
-      <TdsHeader aria-label="NEXUS Portal header">
+      <TdsHeader aria-label="Nexus-support portal header">
         <TdsHeaderHamburger
           slot="hamburger"
           tdsAriaLabel="Open navigation"
           onClick={onToggleMenu}
         />
-        <TdsHeaderTitle slot="title">NEXUS PORTAL</TdsHeaderTitle>
+        <TdsHeaderTitle slot="title">Nexus-support portal</TdsHeaderTitle>
         <TdsHeaderItem className="tegel-header-search-item" slot="end">
           <form
             className={`tegel-header-ticket-search ${shouldShowTicketSearchList ? "is-open" : ""}`}
@@ -24820,7 +24820,7 @@ function JiraSyncPanel({
                   setGitLabReviewError("");
                   setGitLabReviewSuccess("");
                 }}
-                placeholder="nexus portal"
+                placeholder="Nexus-support portal"
               />
             </label>
             <div className="jira-gitlab-action-cell">
@@ -32751,7 +32751,7 @@ function buildJiraConfigForm(config: JiraIntegrationConfig): JiraConfigFormState
     authMode: config.authMode ?? "personalAccessToken",
     username: config.username ?? "",
     token: "",
-    testIssueSummary: `NEXUS integration test - ${defaultProjectKey || "Jira"}`
+    testIssueSummary: `Nexus-support portal integration test - ${defaultProjectKey || "Jira"}`
   };
 }
 
@@ -32825,7 +32825,7 @@ function buildEntraAdminConsentUrl(form: EntraConfigFormState): string {
   return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/adminconsent?${new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
-    state: "nexus-portal-graph-consent"
+    state: "nexus-support-portal-graph-consent"
   }).toString()}`;
 }
 
@@ -32841,8 +32841,8 @@ function buildSmtpConfigForm(config: SmtpConfig): SmtpConfigFormState {
     username: "",
     password: "",
     testRecipient: "",
-    testSubject: "NEXUS Portal SMTP test",
-    testBody: "This is a test email from the NEXUS Portal SMTP integration settings."
+    testSubject: "Nexus-support portal SMTP test",
+    testBody: "This is a test email from the Nexus-support portal SMTP integration settings."
   };
 }
 
@@ -35669,7 +35669,7 @@ function AdminMasterDataManager({
                 }}
               >
                 <option value="jira">Jira</option>
-                <option value="nexus">NEXUS</option>
+                <option value="nexus">Nexus-support portal</option>
               </select>
             </label>
             {productForm.ticketSource === "jira" ? (
@@ -36456,7 +36456,7 @@ function AdminMasterDataManager({
                   </div>
                 ),
                 owner: product.productOwnerName || "No owner",
-                source: getProductTicketSource(product) === "jira" ? "Jira" : "NEXUS",
+                source: getProductTicketSource(product) === "jira" ? "Jira" : "Nexus-support portal",
                 jira: (
                   <span className="admin-config-url-cell">
                     {productUsesJira(product) ? product.jiraProjectKey || "No Jira project" : "Not used"}
@@ -39085,7 +39085,7 @@ function IntegrationConfigurationPanel({
       host,
       port,
       security: smtpForm.security,
-      fromName: smtpForm.fromName.trim() || "NEXUS Portal",
+      fromName: smtpForm.fromName.trim() || "Nexus-support portal",
       fromEmail,
       updatedAt: new Date().toISOString()
     };
@@ -39322,7 +39322,7 @@ function IntegrationConfigurationPanel({
       host: smtpForm.host.trim(),
       port: Number.parseInt(smtpForm.port, 10),
       security: smtpForm.security,
-      fromName: smtpForm.fromName.trim() || "NEXUS Portal",
+      fromName: smtpForm.fromName.trim() || "Nexus-support portal",
       fromEmail: smtpForm.fromEmail.trim(),
       username: smtpForm.username.trim() || localSecrets.smtpUsername?.trim() || "",
       password: smtpForm.password || localSecrets.smtpPassword || ""
@@ -39746,7 +39746,7 @@ function IntegrationConfigurationPanel({
           issue: {
             summary: jiraForm.testIssueSummary.trim(),
             sourceTicketKey: "NEXUS-INTEGRATION-TEST",
-            labels: ["nexus-portal", "integration-test"]
+            labels: ["nexus-support-portal", "integration-test"]
           }
         })
       });
@@ -40172,7 +40172,7 @@ function IntegrationConfigurationPanel({
                       setJiraForm({ ...jiraForm, testIssueSummary: event.target.value });
                       setJiraSuccessMessage("");
                     }}
-                    placeholder="NEXUS integration test task"
+                    placeholder="Nexus-support portal integration test task"
                   />
                 </label>
                 <div className="integration-action-row">
@@ -40923,7 +40923,7 @@ function IntegrationConfigurationPanel({
                     setSmtpForm({ ...smtpForm, fromName: event.target.value });
                     setSmtpSuccessMessage("");
                   }}
-                  placeholder="NEXUS Portal"
+                  placeholder="Nexus-support portal"
                 />
               </label>
               <label className="form-field">

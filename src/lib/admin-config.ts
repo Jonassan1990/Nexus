@@ -765,7 +765,7 @@ const rawAdminUsers: AdminUserConfigInput[] = [
   },
   {
     id: "user-admin",
-    displayName: "NEXUS Admin",
+    displayName: "Nexus-support portal Admin",
     email: "nexus.admin@scania.com",
     primaryRole: "admin",
     actionRoles: [],
@@ -1336,7 +1336,7 @@ export const smtpConfig: SmtpConfig = {
   host: "",
   port: 587,
   security: "starttls",
-  fromName: "NEXUS Portal",
+  fromName: "Nexus-support portal",
   fromEmail: "noreply@scania.com",
   updatedAt
 };

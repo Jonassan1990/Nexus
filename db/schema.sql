@@ -1,4 +1,4 @@
--- PostgreSQL/Aurora-compatible baseline schema for NEXUS Portal.
+-- PostgreSQL/Aurora-compatible baseline schema for Nexus-support portal.
 -- Use UUID generation through pgcrypto in local PostgreSQL.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 

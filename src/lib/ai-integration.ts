@@ -209,7 +209,7 @@ export async function generateAiChatText(
     {
       role: "system" as const,
       content:
-        "You are the NEXUS Portal support assistant. Be concise, practical, and do not invent Jira fields, APIs, or facts that are not in the user context."
+        "You are the Nexus-support portal support assistant. Be concise, practical, and do not invent Jira fields, APIs, or facts that are not in the user context."
     },
     ...messages.map((message) => ({
       role: message.role,
@@ -234,7 +234,7 @@ export async function generateJiraFieldText(
   context: Record<string, unknown>
 ): Promise<OpenAiGenerateResult & { jiraText: JiraFieldGenerationResult }> {
   const prompt = [
-    "Create polished Jira handoff text from this NEXUS Portal ticket context.",
+    "Create polished Jira handoff text from this Nexus-support portal ticket context.",
     "Return a concise Jira summary, a structured Jira description, and a short release note.",
     "Keep factual details only from the supplied JSON. If information is missing, state 'Not provided' instead of inventing it.",
     "Use clear section headings in the description and include portal ticket key, request, impact, priority, risk, product, PRU, module, and release context when available.",
@@ -316,7 +316,7 @@ export async function generateReleaseNoteText(
   context: Record<string, unknown>
 ): Promise<OpenAiGenerateResult & { releaseNoteText: ReleaseNoteGenerationResult }> {
   const prompt = [
-    "Create a release note announcement from this complete NEXUS Portal ticket context.",
+    "Create a release note announcement from this complete Nexus-support portal ticket context.",
     "Use the ticket request, business impact, Jira draft, comments, clarification threads, and attachment details.",
     "Return only a short user-facing release note, maximum 2-3 lines.",
     "Do not change Jira title or Jira description. Do not invent facts. If evidence is missing, keep the release note general and add a note.",
@@ -390,7 +390,7 @@ export async function generateEscalationMeetingSeriesText(
   context: Record<string, unknown>
 ): Promise<OpenAiGenerateResult & { meetingSeriesText: EscalationMeetingSeriesGenerationResult }> {
   const prompt = [
-    "Create a practical meeting series plan for this NEXUS Portal escalation.",
+    "Create a practical meeting series plan for this Nexus-support portal escalation.",
     "Use only the supplied ticket and escalation context. Do not schedule a real calendar event or invent unavailable people, dates, links, or decisions.",
     "Return paste-ready text for the portal Meeting series field.",
     "Include the proposed start time, end time, timezone, meeting type, repeat cadence, series end, and Outlook availability-check status when supplied.",
@@ -467,7 +467,7 @@ export async function reviewTicketRequirementFulfillment(
   context: Record<string, unknown>
 ): Promise<OpenAiGenerateResult & { requirementReview: TicketRequirementReviewResult }> {
   const prompt = [
-    "Review whether the supplied GitLab source evidence fulfills the Jira/NEXUS ticket requirements.",
+    "Review whether the supplied GitLab source evidence fulfills the Jira/Nexus-support portal ticket requirements.",
     "Use only the ticket context and source evidence in the JSON. Do not infer implementation details that are not visible.",
     "Return a concise verdict with matched requirements, gaps, and evidence references.",
     "If the source files are not enough to judge, use verdict insufficient_evidence.",

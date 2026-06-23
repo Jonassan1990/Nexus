@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NEXUS Portal",
+  title: "Nexus-support portal",
   description: "Enterprise governance and support workflow portal"
 };
 

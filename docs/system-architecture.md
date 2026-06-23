@@ -1,4 +1,4 @@
-# NEXUS Portal System Architecture
+# Nexus-support portal System Architecture
 
 ## Assumptions
 
@@ -84,18 +84,18 @@ queue-backed workers or microservices.
 
 ## Jira Integration Boundary
 
-NEXUS Portal is the governance layer. Jira is the execution layer.
+Nexus-support portal is the governance layer. Jira is the execution layer.
 
 Before Jira creation:
 
 - Load project, board, sprint, component, fix version, priority, and assignee
   metadata from Jira.
-- Keep a Jira draft inside NEXUS.
+- Keep a Jira draft inside Nexus-support portal.
 - Run architecture, developer estimation, and release gates.
 - Create Jira only after governance approval.
 
 After Jira creation:
 
 - Sync status, comments, attachments, assignee, sprint, fix version, and
-  resolution back to NEXUS.
+  resolution back to Nexus-support portal.
 - Preserve portal audit history as the authoritative governance trace.

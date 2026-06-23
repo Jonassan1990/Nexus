@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
 
   const config = payload.config;
   const errors = validateJiraActionConfig(config);
-  const summary = payload.issue?.summary?.trim() || "NEXUS Portal integration test task";
+  const summary = payload.issue?.summary?.trim() || "Nexus-support portal integration test task";
 
   if (!summary) {
     errors.push("Jira task summary is required.");
