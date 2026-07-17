@@ -149,10 +149,26 @@ export interface ProductPruConfig {
   active: boolean;
 }
 
+export interface DepartmentConfig {
+  id: string;
+  name: string;
+  description: string;
+  active: boolean;
+}
+
+export interface ProductDomainConfig {
+  id: string;
+  name: string;
+  description: string;
+  active: boolean;
+}
+
 export interface ProductConfig {
   id: string;
   productName: string;
   productOwnerName: string;
+  departmentId: string;
+  productDomainId: string;
   ticketSource: ProductTicketSource;
   jiraProjectKey: string;
   roleAssignments: ProductRoleAssignment[];
@@ -395,6 +411,8 @@ export interface AdminConfig {
   roleDomains: RoleDomainConfig[];
   deletedRoleKeys?: RoleKey[];
   regionSites: RegionSiteConfig[];
+  departments: DepartmentConfig[];
+  productDomains: ProductDomainConfig[];
   products: ProductConfig[];
   responsibilityMappings: ResponsibilityMappingConfig[];
   requestTypes: ConfigOption[];
@@ -436,6 +454,8 @@ export function normalizeProductPruConfig(pru: ProductPruConfig): ProductPruConf
 export function normalizeProductConfig(product: ProductConfig): ProductConfig {
   return {
     ...product,
+    departmentId: product.departmentId?.trim() ?? "",
+    productDomainId: product.productDomainId?.trim() ?? "",
     ticketSource: product.ticketSource === "nexus" ? "nexus" : "jira",
     jiraProjectKey: product.jiraProjectKey?.trim() ?? "",
     roleAssignments: Array.isArray(product.roleAssignments)
@@ -840,11 +860,55 @@ export const regionSites: RegionSiteConfig[] = [
   }
 ];
 
+export const departments: DepartmentConfig[] = [
+  {
+    id: "department-industrial-it",
+    name: "Industrial IT",
+    description: "Shop-floor and industrial operations technology ownership.",
+    active: true
+  },
+  {
+    id: "department-manufacturing-engineering",
+    name: "Manufacturing Engineering",
+    description: "Manufacturing process, product introduction, and plant engineering ownership.",
+    active: true
+  },
+  {
+    id: "department-digital-platforms",
+    name: "Digital Platforms",
+    description: "Shared digital platform and integration ownership.",
+    active: true
+  }
+];
+
+export const productDomains: ProductDomainConfig[] = [
+  {
+    id: "domain-scada",
+    name: "SCADA",
+    description: "Supervisory control, monitoring, and plant connectivity products.",
+    active: true
+  },
+  {
+    id: "domain-iiot",
+    name: "IIoT",
+    description: "Industrial IoT, telemetry, analytics, and connected factory products.",
+    active: true
+  },
+  {
+    id: "domain-mes",
+    name: "MES",
+    description: "Manufacturing execution, production workflow, and shop-floor process products.",
+    active: true
+  }
+];
+
 export const productConfigs: ProductConfig[] = [
   {
     id: "product-calibration-hub",
     productName: "Calibration Hub",
     productOwnerName: "Maja Lind",
+    departmentId: "department-manufacturing-engineering",
+    productDomainId: "domain-mes",
     ticketSource: "jira",
     jiraProjectKey: "CAL",
     roleAssignments: [
@@ -874,6 +938,8 @@ export const productConfigs: ProductConfig[] = [
     id: "product-plant-portal",
     productName: "Plant Portal",
     productOwnerName: "Karin Vik",
+    departmentId: "department-industrial-it",
+    productDomainId: "domain-scada",
     ticketSource: "jira",
     jiraProjectKey: "PLANT",
     roleAssignments: [
@@ -901,6 +967,8 @@ export const productConfigs: ProductConfig[] = [
     id: "product-variant-manager",
     productName: "Variant Manager",
     productOwnerName: "Sara Blom",
+    departmentId: "department-manufacturing-engineering",
+    productDomainId: "domain-mes",
     ticketSource: "jira",
     jiraProjectKey: "VAR",
     roleAssignments: [
@@ -931,6 +999,8 @@ export const productConfigs: ProductConfig[] = [
     id: "product-production-analytics",
     productName: "Production Analytics",
     productOwnerName: "Maja Lind",
+    departmentId: "department-industrial-it",
+    productDomainId: "domain-iiot",
     ticketSource: "jira",
     jiraProjectKey: "ANL",
     roleAssignments: [
@@ -1366,6 +1436,8 @@ export const adminConfig: AdminConfig = {
   roleDomains,
   deletedRoleKeys: [],
   regionSites,
+  departments,
+  productDomains,
   products: productConfigs,
   responsibilityMappings,
   requestTypes: requestTypeOptions,

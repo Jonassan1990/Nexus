@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import {
   aiIntegration,
+  adminConfig,
   defaultLeadTimeStatusRules,
   defaultLeadTimeTransitionRules,
   getJiraPriorityOptions,
@@ -21,7 +22,9 @@ import {
 } from "./admin-config";
 import type { AdminConfig, GitLabIntegrationConfig, StatusColorConfig, TicketTypeWorkflowConfig } from "./admin-config";
 import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actions";
+import { buildDemoTickets } from "./demo-tickets";
 import { workflowTemplates } from "./nexus-data";
+import { createOutboxJobId, type OutboxEnqueueInput, type OutboxJob, type OutboxJobStatus } from "./outbox";
 import type { Ticket } from "./types";
 
 type ConfigRow = {
@@ -114,6 +117,8 @@ const emptyAdminConfig: AdminConfig = {
   roleDomains: [],
   deletedRoleKeys: [],
   regionSites: [],
+  departments: [],
+  productDomains: [],
   products: [],
   responsibilityMappings: [],
   requestTypes: [],
@@ -371,60 +376,100 @@ function assertReadOnlySql(sql: string): string {
   return normalizedSql;
 }
 
+function isEmptyShellConfig(config: AdminConfig): boolean {
+  const users = Array.isArray(config.users) ? config.users : [];
+  const products = Array.isArray(config.products) ? config.products : [];
+
+  return users.length === 0 && products.length === 0;
+}
+
+function backfillEmptyConfigArrays(config: AdminConfig): AdminConfig {
+  const pickArray = <T>(value: T[] | undefined, fallback: T[]): T[] =>
+    Array.isArray(value) && value.length > 0 ? value : fallback;
+
+  return {
+    ...config,
+    users: pickArray(config.users, adminConfig.users),
+    customRoles: pickArray(config.customRoles, adminConfig.customRoles ?? []),
+    roleDomains: pickArray(config.roleDomains, adminConfig.roleDomains),
+    regionSites: pickArray(config.regionSites, adminConfig.regionSites),
+    departments: pickArray(config.departments, adminConfig.departments),
+    productDomains: pickArray(config.productDomains, adminConfig.productDomains),
+    products: pickArray(config.products, adminConfig.products),
+    responsibilityMappings: pickArray(config.responsibilityMappings, adminConfig.responsibilityMappings),
+    requestTypes: pickArray(config.requestTypes, adminConfig.requestTypes),
+    priorities: pickArray(config.priorities, adminConfig.priorities),
+    riskOptions: pickArray(config.riskOptions, adminConfig.riskOptions),
+    requestCategories: pickArray(config.requestCategories, adminConfig.requestCategories),
+    slaRules: pickArray(config.slaRules, adminConfig.slaRules),
+    escalationPolicies: pickArray(config.escalationPolicies, adminConfig.escalationPolicies),
+    notificationTemplates: pickArray(config.notificationTemplates, adminConfig.notificationTemplates),
+    formTemplates: pickArray(config.formTemplates, adminConfig.formTemplates),
+    ticketTypeWorkflows: pickArray(config.ticketTypeWorkflows, adminConfig.ticketTypeWorkflows)
+  };
+}
+
 function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
-  const roleDomains = Array.isArray(config.roleDomains)
-    ? config.roleDomains.map((roleDomain) => ({
+  const sourceConfig = isEmptyShellConfig(config) ? adminConfig : backfillEmptyConfigArrays(config);
+  const roleDomains = Array.isArray(sourceConfig.roleDomains)
+    ? sourceConfig.roleDomains.map((roleDomain) => ({
         ...roleDomain,
         active: roleDomain.active ?? true
       }))
     : [];
-  const rawPriorities = Array.isArray(config.priorities) ? config.priorities : [];
+  const rawPriorities = Array.isArray(sourceConfig.priorities) ? sourceConfig.priorities : [];
   const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
   const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
 
   return {
     ...emptyAdminConfig,
-    ...config,
-    users: Array.isArray(config.users) ? config.users.map((user) => normalizeAdminUser(user)) : [],
-    customRoles: Array.isArray(config.customRoles) ? config.customRoles : [],
+    ...sourceConfig,
+    users: Array.isArray(sourceConfig.users) ? sourceConfig.users.map((user) => normalizeAdminUser(user)) : [],
+    customRoles: Array.isArray(sourceConfig.customRoles) ? sourceConfig.customRoles : [],
     roleDomains,
-    deletedRoleKeys: Array.isArray(config.deletedRoleKeys) ? config.deletedRoleKeys : [],
-    regionSites: Array.isArray(config.regionSites) ? config.regionSites : [],
-    products: Array.isArray(config.products) ? config.products.map((product) => normalizeProductConfig(product)) : [],
-    responsibilityMappings: Array.isArray(config.responsibilityMappings) ? config.responsibilityMappings : [],
-    requestTypes: Array.isArray(config.requestTypes) ? config.requestTypes : [],
+    deletedRoleKeys: Array.isArray(sourceConfig.deletedRoleKeys) ? sourceConfig.deletedRoleKeys : [],
+    regionSites: Array.isArray(sourceConfig.regionSites) ? sourceConfig.regionSites : [],
+    departments: Array.isArray(sourceConfig.departments) ? sourceConfig.departments : adminConfig.departments,
+    productDomains: Array.isArray(sourceConfig.productDomains) ? sourceConfig.productDomains : adminConfig.productDomains,
+    products: Array.isArray(sourceConfig.products)
+      ? sourceConfig.products.map((product) => normalizeProductConfig(product))
+      : [],
+    responsibilityMappings: Array.isArray(sourceConfig.responsibilityMappings) ? sourceConfig.responsibilityMappings : [],
+    requestTypes: Array.isArray(sourceConfig.requestTypes) ? sourceConfig.requestTypes : [],
     priorities,
-    riskOptions: Array.isArray(config.riskOptions) ? config.riskOptions : [],
-    statusColors: mergeDefaultStatusColors(Array.isArray(config.statusColors) ? config.statusColors : []),
-    requestCategories: Array.isArray(config.requestCategories) ? config.requestCategories : [],
+    riskOptions: Array.isArray(sourceConfig.riskOptions) ? sourceConfig.riskOptions : [],
+    statusColors: mergeDefaultStatusColors(Array.isArray(sourceConfig.statusColors) ? sourceConfig.statusColors : []),
+    requestCategories: Array.isArray(sourceConfig.requestCategories) ? sourceConfig.requestCategories : [],
     slaRules: shouldMigrateLegacyPriorities
-      ? migrateLegacyPriorityReferences(Array.isArray(config.slaRules) ? config.slaRules : [])
-      : Array.isArray(config.slaRules)
-        ? config.slaRules
+      ? migrateLegacyPriorityReferences(Array.isArray(sourceConfig.slaRules) ? sourceConfig.slaRules : [])
+      : Array.isArray(sourceConfig.slaRules)
+        ? sourceConfig.slaRules
         : [],
     escalationPolicies: shouldMigrateLegacyPriorities
-      ? migrateLegacyPriorityReferences(Array.isArray(config.escalationPolicies) ? config.escalationPolicies : [])
-      : Array.isArray(config.escalationPolicies)
-        ? config.escalationPolicies
+      ? migrateLegacyPriorityReferences(
+          Array.isArray(sourceConfig.escalationPolicies) ? sourceConfig.escalationPolicies : []
+        )
+      : Array.isArray(sourceConfig.escalationPolicies)
+        ? sourceConfig.escalationPolicies
         : [],
-    leadTimeStatusRules: normalizeLeadTimeStatusRules(config.leadTimeStatusRules),
-    leadTimeTransitionRules: normalizeLeadTimeTransitionRules(config.leadTimeTransitionRules),
-    notificationTemplates: Array.isArray(config.notificationTemplates) ? config.notificationTemplates : [],
-    formTemplates: Array.isArray(config.formTemplates) ? config.formTemplates : [],
-    ticketTypeWorkflows: Array.isArray(config.ticketTypeWorkflows)
-      ? config.ticketTypeWorkflows.map((workflow) => normalizeStoredTicketTypeWorkflow(workflow))
+    leadTimeStatusRules: normalizeLeadTimeStatusRules(sourceConfig.leadTimeStatusRules),
+    leadTimeTransitionRules: normalizeLeadTimeTransitionRules(sourceConfig.leadTimeTransitionRules),
+    notificationTemplates: Array.isArray(sourceConfig.notificationTemplates) ? sourceConfig.notificationTemplates : [],
+    formTemplates: Array.isArray(sourceConfig.formTemplates) ? sourceConfig.formTemplates : [],
+    ticketTypeWorkflows: Array.isArray(sourceConfig.ticketTypeWorkflows)
+      ? sourceConfig.ticketTypeWorkflows.map((workflow) => normalizeStoredTicketTypeWorkflow(workflow))
       : [],
     integrations: {
-      jira: normalizeStoredJiraIntegration(config.integrations?.jira),
+      jira: normalizeStoredJiraIntegration(sourceConfig.integrations?.jira),
       smtp: {
         ...smtpConfig,
-        ...(config.integrations?.smtp ?? {})
+        ...(sourceConfig.integrations?.smtp ?? {})
       },
       ai: {
         ...aiIntegration,
-        ...(config.integrations?.ai ?? {})
+        ...(sourceConfig.integrations?.ai ?? {})
       },
-      gitlab: normalizeStoredGitLabIntegration(config.integrations?.gitlab)
+      gitlab: normalizeStoredGitLabIntegration(sourceConfig.integrations?.gitlab)
     }
   };
 }
@@ -474,7 +519,64 @@ function migrate(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_local_tickets_updated_at ON tickets(updated_at);
     CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status ON notification_deliveries(status);
     CREATE INDEX IF NOT EXISTS idx_notification_deliveries_updated_at ON notification_deliveries(updated_at);
+
+    CREATE TABLE IF NOT EXISTS outbox_jobs (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'dead')),
+      payload TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      last_error TEXT,
+      available_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outbox_jobs_status_available
+      ON outbox_jobs(status, available_at);
+    CREATE INDEX IF NOT EXISTS idx_outbox_jobs_type ON outbox_jobs(type);
   `);
+}
+
+function insertDemoTickets(db: DatabaseSync, tickets: Ticket[]) {
+  const insert = db.prepare(
+    `
+      INSERT INTO tickets (
+        key,
+        id,
+        title,
+        type_id,
+        state,
+        product,
+        module_name,
+        site,
+        priority,
+        risk,
+        updated_at,
+        payload
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+  );
+
+  for (const ticket of tickets) {
+    insert.run(
+      ticket.key,
+      ticket.id,
+      ticket.title,
+      ticket.typeId,
+      ticket.state,
+      ticket.product,
+      ticket.module,
+      ticket.site,
+      ticket.priority,
+      ticket.risk,
+      ticket.updatedAt,
+      serializeJson(ticket)
+    );
+  }
 }
 
 function seedDefaults(db: DatabaseSync) {
@@ -485,9 +587,60 @@ function seedDefaults(db: DatabaseSync) {
   if (!existingConfig) {
     db.prepare("INSERT INTO app_config (key, payload, updated_at) VALUES (?, ?, ?)").run(
       adminConfigKey,
-      serializeJson(emptyAdminConfig),
+      serializeJson(adminConfig),
       nowIso()
     );
+  } else {
+    const storedConfig = parseJson<AdminConfig>(existingConfig.payload, "admin-config-seed");
+
+    if (isEmptyShellConfig(storedConfig)) {
+      db.prepare("UPDATE app_config SET payload = ?, updated_at = ? WHERE key = ?").run(
+        serializeJson(normalizeStoredAdminConfig(adminConfig)),
+        nowIso(),
+        adminConfigKey
+      );
+    }
+  }
+
+  const ticketCount =
+    (db.prepare("SELECT COUNT(*) AS count FROM tickets").get() as CountRow | undefined)?.count ?? 0;
+
+  if (ticketCount === 0) {
+    insertDemoTickets(db, buildDemoTickets());
+    return;
+  }
+
+  // Re-align seeded demo tickets when product catalog changed (e.g. Calibration Hub → IIoT).
+  const configRow = db
+    .prepare("SELECT payload FROM app_config WHERE key = ?")
+    .get(adminConfigKey) as ConfigRow | undefined;
+  const liveConfig = configRow
+    ? parseJson<AdminConfig>(configRow.payload, "admin-config-ticket-align")
+    : adminConfig;
+  const knownProducts = new Set(
+    (liveConfig.products ?? [])
+      .map((product) => product.productName.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  if (knownProducts.size === 0) {
+    return;
+  }
+
+  const ticketRows = db.prepare("SELECT payload FROM tickets").all() as TicketRow[];
+  const tickets = ticketRows.map((row) =>
+    normalizeStoredTicket(parseJson<Ticket>(row.payload, "ticket-align"))
+  );
+  const hasUnknownProduct = tickets.some(
+    (ticket) => !knownProducts.has(String(ticket.product ?? "").trim().toLowerCase())
+  );
+  const looksLikeDemoSeed =
+    tickets.length > 0 &&
+    tickets.every((ticket) => String(ticket.id ?? "").startsWith("ticket-demo-"));
+
+  if (hasUnknownProduct && looksLikeDemoSeed) {
+    db.prepare("DELETE FROM tickets").run();
+    insertDemoTickets(db, buildDemoTickets());
   }
 }
 
@@ -597,8 +750,8 @@ export function readAdminConfig(): AdminConfig {
     .get(adminConfigKey) as ConfigRow | undefined;
 
   if (!row) {
-    saveAdminConfig(emptyAdminConfig);
-    return emptyAdminConfig;
+    saveAdminConfig(adminConfig);
+    return normalizeStoredAdminConfig(adminConfig);
   }
 
   return normalizeStoredAdminConfig(parseJson<AdminConfig>(row.payload, "admin-config"));
@@ -864,4 +1017,170 @@ export function replaceTickets(tickets: Ticket[]): void {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+type OutboxJobRow = {
+  id: string;
+  type: OutboxJob["type"];
+  status: OutboxJobStatus;
+  payload: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  available_at: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
+
+function mapOutboxJob(row: OutboxJobRow): OutboxJob {
+  return {
+    id: row.id,
+    type: row.type,
+    status: row.status,
+    payload: row.payload,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    lastError: row.last_error,
+    availableAt: row.available_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at
+  };
+}
+
+export function enqueueOutboxJob(input: OutboxEnqueueInput): OutboxJob {
+  const now = nowIso();
+  const job: OutboxJob = {
+    id: createOutboxJobId(input.type),
+    type: input.type,
+    status: "pending",
+    payload: serializeJson(input.payload),
+    attempts: 0,
+    maxAttempts: input.maxAttempts ?? 5,
+    lastError: null,
+    availableAt: input.availableAt ?? now,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null
+  };
+
+  getDatabase()
+    .prepare(
+      `
+        INSERT INTO outbox_jobs (
+          id, type, status, payload, attempts, max_attempts, last_error,
+          available_at, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(
+      job.id,
+      job.type,
+      job.status,
+      job.payload,
+      job.attempts,
+      job.maxAttempts,
+      job.lastError,
+      job.availableAt,
+      job.createdAt,
+      job.updatedAt,
+      job.completedAt
+    );
+
+  return job;
+}
+
+export function claimOutboxJobs(limit = 10): OutboxJob[] {
+  const db = getDatabase();
+  const now = nowIso();
+  const rows = db
+    .prepare(
+      `
+        SELECT * FROM outbox_jobs
+        WHERE status = 'pending' AND available_at <= ?
+        ORDER BY available_at ASC
+        LIMIT ?
+      `
+    )
+    .all(now, limit) as OutboxJobRow[];
+
+  const claimed: OutboxJob[] = [];
+
+  for (const row of rows) {
+    const result = db
+      .prepare(
+        `
+          UPDATE outbox_jobs
+          SET status = 'processing', attempts = attempts + 1, updated_at = ?
+          WHERE id = ? AND status = 'pending'
+        `
+      )
+      .run(now, row.id);
+
+    if (result.changes > 0) {
+      claimed.push(
+        mapOutboxJob({
+          ...row,
+          status: "processing",
+          attempts: row.attempts + 1,
+          updated_at: now
+        })
+      );
+    }
+  }
+
+  return claimed;
+}
+
+export function completeOutboxJob(jobId: string): void {
+  const now = nowIso();
+  getDatabase()
+    .prepare(
+      `
+        UPDATE outbox_jobs
+        SET status = 'completed', completed_at = ?, updated_at = ?, last_error = NULL
+        WHERE id = ?
+      `
+    )
+    .run(now, now, jobId);
+}
+
+export function failOutboxJob(jobId: string, errorMessage: string, retryDelaySeconds = 60): void {
+  const db = getDatabase();
+  const row = db.prepare("SELECT * FROM outbox_jobs WHERE id = ?").get(jobId) as OutboxJobRow | undefined;
+
+  if (!row) {
+    return;
+  }
+
+  const now = new Date();
+  const nextStatus: OutboxJobStatus = row.attempts >= row.max_attempts ? "dead" : "pending";
+  const availableAt =
+    nextStatus === "pending"
+      ? new Date(now.getTime() + retryDelaySeconds * 1000).toISOString()
+      : row.available_at;
+
+  db.prepare(
+    `
+      UPDATE outbox_jobs
+      SET status = ?, last_error = ?, available_at = ?, updated_at = ?,
+          completed_at = CASE WHEN ? = 'dead' THEN ? ELSE completed_at END
+      WHERE id = ?
+    `
+  ).run(nextStatus, errorMessage.slice(0, 2000), availableAt, now.toISOString(), nextStatus, now.toISOString(), jobId);
+}
+
+export function listOutboxJobs(limit = 50): OutboxJob[] {
+  const rows = getDatabase()
+    .prepare(
+      `
+        SELECT * FROM outbox_jobs
+        ORDER BY created_at DESC
+        LIMIT ?
+      `
+    )
+    .all(limit) as OutboxJobRow[];
+
+  return rows.map(mapOutboxJob);
 }

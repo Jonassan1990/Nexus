@@ -6,6 +6,7 @@ import type {
   TicketTypeDefinition,
   WorkflowTemplate
 } from "./types";
+import { buildDemoTickets } from "./demo-tickets";
 
 export const roles: RoleDefinition[] = [
   {
@@ -347,7 +348,7 @@ export const slaPolicies: SlaPolicy[] = [
   }
 ];
 
-export const tickets: Ticket[] = [];
+export const tickets: Ticket[] = buildDemoTickets();
 
 export const notifications: NotificationItem[] = [];
 

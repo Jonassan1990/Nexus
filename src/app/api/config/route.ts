@@ -21,6 +21,8 @@ function validateAdminConfig(value: unknown): string[] {
     "customRoles",
     "roleDomains",
     "regionSites",
+    "departments",
+    "productDomains",
     "products",
     "responsibilityMappings",
     "requestTypes",

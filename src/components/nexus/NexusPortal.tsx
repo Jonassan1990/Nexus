@@ -22,15 +22,10 @@ import {
 } from "@/lib/nexus-data";
 import {
   TdsHeader,
-  TdsHeaderBrandSymbol,
   TdsHeaderHamburger,
   TdsHeaderItem,
   TdsHeaderLauncherButton,
-  TdsHeaderTitle,
-  TdsSideMenu,
-  TdsSideMenuCloseButton,
-  TdsSideMenuItem,
-  TdsSideMenuOverlay
+  TdsHeaderTitle
 } from "@scania/tegel-react";
 import {
   adminConfig,
@@ -56,6 +51,7 @@ import type {
   AdminUser,
   AiIntegrationConfig,
   ConfigOption,
+  DepartmentConfig,
   FormComponentType,
   FormFieldType,
   FormTemplateField,
@@ -73,6 +69,7 @@ import type {
   NotificationSeverity,
   NotificationTemplate,
   ProductConfig,
+  ProductDomainConfig,
   ProductFormTemplate,
   ProductModuleConfig,
   ProductPruConfig,
@@ -89,6 +86,13 @@ import type {
   UserEmailNotificationEventType
 } from "@/lib/admin-config";
 import { canView, filterVisible } from "@/lib/rbac";
+import { ModuleHeader } from "./ModuleHeader";
+import { EmptyState, PanelHeader } from "./PanelPrimitives";
+import { PortalSidebar } from "./PortalSidebar";
+import { useLocale } from "@/lib/i18n/LocaleProvider";
+import { getTicketsEmptyCopy } from "@/lib/portal-copy";
+import type { AppLocale } from "@/lib/i18n/messages";
+import { localeLabels } from "@/lib/i18n/messages";
 import type {
   AuditEntry,
   CommentItem,
@@ -132,10 +136,13 @@ import type { JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { nextActionLabel, summarizeWorkflowHealth } from "@/lib/workflow-engine";
 import {
   createOutlookMeeting,
+  getSignedInGraphUser,
   type CreateOutlookMeetingResult
 } from "@/lib/microsoft-graph-client";
+import { useAuth, type AuthUser } from "@/components/auth/AuthProvider";
 import { TegelIcon } from "./TegelIcon";
 import type { TegelIconName } from "./TegelIcon";
+import { TegelButton, TegelTag, TegelTextField } from "./TegelUi";
 
 const ALL_SCOPE_VALUE = "__all__";
 const ALL_SCOPE_LABEL = "All";
@@ -238,6 +245,23 @@ const solutionArchitectInheritedTicketAccessRoles = [
   "global_product_owner",
   "business_architect",
   "software_architect"
+] as const satisfies readonly RoleKey[];
+
+/** Roles that should see in-scope tickets even when they are not the current workflow owner. */
+const ticketCatalogViewerRoles = [
+  "requester",
+  "local_product_owner",
+  "global_product_owner",
+  "business_architect",
+  "solution_architect",
+  "software_architect",
+  "release_manager",
+  "service_manager",
+  "developer",
+  "scrum_master",
+  "it_reviewer",
+  "security_reviewer",
+  "admin"
 ] as const satisfies readonly RoleKey[];
 
 const builtInRoleKeys = new Set<RoleKey>(roles.map((role) => role.key));
@@ -801,6 +825,17 @@ function getProductTicketSource(product?: Pick<ProductConfig, "ticketSource">): 
 
 function productUsesJira(product?: Pick<ProductConfig, "ticketSource">): boolean {
   return getProductTicketSource(product) === "jira";
+}
+
+function configUsesJira(config: AdminConfig): boolean {
+  return config.products.some((product) => product.active && productUsesJira(product));
+}
+
+function getProductTicketSourceLabel(productOrSource?: Pick<ProductConfig, "ticketSource"> | ProductTicketSource): string {
+  const source =
+    typeof productOrSource === "string" ? productOrSource : getProductTicketSource(productOrSource);
+
+  return source === "jira" ? "Jira" : "Platform";
 }
 
 function workflowStepMatchesConfiguredStepId(step: Ticket["workflow"][number], configuredStepId: string): boolean {
@@ -1465,6 +1500,7 @@ type PostJiraCommentHandler = (ticketKey: string, body: string) => Promise<void>
 type UpdateJiraStatusHandler = (ticketKey: string, status: JiraFollowUpStatus, note: string) => void;
 type CreateGlobalLpoApprovalRequestHandler = (ticketKey: string, sourceStepId: string, question: string) => void;
 type CreateGlobalPotentialRequestHandler = (ticketKey: string, sourceStepId: string) => void;
+type SkipGlobalizationQuestionHandler = (ticketKey: string, sourceStepId: string) => void;
 type RespondGlobalLpoApprovalRequestHandler = (
   ticketKey: string,
   requestId: string,
@@ -1630,7 +1666,8 @@ function addNotificationReadKeysForPersona(
 
 const defaultAiTestPrompt = "Tell me about yourself.";
 const legacyAiTestPrompt = "Write a short Jira handoff summary for a production support request.";
-const entraRequiredScopes = ["User.Read", "Calendars.ReadWrite", "OnlineMeetings.ReadWrite"] as const;
+const entraRequiredScopes = ["User.Read"] as const;
+const entraMeetingScopes = ["User.Read", "Calendars.ReadWrite", "OnlineMeetings.ReadWrite"] as const;
 const microsoftGraphEventEndpoint = "https://graph.microsoft.com/v1.0/me/events";
 const ticketStateOptions = [
   { value: "intake", label: "Intake" },
@@ -2047,6 +2084,14 @@ const supportedUserEmailNotificationEventTypes = [
   "participantAdded"
 ] as const satisfies readonly UserEmailNotificationEventType[];
 
+function isJiraNotificationEventType(eventType: NotificationEventType | UserEmailNotificationEventType): boolean {
+  return eventType === "jiraReadyToCreate" || eventType === "jiraCreated";
+}
+
+function getConfigNotificationEventOptions(config: AdminConfig) {
+  return notificationEventOptions.filter((option) => configUsesJira(config) || !isJiraNotificationEventType(option.value));
+}
+
 type UserEmailNotificationEventOption = {
   value: UserEmailNotificationEventType;
   label: string;
@@ -2070,7 +2115,7 @@ function getEmailCapableUserNotificationEventOptions(config: AdminConfig): UserE
       .filter(isSupportedUserEmailNotificationEventType)
   );
 
-  return notificationEventOptions
+  return getConfigNotificationEventOptions(config)
     .filter((option) => emailTemplateEventTypes.has(option.value as UserEmailNotificationEventType))
     .map((option) => ({
       value: option.value as UserEmailNotificationEventType,
@@ -2087,6 +2132,10 @@ function roleHasEmailNotificationTemplate(
   role: RoleKey,
   eventType: UserEmailNotificationEventType
 ): boolean {
+  if (!configUsesJira(config) && isJiraNotificationEventType(eventType)) {
+    return false;
+  }
+
   return config.notificationTemplates.some(
     (template) =>
       template.active &&
@@ -2260,12 +2309,14 @@ function getErrorMessage(error: unknown): string {
 
 function createEmptyAdminConfig(): AdminConfig {
   return {
-    users: [],
-    customRoles: [],
-    roleDomains: [],
-    deletedRoleKeys: [],
-    regionSites: [],
-    products: [],
+  users: [],
+  customRoles: [],
+  roleDomains: [],
+  deletedRoleKeys: [],
+  regionSites: [],
+  departments: [],
+  productDomains: [],
+  products: [],
     responsibilityMappings: [],
     requestTypes: [],
     priorities: [],
@@ -2473,14 +2524,45 @@ function normalizePruSite(regionSites: RegionSiteConfig[], site?: string): strin
   return regionSites.find((regionSite) => regionSite.active)?.site ?? regionSites[0]?.site ?? "";
 }
 
+function normalizeConfigReferenceId(value: string | undefined, validIds: Set<string>, fallbackId = ""): string {
+  const trimmedValue = value?.trim() ?? "";
+
+  if (trimmedValue && validIds.has(trimmedValue)) {
+    return trimmedValue;
+  }
+
+  return fallbackId;
+}
+
+function inferConfigItemIdByName<TItem extends { id: string; name: string }>(
+  value: string,
+  items: TItem[]
+): string {
+  const normalizedValue = value.toLowerCase();
+
+  return items.find((item) => normalizedValue.includes(item.name.toLowerCase()))?.id ?? "";
+}
+
 function normalizeProductConfigForSinglePruSites(
   product: ProductConfig,
-  regionSites: RegionSiteConfig[]
+  regionSites: RegionSiteConfig[],
+  departments: DepartmentConfig[],
+  departmentIds: Set<string>,
+  fallbackDepartmentId: string,
+  productDomains: ProductDomainConfig[],
+  productDomainIds: Set<string>,
+  fallbackProductDomainId: string
 ): ProductConfig {
   const normalizedProduct = normalizeProductConfig(product);
+  const fallbackDepartmentIdForProduct =
+    inferConfigItemIdByName(normalizedProduct.productName, departments) || fallbackDepartmentId;
+  const fallbackProductDomainIdForProduct =
+    inferConfigItemIdByName(normalizedProduct.productName, productDomains) || fallbackProductDomainId;
 
   return {
     ...normalizedProduct,
+    departmentId: normalizeConfigReferenceId(normalizedProduct.departmentId, departmentIds, fallbackDepartmentIdForProduct),
+    productDomainId: normalizeConfigReferenceId(normalizedProduct.productDomainId, productDomainIds, fallbackProductDomainIdForProduct),
     prus: normalizedProduct.prus.map((pru) => ({
       ...pru,
       site: normalizePruSite(regionSites, pru.site)
@@ -2491,6 +2573,12 @@ function normalizeProductConfigForSinglePruSites(
 function normalizeAdminConfig(config: AdminConfig): AdminConfig {
   const emptyConfig = createEmptyAdminConfig();
   const regionSites = Array.isArray(config.regionSites) ? config.regionSites : [];
+  const departments = Array.isArray(config.departments) ? config.departments : adminConfig.departments;
+  const productDomains = Array.isArray(config.productDomains) ? config.productDomains : adminConfig.productDomains;
+  const departmentIds = new Set(departments.map((department) => department.id));
+  const productDomainIds = new Set(productDomains.map((domain) => domain.id));
+  const fallbackDepartmentId = departments.find((department) => department.active)?.id ?? departments[0]?.id ?? "";
+  const fallbackProductDomainId = productDomains.find((domain) => domain.active)?.id ?? productDomains[0]?.id ?? "";
   const rawPriorities = Array.isArray(config.priorities) ? config.priorities : [];
   const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
   const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
@@ -2517,8 +2605,21 @@ function normalizeAdminConfig(config: AdminConfig): AdminConfig {
     customRoles: Array.isArray(config.customRoles) ? config.customRoles : [],
     roleDomains,
     regionSites,
+    departments,
+    productDomains,
     products: Array.isArray(config.products)
-      ? config.products.map((product) => normalizeProductConfigForSinglePruSites(product, regionSites))
+      ? config.products.map((product) =>
+          normalizeProductConfigForSinglePruSites(
+            product,
+            regionSites,
+            departments,
+            departmentIds,
+            fallbackDepartmentId,
+            productDomains,
+            productDomainIds,
+            fallbackProductDomainId
+          )
+        )
       : [],
     requestTypes: Array.isArray(config.requestTypes) ? config.requestTypes : [],
     priorities,
@@ -4845,14 +4946,20 @@ function responsibilityMappingMatchesTicket(
   ticket: TicketScope,
   config: AdminConfig
 ): boolean {
-  const productId = getConfigProduct(config, ticket.product)?.id;
+  const productId = getConfigProductForTicket(config, ticket)?.id;
   const siteId = getTicketSiteConfig(config, ticket)?.id;
+  const mappingAllowsAll = (values: string[]) => !values.length || values.includes(ALL_SCOPE_VALUE);
+  // If product/site cannot be resolved, do not fail closed when mapping already allows all.
+  const productMatches =
+    !productId && mappingAllowsAll(mapping.productIds)
+      ? true
+      : scopeMatchesValue(mapping.productIds, productId);
+  const siteMatches =
+    !siteId && mappingAllowsAll(mapping.regionSiteIds)
+      ? true
+      : scopeMatchesValue(mapping.regionSiteIds, siteId);
 
-  return (
-    scopeMatchesValue(mapping.productIds, productId) &&
-    scopeMatchesValue(mapping.regionSiteIds, siteId) &&
-    scopeMatchesValue(mapping.pruNames, ticket.pru)
-  );
+  return productMatches && siteMatches && scopeMatchesValue(mapping.pruNames, ticket.pru);
 }
 
 function roleHasConfiguredTicketScope(ticket: Ticket, role: RoleKey, config: AdminConfig): boolean {
@@ -4872,7 +4979,11 @@ function roleHasParticipantAccess(ticket: Ticket, roleLabel: string): boolean {
 }
 
 function getTicketAccessRolesForRole(role: RoleKey): readonly RoleKey[] {
-  return role === "solution_architect" ? solutionArchitectInheritedTicketAccessRoles : [role];
+  if (role === "solution_architect" || role === "software_architect") {
+    return solutionArchitectInheritedTicketAccessRoles;
+  }
+
+  return [role];
 }
 
 function roleHasDirectTicketAccess(ticket: Ticket, role: RoleKey, config: AdminConfig): boolean {
@@ -4912,7 +5023,21 @@ function personaCanViewTicket(config: AdminConfig, persona: RolePersonaOption, t
     return true;
   }
 
-  return getPersonaRoleKeys(persona).some(
+  const personaRoles = getPersonaRoleKeys(persona);
+
+  // Product/PRU/site-scoped catalog viewers should see tickets in their coverage,
+  // even when they are not the current workflow owner.
+  if (
+    personaRoles.some(
+      (role) =>
+        (ticketCatalogViewerRoles as readonly RoleKey[]).includes(role) &&
+        personaCanActOnTicketAsRole(persona, ticket, config, role)
+    )
+  ) {
+    return true;
+  }
+
+  return personaRoles.some(
     (role) => roleHasTicketAccess(ticket, role, config) && personaCanActOnTicketAsRole(persona, ticket, config, role)
   );
 }
@@ -7795,6 +7920,14 @@ function adminUserCanAnswerGlobalizationQuestion(user: AdminUser): boolean {
 
 function personaCanAnswerGlobalizationQuestion(persona: RolePersonaOption): boolean {
   return personaHasRole(persona, "local_product_owner") || personaHasRole(persona, "global_product_owner");
+}
+
+function hasSkippedGlobalizationQuestion(ticket: Ticket, sourceStepId: string): boolean {
+  return ticket.audit.some(
+    (entry) =>
+      entry.eventType === "Globalization question skipped" &&
+      entry.id.includes(`global-lpo-skip-${sourceStepId}-`)
+  );
 }
 
 function getActiveGlobalizationProductOwnerUsers(config: AdminConfig, excludeUserId?: string): AdminUser[] {
@@ -11127,6 +11260,7 @@ function createTicketFromForm(
 }
 
 export function NexusPortal() {
+  const { user: authUser, logout: logoutEntra } = useAuth();
   const [activeModule, setActiveModule] = useState<ModuleKey>("dashboard");
   const [config, setConfig] = useState<AdminConfig>(() => createEmptyAdminConfig());
   const [hasLoadedConfig, setHasLoadedConfig] = useState(false);
@@ -11157,6 +11291,7 @@ export function NexusPortal() {
   const emailNotificationsInFlightRef = useRef<Set<string>>(new Set());
   const initialTicketLinkHandledRef = useRef(false);
   const startupJiraSyncHandledRef = useRef(false);
+  const hasSyncedEntraPersonaRef = useRef(false);
 
   const roleOptions = useMemo(() => getRoleOptions(config), [config]);
   const rolePersonaOptions = useMemo(() => buildRolePersonaOptions(config), [config]);
@@ -11169,7 +11304,40 @@ export function NexusPortal() {
     [actingRoleAccessEnabled, config, selectedBasePersona]
   );
   const selectedPersona = getPersonaForRole(config, selectedUserPersona, role);
-  const hasJiraProductConfig = config.products.some((product) => product.active && productUsesJira(product));
+
+  useEffect(() => {
+    if (hasSyncedEntraPersonaRef.current || !authUser?.email || !rolePersonaOptions.length) {
+      return;
+    }
+
+    const authEmail = authUser.email.trim().toLowerCase();
+    const authName = (authUser.displayName || "").trim().toLowerCase();
+    const emailMatches = rolePersonaOptions.filter(
+      (option) => option.email.trim().toLowerCase() === authEmail
+    );
+    const matched =
+      emailMatches.find((option) => option.displayName.trim().toLowerCase() === authName) ??
+      emailMatches.find((option) => personaHasRole(option, "admin")) ??
+      emailMatches.find((option) => option.productIds.includes(ALL_SCOPE_VALUE)) ??
+      emailMatches[0];
+
+    hasSyncedEntraPersonaRef.current = true;
+
+    if (!matched) {
+      return;
+    }
+
+    setSelectedPersonaId(matched.id);
+    setActingRoleAccessEnabled(false);
+    const nextSessionPersona = getSessionRolePersona(config, matched, false);
+    const nextModuleRole = getPersonaRoleForModule(nextSessionPersona, activeModule);
+    setRole(nextModuleRole ?? nextSessionPersona.role);
+
+    if (!nextModuleRole) {
+      setActiveModule(firstAccessibleModuleForPersona(nextSessionPersona));
+    }
+  }, [activeModule, authUser, config, rolePersonaOptions]);
+  const hasJiraProductConfig = configUsesJira(config);
   const personaScopedTickets = useMemo(
     () => getPersonaScopedTickets(ticketList, config, selectedPersona),
     [config, selectedPersona, ticketList]
@@ -11250,7 +11418,7 @@ export function NexusPortal() {
       navItems.filter(
         (item) =>
           personaCanAccessNavItem(selectedUserPersona, item) &&
-          (item.key !== "jira" || jiraScopedTickets.length > 0) &&
+          (item.key !== "jira" || (hasJiraProductConfig && jiraScopedTickets.length > 0)) &&
           (item.key !== "releasePlan" || hasJiraProductConfig)
       ),
     [hasJiraProductConfig, jiraScopedTickets.length, selectedUserPersona]
@@ -11942,13 +12110,6 @@ export function NexusPortal() {
     }
   }
 
-  function goToDashboard() {
-    setActiveModule("dashboard");
-    setActiveTab("Overview");
-    setIsTicketDetailOpen(false);
-    setQuery("");
-  }
-
   function createTicket(form: NewTicketFormState) {
     setTicketList((currentTickets) => {
       const newTicket = createTicketFromForm(form, currentTickets, selectedPersona, config);
@@ -12341,6 +12502,61 @@ export function NexusPortal() {
         };
       })
     );
+  }
+
+  function skipGlobalizationQuestion(ticketKey: string, sourceStepId: string) {
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const actor = getGlobalLpoManagerActorPersona(config, selectedPersona);
+
+    setTicketList((currentTickets) =>
+      currentTickets.map((ticket) => {
+        if (ticket.key !== ticketKey) {
+          return ticket;
+        }
+
+        const targetStep = ticket.workflow.find((step) => step.id === sourceStepId);
+
+        if (!targetStep || hasSkippedGlobalizationQuestion(ticket, sourceStepId)) {
+          return ticket;
+        }
+
+        const reason =
+          "Globalization product-owner question skipped. The approval gate remains active in the normal approval list.";
+
+        return {
+          ...ticket,
+          state: ticket.state === "closed" ? ticket.state : "approval",
+          updatedAt: timestamp,
+          comments: [
+            ...ticket.comments,
+            {
+              id: `comment-${ticket.key}-global-lpo-skip-${now.getTime()}`,
+              author: actor.displayName,
+              role: actor.roleLabel,
+              body: reason,
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              source: "portal"
+            }
+          ],
+          audit: [
+            ...ticket.audit,
+            {
+              id: `audit-${ticket.key}-global-lpo-skip-${sourceStepId}-${now.getTime()}`,
+              eventType: "Globalization question skipped",
+              actor: formatPersonaAuditActor(actor),
+              createdAt: timestamp,
+              visibility: "approvers_only",
+              oldValue: targetStep.label,
+              newValue: "Normal approval list",
+              reason
+            }
+          ]
+        };
+      })
+    );
+    setActiveModule("approvals");
   }
 
   function createGlobalPotentialRequest(ticketKey: string, sourceStepId: string) {
@@ -14740,24 +14956,35 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         syncedCount += 1;
       } catch (error) {
         failedCount += 1;
-        console.error("Linked Jira ticket sync failed.", {
-          ticketKey: ticket.key,
-          jiraIssueKey,
-          error: getErrorMessage(error)
-        });
+
+        // Avoid console.error here — Next.js overlays it as a runtime error for expected sync failures
+        // (missing token, demo Jira keys, network, etc.), especially on silent startup sync.
+        if (!silent) {
+          console.warn(
+            `Linked Jira ticket sync failed for ${ticket.key} (${jiraIssueKey}): ${getErrorMessage(error)}`
+          );
+        }
       }
     }
 
     setJiraBulkSyncState("idle");
 
     if (failedCount > 0) {
-      setJiraBulkSyncError(`Synced ${formatCount(syncedCount)} Jira ticket${syncedCount === 1 ? "" : "s"}; ${formatCount(failedCount)} failed.`);
-      setJiraBulkSyncMessage("");
+      if (!silent) {
+        setJiraBulkSyncError(
+          `Synced ${formatCount(syncedCount)} Jira ticket${syncedCount === 1 ? "" : "s"}; ${formatCount(failedCount)} failed.`
+        );
+        setJiraBulkSyncMessage("");
+      }
       return;
     }
 
-    setJiraBulkSyncError("");
-    setJiraBulkSyncMessage(`Synced ${formatCount(syncedCount)} Jira ticket${syncedCount === 1 ? "" : "s"}. Status, release dates, estimate, remaining time, and comments are up to date.`);
+    if (!silent) {
+      setJiraBulkSyncError("");
+      setJiraBulkSyncMessage(
+        `Synced ${formatCount(syncedCount)} Jira ticket${syncedCount === 1 ? "" : "s"}. Status, release dates, estimate, remaining time, and comments are up to date.`
+      );
+    }
   }, [config, jiraBulkSyncState, syncJiraActivityForTicket, ticketList]);
 
   useEffect(() => {
@@ -15219,6 +15446,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
     <div className="app-frame scania">
       <TopBar
         attentionItems={headerAttentionItems}
+        authUser={authUser}
         config={config}
         activePersona={selectedPersona}
         actingRoleAccessEnabled={actingRoleAccessEnabled}
@@ -15227,9 +15455,11 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         selectedPersonaId={selectedBasePersona.id}
         ticketSearchOptions={ticketListTickets}
         ticketSearchQuery={query}
-        onGoDashboard={goToDashboard}
         onConfigChange={setConfig}
         onActingRoleAccessChange={changeActingRoleAccess}
+        onLogout={() => {
+          void logoutEntra();
+        }}
         onPersonaChange={changePersona}
         onOpenModule={openModule}
         onOpenNotification={openNotificationItem}
@@ -15241,13 +15471,17 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         notifications={visibleNotifications}
         isMounted={isTegelShellMounted}
       />
-      <div className={`app-shell ${isSideNavCompact ? "is-side-nav-compact" : ""}`}>
-        <Sidebar
+      <div
+        className={`app-shell ${isSideNavCompact ? "is-side-nav-compact" : ""}`}
+        style={{
+          gridTemplateColumns: isSideNavCompact ? "56px minmax(0, 1fr)" : "272px minmax(0, 1fr)"
+        }}
+      >
+        <PortalSidebar
           activeModule={activeModule}
           attentionCounts={attentionCountsByModule}
           items={visibleNavItems}
           isCompact={isSideNavCompact}
-          isOpen={isSideMenuOpen}
           isMounted={isTegelShellMounted}
           onClose={() => setIsSideMenuOpen(false)}
           onCollapse={() => setIsSideNavCompact(true)}
@@ -15258,10 +15492,10 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           <main className="workspace-main">
             <ModuleHeader
               activeModule={activeModule}
+              hasJiraProducts={hasJiraProductConfig}
               role={role}
               selectedTicket={selectedTicket}
-              query={query}
-              onQueryChange={setQuery}
+              navItem={navItems.find((navItem) => navItem.key === activeModule) ?? navItems[0]}
               onNewTicket={() => setIsCreateTicketOpen(true)}
             />
             {renderModule({
@@ -15293,6 +15527,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               onSaveFunctionMappingStepDecision: saveFunctionMappingStepDecision,
               onAddFunctionMappingStepComment: addFunctionMappingStepComment,
               onUpdateFunctionMappingMaterials: updateFunctionMappingReviewMaterials,
+              onSkipGlobalizationQuestion: skipGlobalizationQuestion,
               onPostJiraComment: postJiraCommentForTicket,
               onReopenTicket: reopenTicket,
               onRespondGlobalLpoApprovalRequest: respondToGlobalLpoApprovalRequest,
@@ -15330,116 +15565,9 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
   );
 }
 
-function Sidebar({
-  activeModule,
-  attentionCounts,
-  items,
-  isCompact,
-  isOpen,
-  isMounted,
-  onClose,
-  onCollapse,
-  onExpand,
-  onSelectModule
-}: {
-  activeModule: ModuleKey;
-  attentionCounts: Partial<Record<ModuleKey, number>>;
-  items: readonly NavItem[];
-  isCompact: boolean;
-  isOpen: boolean;
-  isMounted: boolean;
-  onClose: () => void;
-  onCollapse: () => void;
-  onExpand: () => void;
-  onSelectModule: (module: ModuleKey) => void;
-}) {
-  useEffect(() => {
-    if (!isMounted) {
-      return;
-    }
-
-    const sideMenu = document.getElementById("nexus-side-menu") as (HTMLElement & { shadowRoot?: ShadowRoot | null }) | null;
-    const applyOverflowFix = () => {
-      const wrapper = sideMenu?.shadowRoot?.querySelector<HTMLElement>(".tds-side-menu-wrapper");
-
-      if (wrapper) {
-        wrapper.style.overflowX = "hidden";
-        wrapper.style.maxWidth = "100%";
-      }
-    };
-
-    applyOverflowFix();
-    const animationFrameId = window.requestAnimationFrame(applyOverflowFix);
-    const timeoutId = window.setTimeout(applyOverflowFix, 250);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrameId);
-      window.clearTimeout(timeoutId);
-    };
-  }, [isMounted]);
-
-  if (!isMounted) {
-    return <aside className="tegel-side-fallback" aria-hidden="true" />;
-  }
-
-  return (
-    <aside
-      className={`tegel-side-shell ${isCompact ? "is-compact" : ""}`}
-      aria-label="Primary navigation"
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          onCollapse();
-        }
-      }}
-      onFocus={onExpand}
-      onMouseEnter={onExpand}
-      onMouseLeave={onCollapse}
-    >
-      <TdsSideMenu id="nexus-side-menu" className="tegel-side-menu" open={isOpen} persistent>
-        <TdsSideMenuOverlay slot="overlay" onClick={onClose} />
-        <TdsSideMenuCloseButton slot="close-button" onClick={onClose} />
-        {items.map((item) => {
-          const attentionCount = attentionCounts[item.key] ?? 0;
-          const navButtonLabel = isCompact
-            ? `${item.label}${attentionCount > 0 ? `, ${attentionCount} item${attentionCount === 1 ? "" : "s"} need attention` : ""}`
-            : undefined;
-
-          return (
-            <TdsSideMenuItem
-              key={item.key}
-              selected={activeModule === item.key}
-            >
-              <button
-                className="tegel-side-menu-button"
-                aria-label={navButtonLabel}
-                onClick={() => {
-                  onSelectModule(item.key);
-                  onClose();
-                }}
-                title={isCompact ? item.label : undefined}
-                type="button"
-              >
-                <TegelIcon name={item.iconName} />
-                <span className="tegel-side-menu-label">{item.label}</span>
-                {attentionCount > 0 ? (
-                  <span
-                    aria-label={`${attentionCount} ${item.label} item${attentionCount === 1 ? "" : "s"} need attention`}
-                    className="tegel-side-attention-count"
-                  >
-                    {attentionCount}
-                  </span>
-                ) : null}
-              </button>
-            </TdsSideMenuItem>
-          );
-        })}
-      </TdsSideMenu>
-    </aside>
-  );
-}
-
 function TopBar({
   attentionItems,
+  authUser,
   config,
   activePersona,
   actingRoleAccessEnabled,
@@ -15451,9 +15579,9 @@ function TopBar({
   notificationCount,
   notifications,
   isMounted,
-  onGoDashboard,
   onConfigChange,
   onActingRoleAccessChange,
+  onLogout,
   onPersonaChange,
   onOpenModule,
   onOpenNotification,
@@ -15463,6 +15591,7 @@ function TopBar({
   onOpenNotifications
 }: {
   attentionItems: HeaderAttentionItem[];
+  authUser: AuthUser | null;
   config: AdminConfig;
   activePersona: RolePersonaOption;
   actingRoleAccessEnabled: boolean;
@@ -15474,9 +15603,9 @@ function TopBar({
   notificationCount: number;
   notifications: NotificationItem[];
   isMounted: boolean;
-  onGoDashboard: () => void;
   onConfigChange: Dispatch<SetStateAction<AdminConfig>>;
   onActingRoleAccessChange: (enabled: boolean) => void;
+  onLogout: () => void;
   onPersonaChange: (personaId: string) => void;
   onOpenModule: (module: ModuleKey) => void;
   onOpenNotification: (notification: NotificationItem) => void;
@@ -15491,21 +15620,15 @@ function TopBar({
   const [activeNotificationTab, setActiveNotificationTab] = useState<"attention" | "notifications">("attention");
   const [activeTicketSearchIndex, setActiveTicketSearchIndex] = useState(0);
   const ticketSearchListId = useId();
+  const profileTriggerRef = useRef<HTMLButtonElement>(null);
+  const profilePopoverRef = useRef<HTMLElement>(null);
+  const notificationTriggerRef = useRef<HTMLButtonElement>(null);
+  const notificationPopoverRef = useRef<HTMLElement>(null);
+  const { locale, setLocale, t } = useLocale();
   const attentionTotal = attentionItems.reduce((total, item) => total + item.count, 0);
   const headerNotificationBadgeCount = Math.max(attentionTotal, notificationCount);
-  const selectedUser = useMemo(
-    () => (selectedPersona.userId ? config.users.find((user) => user.id === selectedPersona.userId) : undefined),
-    [config.users, selectedPersona.userId]
-  );
   const actingRoleLabels = selectedPersona.actionRoles.map((roleKey) => getConfigRoleLabel(config, roleKey));
   const hasActingRoles = actingRoleLabels.length > 0;
-  const selectedUserNotificationPreferences =
-    selectedUser?.notificationPreferences ?? getDefaultAdminUserNotificationPreferences();
-  const selectedUserNotificationEventOptions = useMemo(
-    () => (selectedUser ? getRelevantUserEmailNotificationEventOptions(config, selectedUser) : []),
-    [config, selectedUser]
-  );
-  const selectedUserRelevantEventTypes = selectedUserNotificationEventOptions.map((option) => option.value);
   const normalizedTicketSearchQuery = ticketSearchQuery.trim().toLowerCase();
   const visibleTicketSearchOptions = useMemo(() => {
     const source = normalizedTicketSearchQuery
@@ -15540,6 +15663,53 @@ function TopBar({
     setActiveNotificationTab("attention");
   }, [selectedPersona.id]);
 
+  useEffect(() => {
+    if (!isAttentionOpen && !isNotificationPopoverOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent | PointerEvent) {
+      const target = event.target;
+
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (isAttentionOpen) {
+        const clickedInsideProfile =
+          profilePopoverRef.current?.contains(target) || profileTriggerRef.current?.contains(target);
+
+        if (!clickedInsideProfile) {
+          setIsAttentionOpen(false);
+        }
+      }
+
+      if (isNotificationPopoverOpen) {
+        const clickedInsideNotifications =
+          notificationPopoverRef.current?.contains(target) || notificationTriggerRef.current?.contains(target);
+
+        if (!clickedInsideNotifications) {
+          setIsNotificationPopoverOpen(false);
+        }
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsAttentionOpen(false);
+        setIsNotificationPopoverOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isAttentionOpen, isNotificationPopoverOpen]);
+
   function openTicketSearchResult(ticket: Ticket) {
     setIsAttentionOpen(false);
     setIsNotificationPopoverOpen(false);
@@ -15568,26 +15738,6 @@ function TopBar({
   function openHeaderNotification(notification: NotificationItem) {
     setIsNotificationPopoverOpen(false);
     onOpenNotification(notification);
-  }
-
-  function updateSelectedUserNotificationPreferences(
-    updater: (current: AdminUser["notificationPreferences"]) => AdminUser["notificationPreferences"]
-  ) {
-    if (!selectedUser) {
-      return;
-    }
-
-    onConfigChange((current) => ({
-      ...current,
-      users: current.users.map((user) =>
-        user.id === selectedUser.id
-          ? normalizeAdminUser({
-              ...user,
-              notificationPreferences: updater(user.notificationPreferences)
-            })
-          : user
-      )
-    }));
   }
 
   if (!isMounted) {
@@ -15620,7 +15770,7 @@ function TopBar({
           tdsAriaLabel="Open navigation"
           onClick={onToggleMenu}
         />
-        <TdsHeaderTitle slot="title">Nexus-support portal</TdsHeaderTitle>
+        <TdsHeaderTitle slot="title">{t.shell.portalTitle}</TdsHeaderTitle>
         <TdsHeaderItem className="tegel-header-search-item" slot="end">
           <form
             className={`tegel-header-ticket-search ${shouldShowTicketSearchList ? "is-open" : ""}`}
@@ -15641,7 +15791,7 @@ function TopBar({
             <div className="tegel-header-ticket-search-control">
               <TegelIcon name="search" size="16px" />
               <label className="sr-only" htmlFor="header-ticket-search">
-                Search tickets
+                {t.shell.searchTicket}
               </label>
               <input
                 id="header-ticket-search"
@@ -15681,7 +15831,7 @@ function TopBar({
                     }
                   }
                 }}
-                placeholder="Search ticket"
+                placeholder={t.shell.searchTicket}
                 autoComplete="off"
                 role="combobox"
                 aria-expanded={shouldShowTicketSearchList}
@@ -15693,8 +15843,8 @@ function TopBar({
                 }
               />
               <span className="tegel-header-ticket-search-caret" aria-hidden="true" />
-              <button type="submit" title="Open matching ticket" aria-label="Open matching ticket">
-                Open
+              <button type="submit" title={t.shell.open} aria-label={t.shell.open}>
+                {t.shell.open}
               </button>
             </div>
             {shouldShowTicketSearchList ? (
@@ -15740,11 +15890,27 @@ function TopBar({
             ) : null}
           </form>
         </TdsHeaderItem>
-        <label className="tegel-header-role" slot="end">
-          <span className="tegel-header-role-label">User</span>
-          <span className="sr-only">Current user</span>
+        <label className="tegel-header-locale" slot="end">
+          <span className="tegel-header-role-label">{t.shell.language}</span>
           <select
-            aria-label="Current user"
+            aria-label={t.shell.language}
+            value={locale}
+            onChange={(event) => {
+              setLocale(event.target.value as AppLocale);
+            }}
+          >
+            {(Object.keys(localeLabels) as AppLocale[]).map((code) => (
+              <option key={code} value={code}>
+                {localeLabels[code]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="tegel-header-role" slot="end">
+          <span className="tegel-header-role-label">{t.shell.user}</span>
+          <span className="sr-only">{t.shell.user}</span>
+          <select
+            aria-label={t.shell.user}
             value={selectedPersonaId}
             onChange={(event) => {
               setIsAttentionOpen(false);
@@ -15761,6 +15927,7 @@ function TopBar({
         </label>
         <TdsHeaderItem className="tegel-header-notifications" slot="end">
           <button
+            ref={notificationTriggerRef}
             className="tegel-header-button"
             type="button"
             aria-controls="header-notification-panel"
@@ -15777,9 +15944,10 @@ function TopBar({
         <TdsHeaderLauncherButton slot="end" tdsAriaLabel="Application switcher" />
         <TdsHeaderItem className="tegel-header-user-item" slot="end">
           <button
+            ref={profileTriggerRef}
             aria-controls="header-attention-panel"
             aria-expanded={isAttentionOpen}
-            aria-label={`Signed in user ${selectedPersona.displayName}, active access ${activePersona.roleLabel}.`}
+            aria-label={`Active user ${selectedPersona.displayName}, access ${activePersona.roleLabel}.`}
             className="tegel-user-button"
             type="button"
             onClick={openProfilePopover}
@@ -15788,74 +15956,65 @@ function TopBar({
             {selectedPersona.initials}
           </button>
         </TdsHeaderItem>
-        <TdsHeaderBrandSymbol slot="end">
-          <a
-            aria-label="Go to Dashboard"
-            href="#dashboard"
-            onClick={(event) => {
-              event.preventDefault();
-              setIsAttentionOpen(false);
-              setIsNotificationPopoverOpen(false);
-              onGoDashboard();
-            }}
-          />
-        </TdsHeaderBrandSymbol>
       </TdsHeader>
       {isAttentionOpen ? (
-        <section className="tegel-attention-popover tegel-profile-popover" id="header-attention-panel" aria-label="User profile">
-          <header>
-            <span>{selectedPersona.displayName}</span>
-            <strong>Profile</strong>
-            <small>{activePersona.roleLabel}</small>
-          </header>
-          <div className="tegel-profile-tab-panel">
-            <div className="tegel-profile-card-grid">
-              <section className="tegel-profile-card">
-                <h3>Access</h3>
-                <dl className="tegel-profile-field-list">
-                  <div>
-                    <dt>Primary role</dt>
-                    <dd>{selectedPersona.roleLabel}</dd>
-                  </div>
-                  <div>
-                    <dt>Active access</dt>
-                    <dd>{activePersona.roleLabel}</dd>
-                  </div>
-                  <div>
-                    <dt>Acting roles</dt>
-                    <dd>{formatPersonaSecondaryRoles(config, selectedPersona)}</dd>
-                  </div>
-                </dl>
-              </section>
-              <section className="tegel-profile-card">
-                <h3>Contact & scope</h3>
-                <dl className="tegel-profile-field-list">
-                  <div>
-                    <dt>Email</dt>
-                    <dd>{selectedPersona.email || "No email configured"}</dd>
-                  </div>
-                  <div>
-                    <dt>Region / site</dt>
-                    <dd>
-                      {selectedPersona.region || ALL_SCOPE_LABEL} / {selectedPersona.site || ALL_SCOPE_LABEL}
-                    </dd>
-                  </div>
-                </dl>
-              </section>
-              <section className="tegel-profile-card">
-                <h3>Coverage</h3>
-                <dl className="tegel-profile-field-list">
-                  <div>
-                    <dt>Products</dt>
-                    <dd>{formatProfileProductScope(config, selectedPersona.productIds)}</dd>
-                  </div>
-                  <div>
-                    <dt>PRUs</dt>
-                    <dd>{formatProfilePruScope(selectedPersona.pruNames)}</dd>
-                  </div>
-                </dl>
-              </section>
+        <section
+          ref={profilePopoverRef}
+          className="tegel-attention-popover tegel-profile-popover"
+          id="header-attention-panel"
+          aria-label="User profile"
+        >
+          <header className="tegel-profile-identity">
+            <div className="tegel-profile-identity-main">
+              <span className="tegel-profile-avatar" aria-hidden="true">
+                {selectedPersona.initials}
+              </span>
+              <div className="tegel-profile-identity-copy">
+                <p className="tegel-profile-kicker">{t.shell.activeUser}</p>
+                <strong>{selectedPersona.displayName}</strong>
+                <span>{selectedPersona.email || "No email configured"}</span>
+                {authUser?.email ? (
+                  <small className="tegel-profile-signed-in">
+                    {t.shell.signedInAs} {authUser.email}
+                  </small>
+                ) : null}
+              </div>
             </div>
+            <span className="tegel-profile-role-pill">{activePersona.roleLabel}</span>
+          </header>
+
+          <div className="tegel-profile-body">
+            <dl className="tegel-profile-summary" aria-label="Access and coverage">
+              <div>
+                <dt>Primary role</dt>
+                <dd>{selectedPersona.roleLabel}</dd>
+              </div>
+              <div>
+                <dt>Active access</dt>
+                <dd>{activePersona.roleLabel}</dd>
+              </div>
+              <div>
+                <dt>Region / site</dt>
+                <dd>
+                  {selectedPersona.region || ALL_SCOPE_LABEL} / {selectedPersona.site || ALL_SCOPE_LABEL}
+                </dd>
+              </div>
+              <div>
+                <dt>Products</dt>
+                <dd>{formatProfileProductScope(config, selectedPersona.productIds)}</dd>
+              </div>
+              <div>
+                <dt>PRUs</dt>
+                <dd>{formatProfilePruScope(selectedPersona.pruNames)}</dd>
+              </div>
+              {hasActingRoles ? (
+                <div>
+                  <dt>Acting roles</dt>
+                  <dd>{formatPersonaSecondaryRoles(config, selectedPersona)}</dd>
+                </div>
+              ) : null}
+            </dl>
+
             {hasActingRoles ? (
               <div className="tegel-acting-role-toggle">
                 <AdminCheckbox
@@ -15863,70 +16022,30 @@ function TopBar({
                   label="Use acting role access"
                   onChange={onActingRoleAccessChange}
                 />
-                <small>
-                  Off uses only the primary role. On uses the configured acting role
-                  {actingRoleLabels.length === 1 ? "" : "s"} for this session and resets after login, reload, or user change.
-                </small>
               </div>
             ) : null}
-            <section className="tegel-profile-settings" aria-label="Email notification settings">
-              <div className="tegel-profile-settings-header">
-                <strong>Email notifications</strong>
-                <small>Choose which automatic email actions this user receives.</small>
-              </div>
-              {selectedUser ? (
-                <div className="tegel-profile-settings-body">
-                  <AdminCheckbox
-                    checked={selectedUserNotificationPreferences.emailEnabled}
-                    label="Allow automatic email notifications"
-                    onChange={(emailEnabled) =>
-                      updateSelectedUserNotificationPreferences((current) => ({
-                        ...current,
-                        emailEnabled
-                      }))
-                    }
-                  />
-                  {selectedUserNotificationEventOptions.length > 0 ? (
-                    <fieldset
-                      className={`notification-preference-list ${selectedUserNotificationPreferences.emailEnabled ? "" : "is-disabled"}`}
-                      disabled={!selectedUserNotificationPreferences.emailEnabled}
-                    >
-                      {selectedUserNotificationEventOptions.map((option) => (
-                        <AdminCheckbox
-                          checked={selectedUserNotificationPreferences.emailEventTypes.includes(option.value)}
-                          key={option.value}
-                          label={option.label}
-                          onChange={(checked) =>
-                            updateSelectedUserNotificationPreferences((current) => ({
-                              ...current,
-                              emailEventTypes: toggleUserEmailNotificationEventSelection(
-                                current.emailEventTypes,
-                                option.value,
-                                checked,
-                                selectedUserRelevantEventTypes
-                              )
-                            }))
-                          }
-                        />
-                      ))}
-                    </fieldset>
-                  ) : (
-                    <p className="tegel-profile-settings-hint">
-                      No automatic email events are available for this user&apos;s current role.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="tegel-profile-settings-hint">
-                  Switch to a named user persona to manage profile email notifications.
-                </p>
-              )}
-            </section>
           </div>
+
+          {authUser ? (
+            <footer className="tegel-profile-footer">
+              <TegelButton
+                className="tegel-profile-signout"
+                fullbleed
+                text={t.shell.signOut}
+                variant="secondary"
+                onClick={onLogout}
+              />
+            </footer>
+          ) : null}
         </section>
       ) : null}
       {isNotificationPopoverOpen ? (
-        <section className="tegel-attention-popover tegel-notification-popover" id="header-notification-panel" aria-label="Notifications and needs attention">
+        <section
+          ref={notificationPopoverRef}
+          className="tegel-attention-popover tegel-notification-popover"
+          id="header-notification-panel"
+          aria-label="Notifications and needs attention"
+        >
           <header>
             <span>{selectedPersona.displayName}</span>
             <strong>Notifications</strong>
@@ -16026,134 +16145,6 @@ function TopBar({
         </section>
       ) : null}
     </div>
-  );
-}
-
-function getModuleHeaderTitle(activeModule: ModuleKey, role: RoleKey, fallbackLabel: string): string {
-  if (activeModule === "dashboard" && role === "requester") {
-    return "My support dashboard";
-  }
-
-  if (activeModule === "tickets" && role === "requester") {
-    return "Find support tickets";
-  }
-
-  if (activeModule === "releasePlan") {
-    return "Release plan";
-  }
-
-  return fallbackLabel;
-}
-
-function getModuleHeaderDescription(activeModule: ModuleKey, role: RoleKey, selectedTicket?: Ticket): string {
-  if (activeModule === "dashboard") {
-    return role === "requester"
-      ? "High-level view of your tickets, SLA health, clarifications, notifications, and planned releases."
-      : "High-level view of role-visible work, SLA health, approvals, clarifications, notifications, and releases.";
-  }
-
-  if (activeModule === "integrations") {
-    return "Jira API sync and SMTP email delivery configuration.";
-  }
-
-  if (activeModule === "admin") {
-    return "Master data, responsibility mapping, workflows, notifications, and SLA settings.";
-  }
-
-  if (activeModule === "approvals") {
-    return "Role-based approval queue with decision actions and ticket context.";
-  }
-
-  if (activeModule === "globalization") {
-    return "Product-owner globalization questions, internal mapping work, material uploads, and GPO scope decisions.";
-  }
-
-  if (activeModule === "clarifications" && !selectedTicket) {
-    return "No open clarification requests for this role.";
-  }
-
-  if (activeModule === "escalations") {
-    return "Role-visible active escalations across accessible products, PRUs, and responsibility scopes.";
-  }
-
-  if (activeModule === "tickets") {
-    return role === "requester"
-      ? "Search across all support tickets. Use My raised tickets when you only want your own requests."
-      : "Search, filter, and open the tickets visible to your current role.";
-  }
-
-  if (activeModule === "releasePlan") {
-    return "See planned releases, tickets per release, pre-prod and production dates, and sprint status.";
-  }
-
-  return selectedTicket
-    ? `${selectedTicket.key} - ${selectedTicket.title}`
-    : "No ticket selected. Create a ticket to populate this workspace.";
-}
-
-function ModuleHeader({
-  activeModule,
-  role,
-  selectedTicket,
-  query,
-  onQueryChange,
-  onNewTicket
-}: {
-  activeModule: ModuleKey;
-  role: RoleKey;
-  selectedTicket?: Ticket;
-  query: string;
-  onQueryChange: (query: string) => void;
-  onNewTicket: () => void;
-}) {
-  const item = navItems.find((navItem) => navItem.key === activeModule) ?? navItems[0];
-
-  if (activeModule === "admin") {
-    return null;
-  }
-
-  if (activeModule === "tickets") {
-    return (
-      <section className="module-header ticket-list-header">
-        <div>
-          <span className="module-eyebrow">Ticket List</span>
-          <h1>{getModuleHeaderTitle(activeModule, role, "Search and filter support tickets")}</h1>
-          <p>{getModuleHeaderDescription(activeModule, role, selectedTicket)}</p>
-        </div>
-        <div className="module-actions">
-          <button className="primary-button" type="button" onClick={onNewTicket}>
-            Create ticket
-          </button>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section className="module-header">
-      <div>
-        <div className="module-title-row">
-          <TegelIcon name={item.iconName} size="26px" />
-          <h1>{getModuleHeaderTitle(activeModule, role, item.label)}</h1>
-        </div>
-        <p>{getModuleHeaderDescription(activeModule, role, selectedTicket)}</p>
-      </div>
-      <div className="module-actions">
-        <label className="module-search">
-          <TegelIcon name="search" size="17px" />
-          <span className="sr-only">Search tickets</span>
-          <input
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="Search tickets, products, modules"
-          />
-        </label>
-        <button className="primary-button" type="button" onClick={onNewTicket}>
-          <TegelIcon name="support" size="17px" />
-          New ticket
-        </button>
-      </div>
-    </section>
   );
 }
 
@@ -17586,12 +17577,12 @@ function NewTicketModal({
             </p>
           ) : null}
           <div className="modal-actions">
-            <button className="secondary-button" type="button" onClick={onClose}>
-              Cancel
-            </button>
-            <button className="primary-button" type="submit" disabled={isReadingAttachments}>
-              {isReadingAttachments ? "Reading files..." : "Create ticket"}
-            </button>
+            <TegelButton text="Cancel" variant="secondary" onClick={onClose} />
+            <TegelButton
+              disabled={isReadingAttachments}
+              text={isReadingAttachments ? "Reading files..." : "Create ticket"}
+              type="submit"
+            />
           </div>
         </form>
       </section>
@@ -17622,6 +17613,7 @@ function renderModule({
   onCreateEscalation,
   onCreateGlobalLpoApprovalRequest,
   onCreateGlobalPotentialRequest,
+  onSkipGlobalizationQuestion,
   onCreateJira,
   onCloseGlobalLpoApprovalRequest,
   onCloseFunctionMappingReview,
@@ -17673,6 +17665,7 @@ function renderModule({
   onCreateEscalation: (ticketKey: string, input: NewEscalationInput) => void;
   onCreateGlobalLpoApprovalRequest: CreateGlobalLpoApprovalRequestHandler;
   onCreateGlobalPotentialRequest: CreateGlobalPotentialRequestHandler;
+  onSkipGlobalizationQuestion: SkipGlobalizationQuestionHandler;
   onCreateJira: CreateJiraHandler;
   onCloseGlobalLpoApprovalRequest: CloseGlobalLpoApprovalRequestHandler;
   onCloseFunctionMappingReview: CloseFunctionMappingReviewHandler;
@@ -17780,6 +17773,7 @@ function renderModule({
         onUpdateFunctionMappingMaterials={onUpdateFunctionMappingMaterials}
         onCreateGlobalLpoApprovalRequest={onCreateGlobalLpoApprovalRequest}
         onCreateGlobalPotentialRequest={onCreateGlobalPotentialRequest}
+        onSkipGlobalizationQuestion={onSkipGlobalizationQuestion}
         onOpenTicket={selectTicket}
         onRespondGlobalLpoApprovalRequest={onRespondGlobalLpoApprovalRequest}
       />
@@ -17802,6 +17796,7 @@ function renderModule({
         onUpdateFunctionMappingMaterials={onUpdateFunctionMappingMaterials}
         onCreateGlobalLpoApprovalRequest={onCreateGlobalLpoApprovalRequest}
         onCreateGlobalPotentialRequest={onCreateGlobalPotentialRequest}
+        onSkipGlobalizationQuestion={onSkipGlobalizationQuestion}
         onOpenTicket={selectTicket}
         onRespondGlobalLpoApprovalRequest={onRespondGlobalLpoApprovalRequest}
       />
@@ -18005,49 +18000,49 @@ function renderModule({
 }
 
 function WorkspaceEmptyPanel() {
+  const { locale, t } = useLocale();
+  const empty = getTicketsEmptyCopy(false, locale);
+
   return (
     <section className="panel workspace-empty-panel">
-      <PanelHeader
-        title="No tickets yet"
-        description="The workspace is clean. Create a ticket to start governed workflow and escalation tracking."
-        iconName="folder"
-      />
-      <EmptyState
-        title="No predefined work"
-        body="Demo tickets, seeded notifications, escalations, comments, attachments, and audit entries are not loaded."
-      />
+      <PanelHeader title={empty.title} description={empty.body} iconName="folder" />
+      <EmptyState title={empty.title} body={t.copy.ticketsEmptyBody} />
     </section>
   );
 }
 
 function ClarificationsEmptyPanel() {
+  const { t } = useLocale();
+
   return (
     <section className="panel workspace-empty-panel">
       <PanelHeader
-        title="No clarification requests"
-        description="There are no open clarification requests for this role."
+        title={t.modules.clarifications}
+        description={t.copy.clarificationsEmpty}
         iconName="message"
       />
-      <EmptyState
-        title="Clarifications are clear"
-        body="When a ticket needs clarification from this role, it will appear here."
-      />
+      <EmptyState title={t.modules.clarifications} body={t.copy.clarificationsEmpty} />
     </section>
   );
 }
 
 function EscalationsEmptyPanel() {
+  const { t } = useLocale();
+
   return (
     <section className="panel workspace-empty-panel">
-      <PanelHeader
-        title="No scoped escalations"
-        description="Escalations are visible only when the selected role and configured product, PRU, or responsibility scope match the ticket."
-        iconName="warning"
-      />
-      <EmptyState
-        title="No escalation access"
-        body="Switch persona or update Admin role ownership if this user should see escalation work for this product or PRU."
-      />
+      <PanelHeader title={t.modules.escalations} description={t.copy.escalations} iconName="warning" />
+      <EmptyState title={t.modules.escalations} body={t.copy.escalations} />
+    </section>
+  );
+}
+
+function GlobalizationEmptyState() {
+  const { t } = useLocale();
+
+  return (
+    <section className="approval-table-card globalization-empty-panel">
+      <EmptyState title={t.copy.globalizationEmptyTitle} body={t.copy.globalizationEmptyBody} />
     </section>
   );
 }
@@ -18184,6 +18179,7 @@ function ApprovalCenter({
   onAddFunctionMappingStepComment,
   onCreateGlobalLpoApprovalRequest,
   onCreateGlobalPotentialRequest,
+  onSkipGlobalizationQuestion,
   onOpenTicket,
   onRespondGlobalLpoApprovalRequest,
   onUpdateFunctionMappingMaterials
@@ -18205,6 +18201,7 @@ function ApprovalCenter({
   onAddFunctionMappingStepComment: AddFunctionMappingStepCommentHandler;
   onCreateGlobalLpoApprovalRequest: CreateGlobalLpoApprovalRequestHandler;
   onCreateGlobalPotentialRequest: CreateGlobalPotentialRequestHandler;
+  onSkipGlobalizationQuestion: SkipGlobalizationQuestionHandler;
   onOpenTicket: (ticketKey: string) => void;
   onRespondGlobalLpoApprovalRequest: RespondGlobalLpoApprovalRequestHandler;
   onUpdateFunctionMappingMaterials: UpdateFunctionMappingMaterialsHandler;
@@ -18232,7 +18229,7 @@ function ApprovalCenter({
   const showGlobalizationSections = mode === "globalization";
   const globalizationQuestionItems =
     showGlobalizationSections && (personaHasRole(selectedPersona, "global_product_owner") || personaHasRole(selectedPersona, "admin"))
-      ? pendingApprovals
+      ? pendingApprovals.filter((item) => !hasSkippedGlobalizationQuestion(item.ticket, item.step.id))
       : [];
   const hasGlobalizationWork =
     functionMappingItems.length > 0 || globalLpoApprovalItems.length > 0 || globalizationQuestionItems.length > 0;
@@ -19313,21 +19310,31 @@ function ApprovalCenter({
                           )}
                         </td>
                         <td>
-                          <button
-                            className="primary-button"
-                            disabled={!canOpenGlobalLpoRequest}
-                            title={
-                              globalLpoRequestOpen
-                                ? "This ticket already has an open globalization product-owner question."
-                                : globalLpoTargetCount === 0
-                                  ? "Configure active Local or Global Product Owner users before sending."
-                                  : "Ask configured Local and Global Product Owners for globalization input."
-                            }
-                            type="button"
-                            onClick={() => openGlobalLpoComposer(item)}
-                          >
-                            Ask product owners
-                          </button>
+                          <div className="globalization-question-actions">
+                            <button
+                              className="primary-button"
+                              disabled={!canOpenGlobalLpoRequest}
+                              title={
+                                globalLpoRequestOpen
+                                  ? "This ticket already has an open globalization product-owner question."
+                                  : globalLpoTargetCount === 0
+                                    ? "Configure active Local or Global Product Owner users before sending."
+                                    : "Ask configured Local and Global Product Owners for globalization input."
+                              }
+                              type="button"
+                              onClick={() => openGlobalLpoComposer(item)}
+                            >
+                              Ask product owners
+                            </button>
+                            <button
+                              className="secondary-button"
+                              title="Skip the globalization question and continue this gate in the normal approval list."
+                              type="button"
+                              onClick={() => onSkipGlobalizationQuestion(item.ticket.key, item.step.id)}
+                            >
+                              Send to approval list
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {isGlobalLpoComposerOpen ? (
@@ -19380,6 +19387,196 @@ function ApprovalCenter({
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+      {showGlobalizationSections && globalLpoApprovalItems.length > 0 ? (
+        <div className="approval-table-card global-lpo-inbox-panel" aria-labelledby="global-lpo-inbox-title">
+          <header className="approval-table-header">
+            <div>
+              <h2 id="global-lpo-inbox-title">Product-owner globalization questions</h2>
+              <p>
+                {formatCount(globalLpoApprovalItems.filter((item) => item.needsResponse).length)} waiting for your answer ·{" "}
+                {formatCount(globalLpoApprovalItems.length)} visible request
+                {globalLpoApprovalItems.length === 1 ? "" : "s"}
+              </p>
+            </div>
+          </header>
+          <div className="global-lpo-inbox-list" role="list">
+            {globalLpoApprovalItems.map((item) => {
+              const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, item.request);
+              const responseSummary = getGlobalLpoApprovalSummary(item.request);
+              const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(item.request);
+              const closeOutcomeDraft = getGlobalLpoCloseOutcomeDraft(item);
+
+              return (
+                <article
+                  className={`global-lpo-request-card is-${item.request.status}${item.needsResponse ? " is-actionable" : ""}`}
+                  key={item.id}
+                  role="listitem"
+                >
+                  <div className="global-lpo-request-main">
+                    <div className="function-mapping-request-title">
+                      <strong>{globalTicketKey}</strong>
+                      <span className={`thread-state thread-${item.request.status}`}>{item.request.status}</span>
+                    </div>
+                    <button
+                      className="approval-ticket-link"
+                      type="button"
+                      title="Open source ticket"
+                      onClick={() => onOpenTicket(item.ticket.key)}
+                    >
+                      <strong>{item.ticket.key}</strong>
+                      <span>{item.ticket.title}</span>
+                    </button>
+                    <small>
+                      {[item.ticket.product, item.ticket.pru, item.ticket.module].filter(Boolean).join(" - ") ||
+                        "No product scope"}{" "}
+                      · due {formatDateTimeDisplay(item.request.dueAt)}
+                    </small>
+                    <small>
+                      Requested by {item.request.requestedBy} · {formatDateTimeDisplay(item.request.createdAt)}
+                    </small>
+                  </div>
+                  <div className="global-lpo-request-context">
+                    <RichTextContent value={item.request.question} fallback="No request text provided." compact />
+                    <p>{responseSummary}</p>
+                    <div className="global-lpo-response-chip-list" aria-label="Product owner response summary">
+                      {item.request.responses.length === 0 ? (
+                        <span className="global-lpo-response-chip">No responses yet</span>
+                      ) : null}
+                      {item.request.responses.map((response) => (
+                        <span
+                          className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
+                          key={`${item.request.id}-${response.userId}`}
+                          title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
+                        >
+                          {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="function-mapping-answer-list">
+                    {item.needsResponse ? (
+                      <div className="global-lpo-response-box">
+                        <RichTextEditor
+                          label="Response note"
+                          value={globalLpoResponseDrafts[item.id] ?? ""}
+                          onChange={(value) =>
+                            setGlobalLpoResponseDrafts((current) => ({
+                              ...current,
+                              [item.id]: value
+                            }))
+                          }
+                          placeholder="Add area, site, or rollout context if needed."
+                          rows={2}
+                        />
+                        <div className="global-lpo-response-actions">
+                          <button
+                            className="primary-button"
+                            type="button"
+                            onClick={() => submitGlobalLpoResponse(item, "needs_global")}
+                          >
+                            Needed in my area
+                          </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => submitGlobalLpoResponse(item, "local_only")}
+                          >
+                            Not needed
+                          </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => submitGlobalLpoResponse(item, "needs_discussion")}
+                          >
+                            Discuss
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {item.currentResponse ? (
+                      <article
+                        className={`global-lpo-response-summary tone-${getGlobalLpoApprovalDecisionTone(item.currentResponse.decision)}`}
+                      >
+                        <strong>Your answer</strong>
+                        <span>
+                          {getGlobalLpoApprovalDecisionLabel(item.currentResponse.decision)} ·{" "}
+                          {formatDateTimeDisplay(item.currentResponse.respondedAt)}
+                        </span>
+                        {item.currentResponse.note ? (
+                          <RichTextContent value={item.currentResponse.note} fallback="" compact />
+                        ) : null}
+                      </article>
+                    ) : null}
+                    {item.request.status === "closed" ? (
+                      <div className={`global-lpo-final-decision tone-${getGlobalLpoApprovalOutcomeTone(item.request.finalOutcome)}`}>
+                        <strong>{getGlobalLpoApprovalOutcomeLabel(item.request.finalOutcome)}</strong>
+                        <span>
+                          {[
+                            item.request.closedBy ? `Closed by ${item.request.closedBy}` : "",
+                            item.request.closedAt ? formatDateTimeDisplay(item.request.closedAt) : ""
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                        <p>{getGlobalLpoApprovalOutcomeNextStep(item.request.finalOutcome)}</p>
+                      </div>
+                    ) : item.canClose ? (
+                      <div className="global-lpo-finalize-box">
+                        <div className="global-lpo-finalize-heading">
+                          <strong>GPO final decision</strong>
+                          <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                        </div>
+                        <label className="form-field">
+                          <span>Outcome</span>
+                          <select
+                            value={closeOutcomeDraft}
+                            onChange={(event) =>
+                              setGlobalLpoCloseOutcomeDrafts((current) => ({
+                                ...current,
+                                [item.id]: event.target.value as GlobalLpoApprovalOutcome
+                              }))
+                            }
+                          >
+                            {globalLpoApprovalOutcomeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <p className="global-lpo-next-step">{getGlobalLpoApprovalOutcomeNextStep(closeOutcomeDraft)}</p>
+                        <RichTextEditor
+                          label="Decision note"
+                          value={globalLpoCloseNoteDrafts[item.id] ?? ""}
+                          onChange={(value) =>
+                            setGlobalLpoCloseNoteDrafts((current) => ({
+                              ...current,
+                              [item.id]: value
+                            }))
+                          }
+                          placeholder="Add scope, PRU, rollout, or follow-up context."
+                          rows={2}
+                        />
+                        <div className="global-lpo-finalize-actions">
+                          <button className="secondary-button" type="button" onClick={() => submitGlobalLpoClose(item)}>
+                            Close with decision
+                          </button>
+                        </div>
+                      </div>
+                    ) : !item.needsResponse ? (
+                      <div className="global-lpo-final-decision">
+                        <strong>Waiting for remaining answers</strong>
+                        <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                        <p>{getGlobalLpoApprovalOutcomeNextStep()}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -19512,8 +19709,8 @@ function ApprovalCenter({
                 <tr>
                   <td colSpan={6}>
                     <EmptyState
-                      title="No pending approvals"
-                      body="There are no active workflow gates waiting for this responsibility right now."
+                      title="No pending approvals in your scope"
+                      body="There are no active workflow gates waiting for this responsibility within your product coverage right now."
                     />
                   </td>
                 </tr>
@@ -19917,12 +20114,7 @@ function ApprovalCenter({
       </div>
       ) : null}
       {showGlobalizationSections && !hasGlobalizationWork ? (
-        <section className="approval-table-card globalization-empty-panel">
-          <EmptyState
-            title="No globalization work"
-            body="When a GPO asks product owners for scope input or starts internal mapping, the work will appear here."
-          />
-        </section>
+        <GlobalizationEmptyState />
       ) : null}
     </section>
   );
@@ -20196,8 +20388,8 @@ function DashboardOverview({
     )
   );
   const unreadNotifications = notifications.filter((notification) => notification.unread);
-  const importantJiraTickets = tickets.filter((ticket) =>
-    dashboardImportantJiraStatuses.has(getTicketJiraFollowUpStatus(ticket))
+  const importantJiraTickets = tickets.filter(
+    (ticket) => ticketUsesJira(config, ticket) && dashboardImportantJiraStatuses.has(getTicketJiraFollowUpStatus(ticket))
   );
   const productRows = getDashboardTopProductRows(tickets);
   const versionDateLookup = useReleasePlanVersionDateLookup(config, tickets);
@@ -20654,11 +20846,29 @@ function DashboardFocusPanel({
           </p>
         </div>
         <div className="ticket-badges" aria-label="Selected ticket status">
-          <span className={`ticket-status-chip tag-variant-${getStatusColorVariant(config, currentStatusLabel)}`}>
-            {currentStatusLabel}
-          </span>
-          <span className={`priority priority-${getPriorityToneClassName(ticket.priority)}`}>{ticket.priority}</span>
-          <span className={`sla-chip state-${ticket.slaState}`}>{ticket.slaLabel}</span>
+          <TegelTag text={currentStatusLabel} variant={getStatusColorVariant(config, currentStatusLabel)} />
+          <TegelTag
+            text={ticket.priority}
+            variant={
+              getPriorityToneClassName(ticket.priority) === "critical" || getPriorityToneClassName(ticket.priority) === "high"
+                ? "error"
+                : getPriorityToneClassName(ticket.priority) === "medium"
+                  ? "warning"
+                  : "neutral"
+            }
+          />
+          <TegelTag
+            text={ticket.slaLabel}
+            variant={
+              ticket.slaState === "breach"
+                ? "error"
+                : ticket.slaState === "watch"
+                  ? "warning"
+                  : ticket.slaState === "healthy"
+                    ? "success"
+                    : "neutral"
+            }
+          />
           {ticketUsesJira(config, ticket) && ticket.relatedJiraKey ? (
             <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} className="jira-issue-link ticket-jira-link" />
           ) : null}
@@ -20854,6 +21064,8 @@ function ReleasePlanBoard({
   const [productFilter, setProductFilter] = useState(releasePlanNoSelectionValue);
   const [releaseFilter, setReleaseFilter] = useState(releasePlanNoSelectionValue);
   const [sprintFilter, setSprintFilter] = useState(releasePlanNoSelectionValue);
+  const { t } = useLocale();
+  const rp = t.releasePlan;
   const jiraMetadata = useReleasePlanJiraMetadata(config, tickets);
   const versionDateLookup = jiraMetadata.versionDateLookup;
   const productOptions = useMemo(
@@ -21050,27 +21262,27 @@ function ReleasePlanBoard({
   const releaseSelectDisabled = !productFilter || releaseOptions.length === 0;
   const sprintSelectDisabled = !productFilter || sprintOptions.length === 0;
   const productPlaceholder =
-    productOptions.length === 0 ? "No accessible products" : "Select product";
+    productOptions.length === 0 ? rp.noAccessibleProducts : rp.selectProduct;
   const releasePlaceholder = !productFilter
-    ? "Select product first"
+    ? rp.selectProductFirst
     : releaseOptions.length === 0
-      ? "No releases for product"
-      : "Select release";
+      ? rp.noReleasesForProduct
+      : rp.selectRelease;
   const sprintPlaceholder = !productFilter
-    ? "Select product first"
+    ? rp.selectProductFirst
     : sprintOptions.length === 0
-      ? "No sprints for product"
-      : "Select sprint";
+      ? rp.noSprintsForProduct
+      : rp.selectSprint;
   const releaseEmptyBody = !productFilter
-    ? "Select a product, then select a release to show tickets."
+    ? rp.emptySelectProductThenRelease
     : !releaseFilter
-      ? "Select a release to show tickets for the selected product."
-      : "No visible tickets match the selected product and release.";
+      ? rp.emptySelectRelease
+      : rp.emptyNoMatchRelease;
   const sprintEmptyBody = !productFilter
-    ? "Select a product, then select a sprint to show sprint tickets."
+    ? rp.emptySelectProductThenSprint
     : !sprintFilter
-      ? "Select a sprint to show tickets for the selected product."
-      : "No visible tickets match the selected product and sprint.";
+      ? rp.emptySelectSprint
+      : rp.emptyNoMatchSprint;
 
   function updateReleasePlanProductFilter(nextProduct: string) {
     setProductFilter(nextProduct);
@@ -21088,12 +21300,8 @@ function ReleasePlanBoard({
 
   return (
     <section className="panel release-plan-board">
-      <PanelHeader
-        title="Release plan"
-        description="End-user release view grouped by Jira fix version, sprint, pre-prod date, and production date."
-        iconName="calendar"
-      />
-      <div className="release-plan-tabs" role="tablist" aria-label="Release planning views">
+      <PanelHeader title={rp.panelTitle} description={rp.panelDescription} iconName="calendar" />
+      <div className="release-plan-tabs" role="tablist" aria-label={rp.viewsAria}>
         <button
           aria-selected={activeTab === "releases"}
           className={activeTab === "releases" ? "is-active" : ""}
@@ -21101,7 +21309,7 @@ function ReleasePlanBoard({
           type="button"
           onClick={() => setActiveTab("releases")}
         >
-          Releases
+          {rp.tabReleases}
         </button>
         <button
           aria-selected={activeTab === "sprintPlanning"}
@@ -21110,12 +21318,12 @@ function ReleasePlanBoard({
           type="button"
           onClick={() => setActiveTab("sprintPlanning")}
         >
-          Sprint planning
+          {rp.tabSprintPlanning}
         </button>
       </div>
       <div className="release-plan-controls">
         <label className="release-plan-filter">
-          <span>Product</span>
+          <span>{rp.product}</span>
           <select
             value={productFilter}
             disabled={productOptions.length <= 1}
@@ -21131,7 +21339,7 @@ function ReleasePlanBoard({
         </label>
         {activeTab === "releases" ? (
           <label className="release-plan-filter">
-            <span>Release</span>
+            <span>{rp.release}</span>
             <select
               value={releaseFilter}
               disabled={releaseSelectDisabled}
@@ -21147,7 +21355,7 @@ function ReleasePlanBoard({
           </label>
         ) : (
           <label className="release-plan-filter">
-            <span>Sprint</span>
+            <span>{rp.sprint}</span>
             <select
               value={sprintFilter}
               disabled={sprintSelectDisabled}
@@ -21167,7 +21375,7 @@ function ReleasePlanBoard({
           type="button"
           onClick={resetReleasePlanFilters}
         >
-          Reset filters
+          {rp.resetFilters}
         </button>
         <button
           className="secondary-button"
@@ -21175,7 +21383,7 @@ function ReleasePlanBoard({
           disabled={jiraBulkSyncState === "syncing"}
           onClick={() => void onSyncLinkedJiraTickets()}
         >
-          {jiraBulkSyncState === "syncing" ? "Syncing Jira..." : "Sync Jira data"}
+          {jiraBulkSyncState === "syncing" ? rp.syncingJira : rp.syncJira}
         </button>
       </div>
       {jiraBulkSyncError || jiraBulkSyncMessage ? (
@@ -21184,17 +21392,17 @@ function ReleasePlanBoard({
         </p>
       ) : null}
       <div className="release-plan-summary-grid">
-        <ReleasePlanMetric label="Visible tickets" value={filteredTickets.length} />
-        <ReleasePlanMetric label="Releases" value={releaseGroups.length} />
-        <ReleasePlanMetric label="Planned tickets" value={plannedReleaseTickets} />
-        <ReleasePlanMetric label="Sprints" value={activeSprintCount} />
-        <ReleasePlanMetric label="Product boards" value={activeBoardCount} />
-        <ReleasePlanMetric label="Prod dates" value={prodDateCount} />
+        <ReleasePlanMetric label={rp.visibleTickets} value={filteredTickets.length} />
+        <ReleasePlanMetric label={rp.releases} value={releaseGroups.length} />
+        <ReleasePlanMetric label={rp.plannedTickets} value={plannedReleaseTickets} />
+        <ReleasePlanMetric label={rp.sprints} value={activeSprintCount} />
+        <ReleasePlanMetric label={rp.productBoards} value={activeBoardCount} />
+        <ReleasePlanMetric label={rp.prodDates} value={prodDateCount} />
       </div>
       {activeTab === "releases" ? (
         <div className="release-plan-list">
           {releaseGroups.length === 0 ? (
-            <EmptyState title="No release plan items" body={releaseEmptyBody} />
+            <EmptyState title={rp.emptyTitle} body={releaseEmptyBody} />
           ) : null}
           {releaseGroups.map((group) => (
             <ReleasePlanGroupCard
@@ -21246,19 +21454,21 @@ function SprintPlanningBoard({
   taskCount: number;
   onOpenTicket: (ticketKey: string) => void;
 }) {
+  const { t } = useLocale();
+  const rp = t.releasePlan;
   const resourceCount = new Set(groups.flatMap((group) => group.resources)).size;
 
   return (
     <div className="sprint-planning-board">
       <div className="sprint-planning-summary">
-        <ReleasePlanMetric label="Task number" value={taskCount} />
-        <ReleasePlanMetric label="Estimate hours" value={totalEstimateHours} />
-        <ReleasePlanMetric label="Remain hours" value={remainingHours} />
-        <ReleasePlanMetric label="Resources" value={resourceCount} />
+        <ReleasePlanMetric label={rp.taskNumber} value={taskCount} />
+        <ReleasePlanMetric label={rp.estimateHours} value={totalEstimateHours} />
+        <ReleasePlanMetric label={rp.remainHours} value={remainingHours} />
+        <ReleasePlanMetric label={rp.resources} value={resourceCount} />
       </div>
       <div className="sprint-plan-list">
         {groups.length === 0 ? (
-          <EmptyState title="No sprint plan items" body={emptyBody} />
+          <EmptyState title={rp.sprintEmptyTitle} body={emptyBody} />
         ) : null}
         {groups.map((group) => (
           <SprintPlanGroupCard config={config} group={group} key={`${group.id}-${group.sprint}`} onOpenTicket={onOpenTicket} />
@@ -21277,41 +21487,52 @@ function SprintPlanGroupCard({
   group: SprintPlanGroup;
   onOpenTicket: (ticketKey: string) => void;
 }) {
+  const { t } = useLocale();
+  const rp = t.releasePlan;
+
   return (
     <article className="sprint-plan-group">
       <header className="sprint-plan-header">
         <div>
-          <span>Sprint</span>
+          <span>{rp.sprint}</span>
           <h3>{group.sprint}</h3>
-          <small>{group.releaseVersions.join(", ") || "No linked release"}</small>
+          <small>{group.releaseVersions.join(", ") || rp.noLinkedRelease}</small>
         </div>
         <div className="sprint-plan-header-metrics">
-          <span>{formatCount(group.taskCount)} tasks</span>
-          <span>{formatCount(group.totalEstimateHours)}h estimate</span>
-          <span>{formatCount(group.remainingHours)}h remain</span>
+          <span>
+            {formatCount(group.taskCount)} {rp.tasksCount}
+          </span>
+          <span>
+            {formatCount(group.totalEstimateHours)}
+            {rp.hEstimate}
+          </span>
+          <span>
+            {formatCount(group.remainingHours)}
+            {rp.hRemain}
+          </span>
         </div>
       </header>
       <div className="sprint-plan-meta-grid">
         <div>
-          <span>Product board</span>
-          <strong>{group.boardNames.join(", ") || "No product board"}</strong>
+          <span>{rp.productBoard}</span>
+          <strong>{group.boardNames.join(", ") || rp.noProductBoard}</strong>
         </div>
         <div>
-          <span>Sprint state</span>
-          <strong>{group.state || "Not synced"}</strong>
+          <span>{rp.sprintState}</span>
+          <strong>{group.state || rp.notSynced}</strong>
         </div>
         <div>
-          <span>Start</span>
-          <strong>{group.startDate || "Not planned"}</strong>
+          <span>{rp.start}</span>
+          <strong>{group.startDate || rp.notPlanned}</strong>
         </div>
         <div>
-          <span>End</span>
-          <strong>{group.endDate || "Not planned"}</strong>
+          <span>{rp.end}</span>
+          <strong>{group.endDate || rp.notPlanned}</strong>
         </div>
       </div>
       <div className="sprint-plan-resource-row">
-        <span>Resources</span>
-        <strong>{group.resources.join(", ") || "Unassigned"}</strong>
+        <span>{rp.resources}</span>
+        <strong>{group.resources.join(", ") || rp.unassigned}</strong>
       </div>
       <SprintTaskDetailTable config={config} group={group} onOpenTicket={onOpenTicket} />
     </article>
@@ -21327,29 +21548,33 @@ function SprintTaskDetailTable({
   group: SprintPlanGroup;
   onOpenTicket: (ticketKey: string) => void;
 }) {
+  const { t } = useLocale();
+  const rp = t.releasePlan;
   const tasks = group.lanes.flatMap((lane) => lane.tickets);
 
   return (
     <div className="sprint-task-details">
       <header>
         <div>
-          <span>Task details</span>
-          <strong>{formatCount(tasks.length)} tasks in this sprint</strong>
+          <span>{rp.taskDetails}</span>
+          <strong>
+            {formatCount(tasks.length)} {rp.tasksInSprint}
+          </strong>
         </div>
       </header>
       {tasks.length === 0 ? (
-        <p>No portal tasks are linked to this sprint yet.</p>
+        <p>{rp.noPortalTasks}</p>
       ) : (
-        <div className="sprint-task-table" aria-label={`${group.sprint} task details`}>
+        <div className="sprint-task-table" aria-label={`${group.sprint} ${rp.taskDetails}`}>
           <div className="sprint-task-table-header">
-            <span>Ticket</span>
-            <span>Jira ID</span>
-            <span>Product / PRU</span>
-            <span>Status</span>
-            <span>Resource</span>
-            <span>Estimate</span>
-            <span>Remain</span>
-            <span>Release</span>
+            <span>{rp.ticket}</span>
+            <span>{rp.jiraId}</span>
+            <span>{rp.productPru}</span>
+            <span>{rp.status}</span>
+            <span>{rp.resource}</span>
+            <span>{rp.estimate}</span>
+            <span>{rp.remain}</span>
+            <span>{rp.release}</span>
           </div>
           {tasks.map((item) => (
             <button
@@ -21366,12 +21591,12 @@ function SprintTaskDetailTable({
                 {item.ticket.relatedJiraKey ? (
                   <JiraIssueLink config={config} jiraKey={item.ticket.relatedJiraKey} />
                 ) : (
-                  <strong>No Jira ID</strong>
+                  <strong>{rp.noJiraId}</strong>
                 )}
               </span>
               <span>
-                <strong>{item.ticket.product || "No product"}</strong>
-                <small>{item.ticket.pru || item.ticket.module || "No PRU"}</small>
+                <strong>{item.ticket.product || rp.noProduct}</strong>
+                <small>{item.ticket.pru || item.ticket.module || rp.noPru}</small>
               </span>
               <span>
                 <span className={`jira-follow-up-badge tone-${item.sprintStatusTone}`}>{item.sprintStatusLabel}</span>
@@ -21400,40 +21625,45 @@ function ReleasePlanGroupCard({
   group: ReleasePlanGroup;
   onOpenTicket: (ticketKey: string) => void;
 }) {
+  const { t } = useLocale();
+  const rp = t.releasePlan;
+
   return (
     <article className="release-plan-group">
       <header className="release-plan-group-header">
         <div>
-          <span>Release</span>
+          <span>{rp.release}</span>
           <h3>{group.releaseVersion}</h3>
         </div>
-        <strong>{formatCount(group.tickets.length)} tickets</strong>
+        <strong>
+          {formatCount(group.tickets.length)} {rp.ticketsCount}
+        </strong>
       </header>
       <div className="release-plan-date-grid">
-        <ReleasePlanDateBlock label="Pre-prod release" value={group.preprodDate} />
-        <ReleasePlanDateBlock label="Production release" value={group.prodDate} />
+        <ReleasePlanDateBlock label={rp.preprodRelease} value={group.preprodDate} />
+        <ReleasePlanDateBlock label={rp.productionRelease} value={group.prodDate} />
         <div className="release-plan-sprints">
-          <span>Sprints</span>
+          <span>{rp.sprints}</span>
           <strong>{group.sprintNames.join(", ")}</strong>
         </div>
       </div>
-      <div className="release-plan-status-row" aria-label="Sprint status summary">
+      <div className="release-plan-status-row" aria-label={rp.sprintState}>
         {group.statusCounts.map((item) => (
           <span className={`jira-follow-up-badge tone-${item.tone}`} key={`${group.id}-${item.label}`}>
             {item.label}: {formatCount(item.value)}
           </span>
         ))}
       </div>
-      <div className="release-plan-ticket-table" role="table" aria-label={`${group.releaseVersion} tickets`}>
+      <div className="release-plan-ticket-table" role="table" aria-label={`${group.releaseVersion} ${rp.ticketsCount}`}>
         <div className="release-plan-ticket-header" role="row">
-          <span>Ticket</span>
-          <span>Jira ID</span>
-          <span>Product / PRU</span>
-          <span>Product board</span>
-          <span>Sprint</span>
-          <span>Status</span>
-          <span>Pre-prod</span>
-          <span>Prod</span>
+          <span>{rp.ticket}</span>
+          <span>{rp.jiraId}</span>
+          <span>{rp.productPru}</span>
+          <span>{rp.productBoard}</span>
+          <span>{rp.sprint}</span>
+          <span>{rp.status}</span>
+          <span>{rp.preprod}</span>
+          <span>{rp.prod}</span>
         </div>
         {group.tickets.map((item) => (
           <button
@@ -21451,14 +21681,14 @@ function ReleasePlanGroupCard({
               {item.ticket.relatedJiraKey ? (
                 <JiraIssueLink config={config} jiraKey={item.ticket.relatedJiraKey} />
               ) : (
-                <strong>No Jira ID</strong>
+                <strong>{rp.noJiraId}</strong>
               )}
             </span>
             <span>
-              <strong>{item.ticket.product || "No product"}</strong>
-              <small>{item.ticket.pru || "No PRU"}</small>
+              <strong>{item.ticket.product || rp.noProduct}</strong>
+              <small>{item.ticket.pru || rp.noPru}</small>
             </span>
-            <span>{item.ticket.jiraDraft.board?.trim() || "No product board"}</span>
+            <span>{item.ticket.jiraDraft.board?.trim() || rp.noProductBoard}</span>
             <span>{item.sprint}</span>
             <span>
               <span className={`jira-follow-up-badge tone-${item.sprintStatusTone}`}>{item.sprintStatusLabel}</span>
@@ -21495,38 +21725,45 @@ function IntegrationHealthPanel({
   const ai = config.integrations.ai;
   const gitlab = config.integrations.gitlab;
   const jiraBaseUrl = getJiraApiBaseUrl(jira);
+  const hasJiraProducts = configUsesJira(config);
   const canConfigure = role === "admin";
 
   return (
     <section className="panel integration-health-panel">
       <PanelHeader
         title="Integration health"
-        description="Jira API sync and SMTP notification delivery configuration."
+        description={
+          hasJiraProducts
+            ? "Jira API sync and SMTP notification delivery configuration."
+            : "Platform integration services and SMTP notification delivery configuration."
+        }
         iconName="link"
       />
       <div className="integration-health-list">
-        <article className="integration-health-card">
-          <div className="integration-health-topline">
-            <strong>Jira integration</strong>
-            <span className={`integration-health-state ${jira.enabled ? "is-active" : "is-inactive"}`}>
-              {jira.enabled ? "Enabled" : "Disabled"}
-            </span>
-          </div>
-          <dl>
-            <div>
-              <dt>API endpoint</dt>
-              <dd>{jiraBaseUrl ? getJiraApiEndpoint(jira) : "Not configured"}</dd>
+        {hasJiraProducts ? (
+          <article className="integration-health-card">
+            <div className="integration-health-topline">
+              <strong>Jira integration</strong>
+              <span className={`integration-health-state ${jira.enabled ? "is-active" : "is-inactive"}`}>
+                {jira.enabled ? "Enabled" : "Disabled"}
+              </span>
             </div>
-            <div>
-              <dt>Auth</dt>
-              <dd>{getJiraAuthModeLabel(jira.authMode ?? "personalAccessToken")}</dd>
-            </div>
-            <div>
-              <dt>Token</dt>
-              <dd>{getJiraTokenStatus(jira)}</dd>
-            </div>
-          </dl>
-        </article>
+            <dl>
+              <div>
+                <dt>API endpoint</dt>
+                <dd>{jiraBaseUrl ? getJiraApiEndpoint(jira) : "Not configured"}</dd>
+              </div>
+              <div>
+                <dt>Auth</dt>
+                <dd>{getJiraAuthModeLabel(jira.authMode ?? "personalAccessToken")}</dd>
+              </div>
+              <div>
+                <dt>Token</dt>
+                <dd>{getJiraTokenStatus(jira)}</dd>
+              </div>
+            </dl>
+          </article>
+        ) : null}
         <article className="integration-health-card">
           <div className="integration-health-topline">
             <strong>AI assistant</strong>
@@ -21684,6 +21921,16 @@ function TicketListWorkspace({
   const [submitterFilter, setSubmitterFilter] = useState("all");
   const [sortBy, setSortBy] = useState<TicketListSortKey>("updatedAt");
   const [mineOnly, setMineOnly] = useState(false);
+  const { locale } = useLocale();
+  const hasActiveFilters =
+    Boolean(search.trim()) ||
+    statusFilter !== "all" ||
+    typeFilter !== "all" ||
+    priorityFilter !== "all" ||
+    productFilter !== "all" ||
+    submitterFilter !== "all" ||
+    mineOnly;
+  const ticketsEmptyCopy = getTicketsEmptyCopy(hasActiveFilters, locale);
 
   const rows = useMemo<TicketListRow[]>(
     () =>
@@ -21835,6 +22082,8 @@ function TicketListWorkspace({
       return parseTicketTimestamp(right.ticket.updatedAt) - parseTicketTimestamp(left.ticket.updatedAt);
     });
   }, [filteredRows, sortBy]);
+  const showJiraSourceColumn = sortedRows.some((row) => ticketUsesJira(config, row.ticket));
+  const emptyStateColumnCount = showJiraSourceColumn ? 10 : 9;
 
   function resetFilters() {
     setSearch("");
@@ -21998,7 +22247,7 @@ function TicketListWorkspace({
                 <th>Type</th>
                 <th>Priority</th>
                 <th>Product / PRU / Module</th>
-                <th>Source</th>
+                {showJiraSourceColumn ? <th>Jira issue</th> : null}
                 <th>Submitted by</th>
                 <th>Created</th>
                 <th>Remaining SLA</th>
@@ -22008,11 +22257,8 @@ function TicketListWorkspace({
             <tbody>
               {sortedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={10}>
-                    <EmptyState
-                      title="No tickets found"
-                      body="No support tickets match the current filters."
-                    />
+                  <td colSpan={emptyStateColumnCount}>
+                    <EmptyState title={ticketsEmptyCopy.title} body={ticketsEmptyCopy.body} />
                   </td>
                 </tr>
               ) : null}
@@ -22024,7 +22270,7 @@ function TicketListWorkspace({
                     className={selectedTicketKey === row.ticket.key ? "is-selected" : ""}
                     key={row.ticket.key}
                   >
-                    <td>
+                    <td data-label="Ticket">
                       <button
                         className="ticket-list-link"
                         type="button"
@@ -22037,22 +22283,22 @@ function TicketListWorkspace({
                         <span>{row.ticket.title}</span>
                       </button>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <span className={`ticket-list-status status-${row.statusBucket} tag-variant-${getStatusColorVariant(config, row.statusLabel)}`}>
                         {row.statusLabel}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Type">
                       <span className={`ticket-list-type ticket-list-type-${toClassName(row.typeLabel)}`}>
                         {row.typeLabel}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Priority">
                       <span className={`priority priority-${getPriorityToneClassName(row.ticket.priority)}`}>
                         {row.ticket.priority}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Product">
                       <span className="ticket-list-product">
                         <strong>{row.ticket.product || "No product"}</strong>
                         <small>
@@ -22060,24 +22306,26 @@ function TicketListWorkspace({
                         </small>
                       </span>
                     </td>
-                    <td>
-                      {!ticketUsesJira(config, row.ticket) ? (
-                        <span className="jira-issue-empty">NEXUS</span>
-                      ) : row.ticket.relatedJiraKey ? (
-                        <JiraIssueLink config={config} jiraKey={row.ticket.relatedJiraKey} />
-                      ) : (
-                        <span className="jira-issue-empty">Not linked</span>
-                      )}
-                    </td>
-                    <td>{row.submitter}</td>
-                    <td>{formatTicketListCreatedDate(row.ticket)}</td>
-                    <td>
+                    {showJiraSourceColumn ? (
+                      <td data-label="Jira issue">
+                        {ticketUsesJira(config, row.ticket) && row.ticket.relatedJiraKey ? (
+                          <JiraIssueLink config={config} jiraKey={row.ticket.relatedJiraKey} />
+                        ) : ticketUsesJira(config, row.ticket) ? (
+                          <span className="jira-issue-empty">Not linked</span>
+                        ) : (
+                          <span className="jira-issue-empty">Platform</span>
+                        )}
+                      </td>
+                    ) : null}
+                    <td data-label="Submitted by">{row.submitter}</td>
+                    <td data-label="Created">{formatTicketListCreatedDate(row.ticket)}</td>
+                    <td data-label="Remaining SLA">
                       <span className={`ticket-list-sla state-${slaRemaining.tone}`}>
                         <strong>{slaRemaining.label}</strong>
                         <small>{slaRemaining.meta}</small>
                       </span>
                     </td>
-                    <td>{formatTicketListDate(row.ticket.updatedAt)}</td>
+                    <td data-label="Updated">{formatTicketListDate(row.ticket.updatedAt)}</td>
                   </tr>
                 );
               })}
@@ -22299,23 +22547,51 @@ function TicketDetail({
         </div>
         <div className="ticket-hero-actions">
           <div className="ticket-badges" aria-label="Ticket status">
-            <span className={`ticket-status-chip tag-variant-${getStatusColorVariant(config, currentStatusLabel)}`}>
-              {currentStatusLabel}
-            </span>
-            <span className={`priority priority-${getPriorityToneClassName(ticket.priority)}`}>
-              {ticket.priority}
-            </span>
-            <span className={`risk risk-${toClassName(ticket.risk)}`}>{ticket.risk} risk</span>
-            <span className={`sla-chip state-${ticket.slaState}`}>{ticket.slaLabel}</span>
+            <TegelTag text={currentStatusLabel} variant={getStatusColorVariant(config, currentStatusLabel)} />
+            <TegelTag
+              text={ticket.priority}
+              variant={
+                getPriorityToneClassName(ticket.priority) === "critical" || getPriorityToneClassName(ticket.priority) === "high"
+                  ? "error"
+                  : getPriorityToneClassName(ticket.priority) === "medium"
+                    ? "warning"
+                    : "neutral"
+              }
+            />
+            <TegelTag
+              text={`${ticket.risk} risk`}
+              variant={
+                ticket.risk === "Critical" || ticket.risk === "High"
+                  ? "error"
+                  : ticket.risk === "Medium"
+                    ? "warning"
+                    : "success"
+              }
+            />
+            <TegelTag
+              text={ticket.slaLabel}
+              variant={
+                ticket.slaState === "breach"
+                  ? "error"
+                  : ticket.slaState === "watch"
+                    ? "warning"
+                    : ticket.slaState === "healthy"
+                      ? "success"
+                      : "neutral"
+              }
+            />
             {ticketHasJiraTab && ticket.relatedJiraKey ? (
               <JiraIssueLink config={config} jiraKey={ticket.relatedJiraKey} className="jira-issue-link ticket-jira-link" />
             ) : null}
           </div>
           {canReopenTicket ? (
-            <button className="secondary-button ticket-reopen-button" type="button" onClick={() => onReopenTicket(ticket.key)}>
-              <TegelIcon name="history" size="16px" />
-              Reopen ticket
-            </button>
+            <TegelButton
+              className="ticket-reopen-button"
+              iconName="history"
+              text="Reopen ticket"
+              variant="secondary"
+              onClick={() => onReopenTicket(ticket.key)}
+            />
           ) : null}
         </div>
       </div>
@@ -22333,7 +22609,13 @@ function TicketDetail({
           </button>
         ))}
       </div>
-      <p className="tab-helper">{getTicketTabDescription(effectiveActiveTab)}</p>
+      <p className="tab-helper">
+        {effectiveActiveTab === "Comments" && !ticketHasJiraTab
+          ? "Public, internal, architecture, and system comments visible to this role."
+          : effectiveActiveTab === "Audit" && !ticketHasJiraTab
+            ? "System history for status changes, approvals, and configuration actions."
+            : getTicketTabDescription(effectiveActiveTab)}
+      </p>
       <div className="tab-content">
         {effectiveActiveTab === "Overview" ? (
           <OverviewPanel
@@ -25756,6 +26038,7 @@ function OutlookMeetingModal({
   const [submitState, setSubmitState] = useState<"idle" | "submitting">("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState<CreateOutlookMeetingResult | null>(null);
+  const organizer = getSignedInGraphUser();
   const isSubmitting = submitState === "submitting";
 
   useEffect(() => {
@@ -25788,6 +26071,11 @@ function OutlookMeetingModal({
 
   async function submitForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!getSignedInGraphUser()) {
+      setError("Sign in with Microsoft Entra ID before creating a meeting.");
+      return;
+    }
 
     const title = form.title.trim();
     const attendeeValidation = parseOutlookMeetingAttendees(form.attendees);
@@ -25871,6 +26159,20 @@ function OutlookMeetingModal({
           </button>
         </header>
         <form className="ticket-form outlook-meeting-form" onSubmit={(event) => void submitForm(event)}>
+          <div className="outlook-meeting-organizer form-field-wide" role="status">
+            <strong>Organizer</strong>
+            {organizer ? (
+              <span>
+                {organizer.displayName}
+                {organizer.email ? ` (${organizer.email})` : ""} — meeting is created on this Entra
+                account&apos;s calendar.
+              </span>
+            ) : (
+              <span className="form-error">
+                No Entra session found. Sign in again before creating a meeting.
+              </span>
+            )}
+          </div>
           <label className="form-field form-field-wide">
             <span>Meeting title</span>
             <input
@@ -25944,6 +26246,7 @@ function OutlookMeetingModal({
           {result ? (
             <div className="outlook-meeting-result form-field-wide" role="status">
               <strong>Meeting created</strong>
+              {result.organizerEmail ? <span>Organizer: {result.organizerEmail}</span> : null}
               <span>Outlook event ID: {result.eventId}</span>
               {result.joinUrl ? (
                 <span>
@@ -25967,7 +26270,7 @@ function OutlookMeetingModal({
             <button className="secondary-button" type="button" onClick={onClose} disabled={isSubmitting}>
               Close
             </button>
-            <button className="primary-button" type="submit" disabled={isSubmitting}>
+            <button className="primary-button" type="submit" disabled={isSubmitting || !organizer}>
               <TegelIcon name="calendar" size="16px" />
               {isSubmitting ? "Creating..." : "Create meeting"}
             </button>
@@ -29734,6 +30037,7 @@ function AdminConfigPanel({
           title="Admin configuration"
           description={`Current role: ${currentRoleLabel}. Configuration is modeled as editable backend data.`}
           iconName="configurator"
+          headingLevel="h1"
         />
         <div className="admin-section-list" role="tablist" aria-label="Admin configuration sections">
           {adminSections.map((section) => (
@@ -31271,7 +31575,16 @@ function DatabaseResultTable({
   );
 }
 
-type AdminMasterTab = "users" | "roles" | "regions" | "products" | "prus" | "modules" | "ticketTypes";
+type AdminMasterTab =
+  | "users"
+  | "roles"
+  | "regions"
+  | "departments"
+  | "productDomains"
+  | "products"
+  | "prus"
+  | "modules"
+  | "ticketTypes";
 type AdminMasterStatusFilter = "all" | "active" | "inactive";
 type RequestOptionsTab = "requestTypes" | "priorities" | "riskLevels" | "categories" | "statusColors";
 type SlaRulesTab = "slaRules" | "escalationPolicies";
@@ -31328,9 +31641,17 @@ type RegionSiteFormState = {
   active: boolean;
 };
 
+type TaxonomyFormState = {
+  name: string;
+  description: string;
+  active: boolean;
+};
+
 type ProductFormState = {
   productName: string;
   productOwnerName: string;
+  departmentId: string;
+  productDomainId: string;
   ticketSource: ProductTicketSource;
   jiraProjectKey: string;
   active: boolean;
@@ -31754,6 +32075,8 @@ const adminMasterTabs = [
   { id: "users", label: "Users", iconName: "profile" },
   { id: "roles", label: "Roles", iconName: "privacy" },
   { id: "regions", label: "Regions/sites", iconName: "global" },
+  { id: "departments", label: "Departments", iconName: "department" },
+  { id: "productDomains", label: "Product domains", iconName: "folder" },
   { id: "products", label: "Products", iconName: "department" },
   { id: "prus", label: "PRUs", iconName: "factory" },
   { id: "modules", label: "Modules", iconName: "folder" },
@@ -31791,6 +32114,14 @@ function getUniqueConfigId(existingIds: string[], preferredId: string): string {
 
 function getConfigSiteByName(config: AdminConfig, siteName: string): RegionSiteConfig | undefined {
   return config.regionSites.find((site) => site.site === siteName);
+}
+
+function getConfigDepartmentName(config: AdminConfig, departmentId: string): string {
+  return config.departments.find((department) => department.id === departmentId)?.name ?? "No department";
+}
+
+function getConfigProductDomainName(config: AdminConfig, productDomainId: string): string {
+  return config.productDomains.find((domain) => domain.id === productDomainId)?.name ?? "No domain";
 }
 
 function getWorkflowRoleTypeLabel(type: WorkflowRoleType): string {
@@ -32265,11 +32596,24 @@ function buildRegionSiteForm(config: AdminConfig, site?: RegionSiteConfig): Regi
   };
 }
 
-function buildProductForm(product?: ProductConfig): ProductFormState {
+function buildTaxonomyForm(item?: DepartmentConfig | ProductDomainConfig): TaxonomyFormState {
+  return {
+    name: item?.name ?? "",
+    description: item?.description ?? "",
+    active: item?.active ?? true
+  };
+}
+
+function buildProductForm(config: AdminConfig, product?: ProductConfig): ProductFormState {
+  const defaultDepartment = config.departments.find((department) => department.active) ?? config.departments[0];
+  const defaultProductDomain = config.productDomains.find((domain) => domain.active) ?? config.productDomains[0];
+
   return {
     productName: product?.productName ?? "",
     productOwnerName: product?.productOwnerName ?? "",
-    ticketSource: getProductTicketSource(product),
+    departmentId: product?.departmentId ?? defaultDepartment?.id ?? "",
+    productDomainId: product?.productDomainId ?? defaultProductDomain?.id ?? "",
+    ticketSource: product ? getProductTicketSource(product) : "nexus",
     jiraProjectKey: product?.jiraProjectKey ?? "",
     active: product?.active ?? true
   };
@@ -32514,7 +32858,7 @@ function buildWorkflowRouteForm(
   const firstTemplate = workflowTemplates[0];
   const template = getWorkflowTemplateById(workflow?.workflowTemplateId ?? "") ?? firstTemplate;
   const stepIds = workflow?.stepIds?.length ? workflow.stepIds : template.steps.map((step) => step.id);
-  const hasJiraProducts = config.products.some((product) => productUsesJira(product));
+  const hasJiraProducts = configUsesJira(config);
   const stepOverrides = Object.fromEntries(
     stepIds.flatMap((stepId) => {
       const templateStep = template.steps.find((step) => step.id === stepId);
@@ -33005,6 +33349,60 @@ function removeRegionSiteFromConfig(config: AdminConfig, siteId: string): AdminC
   };
 }
 
+function setDepartmentActiveStateInConfig(config: AdminConfig, departmentId: string, active: boolean): AdminConfig {
+  return {
+    ...config,
+    departments: config.departments.map((department) =>
+      department.id === departmentId ? { ...department, active } : department
+    )
+  };
+}
+
+function deactivateDepartmentInConfig(config: AdminConfig, departmentId: string): AdminConfig {
+  return setDepartmentActiveStateInConfig(config, departmentId, false);
+}
+
+function activateDepartmentInConfig(config: AdminConfig, departmentId: string): AdminConfig {
+  return setDepartmentActiveStateInConfig(config, departmentId, true);
+}
+
+function removeDepartmentFromConfig(config: AdminConfig, departmentId: string): AdminConfig {
+  return {
+    ...config,
+    departments: config.departments.filter((department) => department.id !== departmentId),
+    products: config.products.map((product) =>
+      product.departmentId === departmentId ? { ...product, departmentId: "" } : product
+    )
+  };
+}
+
+function setProductDomainActiveStateInConfig(config: AdminConfig, productDomainId: string, active: boolean): AdminConfig {
+  return {
+    ...config,
+    productDomains: config.productDomains.map((domain) =>
+      domain.id === productDomainId ? { ...domain, active } : domain
+    )
+  };
+}
+
+function deactivateProductDomainInConfig(config: AdminConfig, productDomainId: string): AdminConfig {
+  return setProductDomainActiveStateInConfig(config, productDomainId, false);
+}
+
+function activateProductDomainInConfig(config: AdminConfig, productDomainId: string): AdminConfig {
+  return setProductDomainActiveStateInConfig(config, productDomainId, true);
+}
+
+function removeProductDomainFromConfig(config: AdminConfig, productDomainId: string): AdminConfig {
+  return {
+    ...config,
+    productDomains: config.productDomains.filter((domain) => domain.id !== productDomainId),
+    products: config.products.map((product) =>
+      product.productDomainId === productDomainId ? { ...product, productDomainId: "" } : product
+    )
+  };
+}
+
 function deactivateProductInConfig(config: AdminConfig, productId: string): AdminConfig {
   return {
     ...config,
@@ -33226,11 +33624,38 @@ function FormTemplateManager({
     new Date().toISOString()
   );
   const selectedTemplateProduct = getConfigProduct(config, templateForm.productName);
+  const selectedTemplateProductUsesJira = productUsesJira(selectedTemplateProduct);
+  const availableTemplateFieldOptionSources = templateFieldOptionSourceOptions.filter(
+    (source) => selectedTemplateProductUsesJira || !isJiraTemplateOptionSource(source.value)
+  );
   const jiraTemplateMetadata = useJiraTemplateFieldMetadata(
     config,
-    templateHasJiraOptionSource(templateForm.fields) || isJiraTemplateOptionSource(fieldForm.optionSource),
+    selectedTemplateProductUsesJira &&
+      (templateHasJiraOptionSource(templateForm.fields) || isJiraTemplateOptionSource(fieldForm.optionSource)),
     selectedTemplateProduct?.jiraProjectKey ?? config.integrations.jira.defaultProjectKey
   );
+
+  useEffect(() => {
+    if (selectedTemplateProductUsesJira) {
+      return;
+    }
+
+    setFieldForm((current) =>
+      isJiraTemplateOptionSource(current.optionSource) ? { ...current, optionSource: "manual" } : current
+    );
+    setTemplateForm((current) => {
+      if (!templateHasJiraOptionSource(current.fields)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        fields: current.fields.map((field) =>
+          isJiraTemplateOptionSource(field.optionSource) ? { ...field, optionSource: "manual" as const } : field
+        )
+      };
+    });
+  }, [selectedTemplateProductUsesJira]);
 
   function resetTemplateForm() {
     setEditingTemplateId(null);
@@ -33341,7 +33766,28 @@ function FormTemplateManager({
             <span>Product</span>
             <select
               value={templateForm.productName}
-              onChange={(event) => setTemplateForm({ ...templateForm, productName: event.target.value })}
+              onChange={(event) => {
+                const productName = event.target.value;
+                const nextProduct = getConfigProduct(config, productName);
+                const nextProductUsesJira = productUsesJira(nextProduct);
+
+                setTemplateForm({
+                  ...templateForm,
+                  productName,
+                  fields: nextProductUsesJira
+                    ? templateForm.fields
+                    : templateForm.fields.map((field) =>
+                        isJiraTemplateOptionSource(field.optionSource)
+                          ? { ...field, optionSource: "manual" as const }
+                          : field
+                      )
+                });
+                setFieldForm((current) =>
+                  !nextProductUsesJira && isJiraTemplateOptionSource(current.optionSource)
+                    ? { ...current, optionSource: "manual" }
+                    : current
+                );
+              }}
             >
               {config.products.map((product) => (
                 <option key={product.id} value={product.productName}>
@@ -33509,7 +33955,7 @@ function FormTemplateManager({
                       })
                     }
                   >
-                    {templateFieldOptionSourceOptions.map((source) => (
+                    {availableTemplateFieldOptionSources.map((source) => (
                       <option key={source.value} value={source.value}>
                         {source.label}
                       </option>
@@ -33751,6 +34197,8 @@ function AdminMasterDataManager({
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editingRole, setEditingRole] = useState<RoleKey | null>(null);
   const [editingRegionSiteId, setEditingRegionSiteId] = useState<string | null>(null);
+  const [editingDepartmentId, setEditingDepartmentId] = useState<string | null>(null);
+  const [editingProductDomainId, setEditingProductDomainId] = useState<string | null>(null);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [editingPruRef, setEditingPruRef] = useState<PruEditRef | null>(null);
   const [editingModuleRef, setEditingModuleRef] = useState<ModuleEditRef | null>(null);
@@ -33758,6 +34206,8 @@ function AdminMasterDataManager({
   const [isUserEditorOpen, setIsUserEditorOpen] = useState(false);
   const [isRoleEditorOpen, setIsRoleEditorOpen] = useState(false);
   const [isRegionSiteEditorOpen, setIsRegionSiteEditorOpen] = useState(false);
+  const [isDepartmentEditorOpen, setIsDepartmentEditorOpen] = useState(false);
+  const [isProductDomainEditorOpen, setIsProductDomainEditorOpen] = useState(false);
   const [isProductEditorOpen, setIsProductEditorOpen] = useState(false);
   const [isPruEditorOpen, setIsPruEditorOpen] = useState(false);
   const [isModuleEditorOpen, setIsModuleEditorOpen] = useState(false);
@@ -33765,6 +34215,8 @@ function AdminMasterDataManager({
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [selectedRoleKeys, setSelectedRoleKeys] = useState<RoleKey[]>([]);
   const [selectedRegionSiteIds, setSelectedRegionSiteIds] = useState<string[]>([]);
+  const [selectedDepartmentIds, setSelectedDepartmentIds] = useState<string[]>([]);
+  const [selectedProductDomainIds, setSelectedProductDomainIds] = useState<string[]>([]);
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [selectedPruKeys, setSelectedPruKeys] = useState<string[]>([]);
   const [selectedModuleKeys, setSelectedModuleKeys] = useState<string[]>([]);
@@ -33772,7 +34224,9 @@ function AdminMasterDataManager({
   const [userForm, setUserForm] = useState<UserFormState>(() => buildUserForm(config));
   const [roleForm, setRoleForm] = useState<RoleFormState>(() => buildRoleForm(config));
   const [regionSiteForm, setRegionSiteForm] = useState<RegionSiteFormState>(() => buildRegionSiteForm(config));
-  const [productForm, setProductForm] = useState<ProductFormState>(() => buildProductForm());
+  const [departmentForm, setDepartmentForm] = useState<TaxonomyFormState>(() => buildTaxonomyForm());
+  const [productDomainForm, setProductDomainForm] = useState<TaxonomyFormState>(() => buildTaxonomyForm());
+  const [productForm, setProductForm] = useState<ProductFormState>(() => buildProductForm(config));
   const [pruForm, setPruForm] = useState<PruFormState>(() => buildPruForm(config));
   const [pruFormError, setPruFormError] = useState("");
   const [pruFormNotice, setPruFormNotice] = useState("");
@@ -33809,7 +34263,7 @@ function AdminMasterDataManager({
     .map((productId) => getConfigProductById(config, productId))
     .filter((product): product is ProductConfig => Boolean(product));
   const selectedModuleProductsUseJira = selectedModuleProducts.some((product) => productUsesJira(product));
-  const hasJiraConfiguredProducts = config.products.some((product) => productUsesJira(product));
+  const hasJiraConfiguredProducts = configUsesJira(config);
   const modulePruOptions = uniqueSortedValues(
     selectedModuleProducts.flatMap((product) => (product.prus ?? []).map((pru) => pru.name))
   );
@@ -33856,11 +34310,29 @@ function AdminMasterDataManager({
     matchesMasterStatus(site.active) &&
     matchesMasterSearch(site.label, site.region, site.site, getConfigUserName(config, site.localProductOwnerId))
   );
+  const filteredDepartments = config.departments.filter((department) =>
+    matchesMasterStatus(department.active) &&
+    matchesMasterSearch(
+      department.name,
+      department.description,
+      `${config.products.filter((product) => product.departmentId === department.id).length} products`
+    )
+  );
+  const filteredProductDomains = config.productDomains.filter((domain) =>
+    matchesMasterStatus(domain.active) &&
+    matchesMasterSearch(
+      domain.name,
+      domain.description,
+      `${config.products.filter((product) => product.productDomainId === domain.id).length} products`
+    )
+  );
   const filteredProducts = config.products.filter((product) =>
     matchesMasterStatus(product.active) &&
     matchesMasterSearch(
       product.productName,
       product.productOwnerName,
+      getConfigDepartmentName(config, product.departmentId),
+      getConfigProductDomainName(config, product.productDomainId),
       getProductTicketSource(product),
       product.jiraProjectKey,
       `${product.prus.length} PRUs`,
@@ -33894,13 +34366,17 @@ function AdminMasterDataManager({
         ? managedRoleDomains.length
         : activeTab === "regions"
           ? config.regionSites.length
-          : activeTab === "products"
-            ? config.products.length
-            : activeTab === "prus"
-              ? allPrus.length
-              : activeTab === "modules"
-                ? visibleModules.length
-                : config.requestTypes.length;
+          : activeTab === "departments"
+            ? config.departments.length
+            : activeTab === "productDomains"
+              ? config.productDomains.length
+              : activeTab === "products"
+                ? config.products.length
+                : activeTab === "prus"
+                  ? allPrus.length
+                  : activeTab === "modules"
+                    ? visibleModules.length
+                    : config.requestTypes.length;
   const activeMasterFilteredTotal =
     activeTab === "users"
       ? filteredUsers.length
@@ -33908,13 +34384,17 @@ function AdminMasterDataManager({
         ? filteredRoleDomains.length
         : activeTab === "regions"
           ? filteredRegionSites.length
-          : activeTab === "products"
-            ? filteredProducts.length
-            : activeTab === "prus"
-              ? filteredPrus.length
-              : activeTab === "modules"
-                ? filteredVisibleModules.length
-        : filteredTicketTypes.length;
+          : activeTab === "departments"
+            ? filteredDepartments.length
+            : activeTab === "productDomains"
+              ? filteredProductDomains.length
+              : activeTab === "products"
+                ? filteredProducts.length
+                : activeTab === "prus"
+                  ? filteredPrus.length
+                  : activeTab === "modules"
+                    ? filteredVisibleModules.length
+                    : filteredTicketTypes.length;
   const selectedUsers = selectedUserIds
     .map((userId) => config.users.find((user) => user.id === userId))
     .filter((user): user is AdminUser => Boolean(user));
@@ -33930,7 +34410,6 @@ function AdminMasterDataManager({
   const someFilteredUsersSelected = filteredUserIds.some((userId) => selectedUserIds.includes(userId));
   const selectedUsersAllInactive = selectedUsers.length > 0 && selectedUsers.every((user) => !user.active);
   const selectedUserActiveActionLabel = selectedUsersAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedUser = selectedUsers.length === 1;
   const canDeleteSelectedUser = Boolean(selectedUser && !selectedUser.active);
   const selectedRoleDomains = selectedRoleKeys
     .map((roleKey) => managedRoleDomains.find((roleDomain) => roleDomain.role === roleKey))
@@ -33946,7 +34425,6 @@ function AdminMasterDataManager({
   const selectedRolesAllInactive =
     selectedRoleDomains.length > 0 && selectedRoleDomains.every((roleDomain) => !roleDomain.active);
   const selectedRoleActiveActionLabel = selectedRolesAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedRole = selectedRoleDomains.length === 1;
   const canDeleteSelectedRole = Boolean(selectedRoleDomain && !isBuiltInRole(selectedRoleDomain.role));
   const selectedRegionSites = selectedRegionSiteIds
     .map((siteId) => config.regionSites.find((site) => site.id === siteId))
@@ -33958,8 +34436,42 @@ function AdminMasterDataManager({
   const someFilteredRegionSitesSelected = filteredRegionSiteIds.some((siteId) => selectedRegionSiteIds.includes(siteId));
   const selectedRegionSitesAllInactive = selectedRegionSites.length > 0 && selectedRegionSites.every((site) => !site.active);
   const selectedRegionSiteActiveActionLabel = selectedRegionSitesAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedRegionSite = selectedRegionSites.length === 1;
   const canDeleteSelectedRegionSite = Boolean(selectedRegionSite && !selectedRegionSite.active);
+  const selectedDepartments = selectedDepartmentIds
+    .map((departmentId) => config.departments.find((department) => department.id === departmentId))
+    .filter((department): department is DepartmentConfig => Boolean(department));
+  const selectedDepartment = selectedDepartments.length === 1 ? selectedDepartments[0] : undefined;
+  const filteredDepartmentIds = filteredDepartments.map((department) => department.id);
+  const allFilteredDepartmentsSelected =
+    filteredDepartmentIds.length > 0 && filteredDepartmentIds.every((departmentId) => selectedDepartmentIds.includes(departmentId));
+  const someFilteredDepartmentsSelected = filteredDepartmentIds.some((departmentId) => selectedDepartmentIds.includes(departmentId));
+  const selectedDepartmentsAllInactive =
+    selectedDepartments.length > 0 && selectedDepartments.every((department) => !department.active);
+  const selectedDepartmentActiveActionLabel = selectedDepartmentsAllInactive ? "Activate" : "Deactivate";
+  const canDeleteSelectedDepartment = Boolean(
+    selectedDepartment &&
+      !selectedDepartment.active &&
+      !config.products.some((product) => product.departmentId === selectedDepartment.id)
+  );
+  const selectedProductDomains = selectedProductDomainIds
+    .map((domainId) => config.productDomains.find((domain) => domain.id === domainId))
+    .filter((domain): domain is ProductDomainConfig => Boolean(domain));
+  const selectedProductDomain = selectedProductDomains.length === 1 ? selectedProductDomains[0] : undefined;
+  const filteredProductDomainIds = filteredProductDomains.map((domain) => domain.id);
+  const allFilteredProductDomainsSelected =
+    filteredProductDomainIds.length > 0 &&
+    filteredProductDomainIds.every((domainId) => selectedProductDomainIds.includes(domainId));
+  const someFilteredProductDomainsSelected = filteredProductDomainIds.some((domainId) =>
+    selectedProductDomainIds.includes(domainId)
+  );
+  const selectedProductDomainsAllInactive =
+    selectedProductDomains.length > 0 && selectedProductDomains.every((domain) => !domain.active);
+  const selectedProductDomainActiveActionLabel = selectedProductDomainsAllInactive ? "Activate" : "Deactivate";
+  const canDeleteSelectedProductDomain = Boolean(
+    selectedProductDomain &&
+      !selectedProductDomain.active &&
+      !config.products.some((product) => product.productDomainId === selectedProductDomain.id)
+  );
   const selectedProducts = selectedProductIds
     .map((productId) => config.products.find((product) => product.id === productId))
     .filter((product): product is ProductConfig => Boolean(product));
@@ -33970,7 +34482,6 @@ function AdminMasterDataManager({
   const someFilteredProductsSelected = filteredProductIds.some((productId) => selectedProductIds.includes(productId));
   const selectedProductsAllInactive = selectedProducts.length > 0 && selectedProducts.every((product) => !product.active);
   const selectedProductActiveActionLabel = selectedProductsAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedProduct = selectedProducts.length === 1;
   const canDeleteSelectedProduct = Boolean(selectedProduct && !selectedProduct.active);
   const selectedPrus = selectedPruKeys
     .map((pruKey) => allPrus.find((pru) => getPruConfigKey(pru.productId, pru.id) === pruKey))
@@ -33985,7 +34496,6 @@ function AdminMasterDataManager({
   const someFilteredPrusSelected = filteredPruKeys.some((pruKey) => selectedPruKeys.includes(pruKey));
   const selectedPrusAllInactive = selectedPrus.length > 0 && selectedPrus.every((pru) => !pru.active);
   const selectedPruActiveActionLabel = selectedPrusAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedPru = selectedPrus.length === 1;
   const canDeleteSelectedPru = Boolean(selectedPru && !selectedPru.active);
   const selectedModules = selectedModuleKeys
     .map((moduleKey) =>
@@ -34004,7 +34514,6 @@ function AdminMasterDataManager({
   const someFilteredModulesSelected = filteredModuleKeys.some((moduleKey) => selectedModuleKeys.includes(moduleKey));
   const selectedModulesAllInactive = selectedModules.length > 0 && selectedModules.every((module) => !module.active);
   const selectedModuleActiveActionLabel = selectedModulesAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedModule = selectedModules.length === 1;
   const canDeleteSelectedModule = Boolean(selectedModule && !selectedModule.active);
   const selectedTicketTypes = selectedTicketTypeIds
     .map((ticketTypeId) => config.requestTypes.find((ticketType) => ticketType.id === ticketTypeId))
@@ -34020,7 +34529,6 @@ function AdminMasterDataManager({
   const selectedTicketTypesAllInactive =
     selectedTicketTypes.length > 0 && selectedTicketTypes.every((ticketType) => !ticketType.active);
   const selectedTicketTypeActiveActionLabel = selectedTicketTypesAllInactive ? "Activate" : "Deactivate";
-  const canEditSelectedTicketType = selectedTicketTypes.length === 1;
   const canDeleteSelectedTicketType = Boolean(selectedTicketType && !selectedTicketType.active);
   useEffect(() => {
     if (editingPruRef) {
@@ -34147,14 +34655,6 @@ function AdminMasterDataManager({
     setIsUserEditorOpen(true);
   }
 
-  function editSelectedUser() {
-    if (!selectedUser) {
-      return;
-    }
-
-    editUser(selectedUser);
-  }
-
   function toggleUserSelection(userId: string, checked: boolean) {
     setSelectedUserIds((current) =>
       checked ? Array.from(new Set([...current, userId])) : current.filter((selectedId) => selectedId !== userId)
@@ -34222,14 +34722,6 @@ function AdminMasterDataManager({
     setRoleForm(buildRoleForm(config, roleDomain));
     setSelectedRoleKeys([roleDomain.role]);
     setIsRoleEditorOpen(true);
-  }
-
-  function editSelectedRole() {
-    if (!selectedRoleDomain) {
-      return;
-    }
-
-    editRole(selectedRoleDomain);
   }
 
   function toggleRoleSelection(role: RoleKey, checked: boolean) {
@@ -34301,12 +34793,6 @@ function AdminMasterDataManager({
     setIsRegionSiteEditorOpen(true);
   }
 
-  function editSelectedRegionSite() {
-    if (selectedRegionSite) {
-      editRegionSite(selectedRegionSite);
-    }
-  }
-
   function toggleRegionSiteSelection(siteId: string, checked: boolean) {
     setSelectedRegionSiteIds((current) =>
       checked ? Array.from(new Set([...current, siteId])) : current.filter((selectedId) => selectedId !== siteId)
@@ -34357,29 +34843,165 @@ function AdminMasterDataManager({
     }
   }
 
+  function resetDepartmentForm() {
+    setEditingDepartmentId(null);
+    setDepartmentForm(buildTaxonomyForm());
+    setIsDepartmentEditorOpen(false);
+  }
+
+  function openCreateDepartmentModal() {
+    setEditingDepartmentId(null);
+    setDepartmentForm(buildTaxonomyForm());
+    setIsDepartmentEditorOpen(true);
+  }
+
+  function editDepartment(department: DepartmentConfig) {
+    setEditingDepartmentId(department.id);
+    setDepartmentForm(buildTaxonomyForm(department));
+    setSelectedDepartmentIds([department.id]);
+    setIsDepartmentEditorOpen(true);
+  }
+
+  function toggleDepartmentSelection(departmentId: string, checked: boolean) {
+    setSelectedDepartmentIds((current) =>
+      checked ? Array.from(new Set([...current, departmentId])) : current.filter((selectedId) => selectedId !== departmentId)
+    );
+  }
+
+  function toggleFilteredDepartmentSelection(checked: boolean) {
+    setSelectedDepartmentIds((current) =>
+      checked
+        ? Array.from(new Set([...current, ...filteredDepartmentIds]))
+        : current.filter((selectedId) => !filteredDepartmentIds.includes(selectedId))
+    );
+  }
+
+  function changeSelectedDepartmentsActiveState() {
+    if (!selectedDepartments.length) {
+      return;
+    }
+
+    const shouldActivate = selectedDepartmentsAllInactive;
+    const targetDepartmentIds = selectedDepartments.map((department) => department.id);
+
+    onConfigChange((current) =>
+      targetDepartmentIds.reduce(
+        (nextConfig, departmentId) =>
+          shouldActivate
+            ? activateDepartmentInConfig(nextConfig, departmentId)
+            : deactivateDepartmentInConfig(nextConfig, departmentId),
+        current
+      )
+    );
+
+    if (editingDepartmentId && targetDepartmentIds.includes(editingDepartmentId)) {
+      resetDepartmentForm();
+    }
+  }
+
+  function deleteSelectedDepartment() {
+    if (!selectedDepartment || selectedDepartment.active) {
+      return;
+    }
+
+    const departmentId = selectedDepartment.id;
+
+    onConfigChange((current) => removeDepartmentFromConfig(current, departmentId));
+    setSelectedDepartmentIds([]);
+
+    if (editingDepartmentId === departmentId) {
+      resetDepartmentForm();
+    }
+  }
+
+  function resetProductDomainForm() {
+    setEditingProductDomainId(null);
+    setProductDomainForm(buildTaxonomyForm());
+    setIsProductDomainEditorOpen(false);
+  }
+
+  function openCreateProductDomainModal() {
+    setEditingProductDomainId(null);
+    setProductDomainForm(buildTaxonomyForm());
+    setIsProductDomainEditorOpen(true);
+  }
+
+  function editProductDomain(domain: ProductDomainConfig) {
+    setEditingProductDomainId(domain.id);
+    setProductDomainForm(buildTaxonomyForm(domain));
+    setSelectedProductDomainIds([domain.id]);
+    setIsProductDomainEditorOpen(true);
+  }
+
+  function toggleProductDomainSelection(productDomainId: string, checked: boolean) {
+    setSelectedProductDomainIds((current) =>
+      checked ? Array.from(new Set([...current, productDomainId])) : current.filter((selectedId) => selectedId !== productDomainId)
+    );
+  }
+
+  function toggleFilteredProductDomainSelection(checked: boolean) {
+    setSelectedProductDomainIds((current) =>
+      checked
+        ? Array.from(new Set([...current, ...filteredProductDomainIds]))
+        : current.filter((selectedId) => !filteredProductDomainIds.includes(selectedId))
+    );
+  }
+
+  function changeSelectedProductDomainsActiveState() {
+    if (!selectedProductDomains.length) {
+      return;
+    }
+
+    const shouldActivate = selectedProductDomainsAllInactive;
+    const targetProductDomainIds = selectedProductDomains.map((domain) => domain.id);
+
+    onConfigChange((current) =>
+      targetProductDomainIds.reduce(
+        (nextConfig, productDomainId) =>
+          shouldActivate
+            ? activateProductDomainInConfig(nextConfig, productDomainId)
+            : deactivateProductDomainInConfig(nextConfig, productDomainId),
+        current
+      )
+    );
+
+    if (editingProductDomainId && targetProductDomainIds.includes(editingProductDomainId)) {
+      resetProductDomainForm();
+    }
+  }
+
+  function deleteSelectedProductDomain() {
+    if (!selectedProductDomain || selectedProductDomain.active) {
+      return;
+    }
+
+    const productDomainId = selectedProductDomain.id;
+
+    onConfigChange((current) => removeProductDomainFromConfig(current, productDomainId));
+    setSelectedProductDomainIds([]);
+
+    if (editingProductDomainId === productDomainId) {
+      resetProductDomainForm();
+    }
+  }
+
   function resetProductForm() {
     setEditingProductId(null);
-    setProductForm(buildProductForm());
+    setProductForm(buildProductForm(config));
     setIsProductEditorOpen(false);
   }
 
   function openCreateProductModal() {
     setEditingProductId(null);
-    setProductForm(buildProductForm());
+    setProductForm(buildProductForm(config));
     setIsProductEditorOpen(true);
   }
 
   function editProduct(product: ProductConfig) {
     setEditingProductId(product.id);
-    setProductForm(buildProductForm(product));
+    setProductForm(buildProductForm(config, product));
     setSelectedProductIds([product.id]);
     setIsProductEditorOpen(true);
-  }
-
-  function editSelectedProduct() {
-    if (selectedProduct) {
-      editProduct(selectedProduct);
-    }
   }
 
   function toggleProductSelection(productId: string, checked: boolean) {
@@ -34457,12 +35079,6 @@ function AdminMasterDataManager({
     setPruFormError("");
     setPruFormNotice("");
     setIsPruEditorOpen(true);
-  }
-
-  function editSelectedPru() {
-    if (selectedPru) {
-      editPru(selectedPru);
-    }
   }
 
   function togglePruSelection(pruKey: string, checked: boolean) {
@@ -34567,12 +35183,6 @@ function AdminMasterDataManager({
     setIsModuleEditorOpen(true);
   }
 
-  function editSelectedModule() {
-    if (selectedModule) {
-      editModule(selectedModule);
-    }
-  }
-
   function toggleModuleSelection(moduleKey: string, checked: boolean) {
     setSelectedModuleKeys((current) =>
       checked ? Array.from(new Set([...current, moduleKey])) : current.filter((selectedKey) => selectedKey !== moduleKey)
@@ -34660,12 +35270,6 @@ function AdminMasterDataManager({
     setTicketTypeForm(buildTicketTypeForm(ticketType));
     setSelectedTicketTypeIds([ticketType.id]);
     setIsTicketTypeEditorOpen(true);
-  }
-
-  function editSelectedTicketType() {
-    if (selectedTicketType) {
-      editTicketType(selectedTicketType);
-    }
   }
 
   function toggleTicketTypeSelection(ticketTypeId: string, checked: boolean) {
@@ -34859,6 +35463,68 @@ function AdminMasterDataManager({
     resetRegionSiteForm();
   }
 
+  function saveDepartment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = departmentForm.name.trim();
+
+    if (!name) {
+      return;
+    }
+
+    const id =
+      editingDepartmentId ??
+      getUniqueConfigId(
+        config.departments.map((department) => department.id),
+        normalizeId(name, "department")
+      );
+    const department: DepartmentConfig = {
+      id,
+      name,
+      description: departmentForm.description.trim(),
+      active: departmentForm.active
+    };
+
+    onConfigChange((current) => ({
+      ...current,
+      departments: editingDepartmentId
+        ? current.departments.map((item) => (item.id === editingDepartmentId ? department : item))
+        : [...current.departments, department]
+    }));
+    resetDepartmentForm();
+  }
+
+  function saveProductDomain(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = productDomainForm.name.trim();
+
+    if (!name) {
+      return;
+    }
+
+    const id =
+      editingProductDomainId ??
+      getUniqueConfigId(
+        config.productDomains.map((domain) => domain.id),
+        normalizeId(name, "domain")
+      );
+    const productDomain: ProductDomainConfig = {
+      id,
+      name,
+      description: productDomainForm.description.trim(),
+      active: productDomainForm.active
+    };
+
+    onConfigChange((current) => ({
+      ...current,
+      productDomains: editingProductDomainId
+        ? current.productDomains.map((item) => (item.id === editingProductDomainId ? productDomain : item))
+        : [...current.productDomains, productDomain]
+    }));
+    resetProductDomainForm();
+  }
+
   function saveProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -34883,6 +35549,8 @@ function AdminMasterDataManager({
       id,
       productName,
       productOwnerName: productForm.productOwnerName.trim(),
+      departmentId: productForm.departmentId,
+      productDomainId: productForm.productDomainId,
       ticketSource,
       jiraProjectKey: ticketSource === "jira" ? jiraProjectKey : "",
       roleAssignments: previousProduct?.roleAssignments ?? [],
@@ -35627,11 +36295,91 @@ function AdminMasterDataManager({
     });
   }
 
+  function renderDepartmentEditorModal() {
+    return renderMasterEditorModal({
+      isOpen: isDepartmentEditorOpen,
+      title: editingDepartmentId ? "Edit department" : "Create department",
+      description: "Configure the department that owns products and task management scope.",
+      titleId: "admin-department-editor-title",
+      onClose: resetDepartmentForm,
+      onSubmit: saveDepartment,
+      children: (
+        <>
+          <div className="admin-user-form-grid">
+            <label className="form-field">
+              <span>Department</span>
+              <input
+                value={departmentForm.name}
+                onChange={(event) => setDepartmentForm({ ...departmentForm, name: event.target.value })}
+                placeholder="Industrial IT"
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Description</span>
+              <textarea
+                rows={3}
+                value={departmentForm.description}
+                onChange={(event) => setDepartmentForm({ ...departmentForm, description: event.target.value })}
+                placeholder="What this department owns"
+              />
+            </label>
+          </div>
+          <AdminCheckbox
+            checked={departmentForm.active}
+            label="Active department"
+            onChange={(active) => setDepartmentForm({ ...departmentForm, active })}
+          />
+          <AdminFormActions editing={Boolean(editingDepartmentId)} onCancel={resetDepartmentForm} />
+        </>
+      )
+    });
+  }
+
+  function renderProductDomainEditorModal() {
+    return renderMasterEditorModal({
+      isOpen: isProductDomainEditorOpen,
+      title: editingProductDomainId ? "Edit product domain" : "Create product domain",
+      description: "Configure product domains such as SCADA, IIoT, MES, and other business capability areas.",
+      titleId: "admin-product-domain-editor-title",
+      onClose: resetProductDomainForm,
+      onSubmit: saveProductDomain,
+      children: (
+        <>
+          <div className="admin-user-form-grid">
+            <label className="form-field">
+              <span>Product domain</span>
+              <input
+                value={productDomainForm.name}
+                onChange={(event) => setProductDomainForm({ ...productDomainForm, name: event.target.value })}
+                placeholder="SCADA"
+              />
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Description</span>
+              <textarea
+                rows={3}
+                value={productDomainForm.description}
+                onChange={(event) => setProductDomainForm({ ...productDomainForm, description: event.target.value })}
+                placeholder="What this domain covers"
+              />
+            </label>
+          </div>
+          <AdminCheckbox
+            checked={productDomainForm.active}
+            label="Active product domain"
+            onChange={(active) => setProductDomainForm({ ...productDomainForm, active })}
+          />
+          <AdminFormActions editing={Boolean(editingProductDomainId)} onCancel={resetProductDomainForm} />
+        </>
+      )
+    });
+  }
+
   function renderProductEditorModal() {
     return renderMasterEditorModal({
       isOpen: isProductEditorOpen,
       title: editingProductId ? "Edit product" : "Create product",
-      description: "Manage product ownership, ticket source, and active status.",
+      description: "Choose whether this product is governed by Jira or runs standalone in the platform.",
       titleId: "admin-product-editor-title",
       onClose: resetProductForm,
       onSubmit: saveProduct,
@@ -35655,7 +36403,37 @@ function AdminMasterDataManager({
               />
             </label>
             <label className="form-field">
-              <span>Ticket source of truth</span>
+              <span>Department</span>
+              <select
+                value={productForm.departmentId}
+                onChange={(event) => setProductForm({ ...productForm, departmentId: event.target.value })}
+              >
+                <option value="">Unassigned</option>
+                {config.departments.map((department) => (
+                  <option key={department.id} value={department.id}>
+                    {department.name}
+                  </option>
+                ))}
+              </select>
+              <small>Defines which department owns this product.</small>
+            </label>
+            <label className="form-field">
+              <span>Product domain</span>
+              <select
+                value={productForm.productDomainId}
+                onChange={(event) => setProductForm({ ...productForm, productDomainId: event.target.value })}
+              >
+                <option value="">Unassigned</option>
+                {config.productDomains.map((domain) => (
+                  <option key={domain.id} value={domain.id}>
+                    {domain.name}
+                  </option>
+                ))}
+              </select>
+              <small>Examples: SCADA, IIoT, MES.</small>
+            </label>
+            <label className="form-field form-field-wide">
+              <span>Source of truth</span>
               <select
                 value={productForm.ticketSource}
                 onChange={(event) => {
@@ -35668,9 +36446,12 @@ function AdminMasterDataManager({
                   });
                 }}
               >
-                <option value="jira">Jira</option>
-                <option value="nexus">Nexus-support portal</option>
+                <option value="nexus">Platform (standalone portal)</option>
+                <option value="jira">Jira (source of truth)</option>
               </select>
+              <small>
+                Platform mode hides Jira handoff fields for this product and keeps the ticket lifecycle inside the portal.
+              </small>
             </label>
             {productForm.ticketSource === "jira" ? (
               <label className="form-field">
@@ -35943,10 +36724,8 @@ function AdminMasterDataManager({
     helperText,
     activeActionLabel,
     hasSelection,
-    canEdit,
     canDelete,
     onAdd,
-    onEdit,
     onActiveChange,
     onDelete
   }: {
@@ -35955,10 +36734,8 @@ function AdminMasterDataManager({
     helperText: string;
     activeActionLabel: "Activate" | "Deactivate";
     hasSelection: boolean;
-    canEdit: boolean;
     canDelete: boolean;
     onAdd: () => void;
-    onEdit: () => void;
     onActiveChange: () => void;
     onDelete: () => void;
   }) {
@@ -35972,10 +36749,6 @@ function AdminMasterDataManager({
           <button className="primary-button" type="button" onClick={onAdd}>
             <TegelIcon name="plus" size="16px" />
             Add
-          </button>
-          <button className="secondary-button" disabled={!canEdit} type="button" onClick={onEdit}>
-            <TegelIcon name="edit" size="16px" />
-            Edit
           </button>
           <button
             className={`secondary-button ${activeActionLabel === "Deactivate" ? "danger-button" : ""}`}
@@ -36010,21 +36783,12 @@ function AdminMasterDataManager({
             <div className="admin-user-selection-toolbar" aria-label="User table actions">
               <div className="admin-user-selection-summary">
                 <strong>{selectedUsers.length ? `${formatCount(selectedUsers.length)} selected` : "No users selected"}</strong>
-                <span>Edit and delete require one selected user. Activate/deactivate supports multiple users.</span>
+                <span>Use row Edit for one user. Delete requires one inactive selected user. Activate/deactivate supports multiple users.</span>
               </div>
               <div className="admin-user-selection-actions">
                 <button className="primary-button" type="button" onClick={openCreateUserModal}>
                   <TegelIcon name="plus" size="16px" />
                   Add
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={!canEditSelectedUser}
-                  type="button"
-                  onClick={editSelectedUser}
-                >
-                  <TegelIcon name="edit" size="16px" />
-                  Edit
                 </button>
                 <button
                   className={`secondary-button ${selectedUserActiveActionLabel === "Deactivate" ? "danger-button" : ""}`}
@@ -36074,6 +36838,7 @@ function AdminMasterDataManager({
                     <th scope="col">PRUs</th>
                     <th scope="col">Email notifications</th>
                     <th scope="col">Status</th>
+                    <th className="admin-user-actions-column" scope="col">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -36089,7 +36854,7 @@ function AdminMasterDataManager({
                           className={`${user.active ? "" : "is-inactive"} ${editingUserId === user.id ? "is-editing" : ""} ${selectedUserIds.includes(user.id) ? "is-selected" : ""}`}
                           key={user.id}
                         >
-                          <td className="admin-user-select-column">
+                          <td className="admin-user-select-column" data-label="Select">
                             <input
                               aria-label={`Select ${user.displayName}`}
                               checked={selectedUserIds.includes(user.id)}
@@ -36097,18 +36862,18 @@ function AdminMasterDataManager({
                               onChange={(event) => toggleUserSelection(user.id, event.target.checked)}
                             />
                           </td>
-                          <td>
+                          <td data-label="User">
                             <div className="admin-user-cell-stack">
                               <strong>{user.displayName}</strong>
                               <span>{user.email}</span>
                             </div>
                           </td>
-                          <td>
+                          <td data-label="Primary role">
                             <div className="admin-user-cell-stack">
                               <strong>{getConfigRoleLabel(config, user.primaryRole)}</strong>
                             </div>
                           </td>
-                          <td>
+                          <td data-label="Acting roles">
                             {actingRoleLabels.length > 0 ? (
                               <div className="admin-pill-list">
                                 {actingRoleLabels.map((roleLabel) => (
@@ -36121,34 +36886,45 @@ function AdminMasterDataManager({
                               <span className="admin-user-muted">None</span>
                             )}
                           </td>
-                          <td>
+                          <td data-label="Location">
                             <div className="admin-user-cell-stack">
                               <strong>{user.region || "No region"}</strong>
                               <span>{user.site || "No site"}</span>
                             </div>
                           </td>
-                          <td>
+                          <td data-label="Products">
                             <div className="admin-user-cell-stack">
                               <strong>{productScope}</strong>
                             </div>
                           </td>
-                          <td>
+                          <td data-label="PRUs">
                             <div className="admin-user-cell-stack">
                               <strong>{pruScope}</strong>
                             </div>
                           </td>
-                          <td>
+                          <td data-label="Email notifications">
                             <span>{emailSummary}</span>
                           </td>
-                          <td>
+                          <td data-label="Status">
                             <AdminStatusPill active={user.active} />
+                          </td>
+                          <td className="admin-user-table-actions" data-label="Actions">
+                            <button
+                              aria-label={`Edit ${user.displayName}`}
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => editUser(user)}
+                            >
+                              <TegelIcon name="edit" size="16px" />
+                              Edit
+                            </button>
                           </td>
                         </tr>
                       );
                     })
                   ) : (
                     <tr>
-                      <td className="admin-user-empty" colSpan={9}>
+                      <td className="admin-user-empty" colSpan={10}>
                         No users match the current filters.
                       </td>
                     </tr>
@@ -36205,21 +36981,12 @@ function AdminMasterDataManager({
                       : `${formatCount(selectedRoleDomains.length)} selected`
                     : "No roles selected"}
                 </strong>
-                <span>Edit and delete require one selected role. Standard roles cannot be deleted.</span>
+                <span>Use row Edit for one role. Delete requires one selected custom role. Standard roles cannot be deleted.</span>
               </div>
               <div className="admin-user-selection-actions">
                 <button className="primary-button" type="button" onClick={openCreateRoleModal}>
                   <TegelIcon name="plus" size="16px" />
                   Add
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={!canEditSelectedRole}
-                  type="button"
-                  onClick={editSelectedRole}
-                >
-                  <TegelIcon name="edit" size="16px" />
-                  Edit
                 </button>
                 <button
                   className={`secondary-button ${selectedRoleActiveActionLabel === "Deactivate" ? "danger-button" : ""}`}
@@ -36262,7 +37029,15 @@ function AdminMasterDataManager({
               { key: "domain", label: "Domain" },
               { key: "workflow", label: "Workflow" },
               { key: "type", label: "Type" },
-              { key: "status", label: "Status", className: "admin-config-table-status" }
+              { key: "status", label: "Status", className: "admin-config-table-status" },
+              {
+                key: "actions",
+                label: "Actions",
+                className: "admin-config-table-actions-cell",
+                width: 120,
+                minWidth: 112,
+                resizable: false
+              }
             ]}
             rows={filteredRoleDomains.flatMap((roleDomain) => {
               const role = roleOptions.find((item) => item.key === roleDomain.role);
@@ -36294,7 +37069,18 @@ function AdminMasterDataManager({
                   domain: roleDomain.domain,
                   workflow: getWorkflowRoleTypeLabel(roleDomain.workflowType),
                   type: isBuiltInRole(role.key) ? "System role" : "Custom role",
-                  status: <AdminStatusPill active={roleDomain.active} />
+                  status: <AdminStatusPill active={roleDomain.active} />,
+                  actions: (
+                    <button
+                      aria-label={`Edit ${role.label}`}
+                      className="secondary-button admin-row-edit-button"
+                      type="button"
+                      onClick={() => editRole(roleDomain)}
+                    >
+                      <TegelIcon name="edit" size="16px" />
+                      Edit
+                    </button>
+                  )
                 }
               }];
             })}
@@ -36316,13 +37102,11 @@ function AdminMasterDataManager({
               selectedSummary: selectedRegionSites.length
                 ? `${formatCount(selectedRegionSites.length)} selected`
                 : "No regions/sites selected",
-              helperText: "Edit and delete require one selected row. Delete is available after deactivation.",
+              helperText: "Use row Edit for one region/site. Delete requires one inactive selected row.",
               activeActionLabel: selectedRegionSiteActiveActionLabel,
               hasSelection: selectedRegionSites.length > 0,
-              canEdit: canEditSelectedRegionSite,
               canDelete: canDeleteSelectedRegionSite,
               onAdd: openCreateRegionSiteModal,
-              onEdit: editSelectedRegionSite,
               onActiveChange: changeSelectedRegionSitesActiveState,
               onDelete: deleteSelectedRegionSite
             })}
@@ -36346,7 +37130,15 @@ function AdminMasterDataManager({
               { key: "site", label: "Site" },
               { key: "region", label: "Region" },
               { key: "localOwner", label: "Local PO" },
-              { key: "status", label: "Status", className: "admin-config-table-status" }
+              { key: "status", label: "Status", className: "admin-config-table-status" },
+              {
+                key: "actions",
+                label: "Actions",
+                className: "admin-config-table-actions-cell",
+                width: 120,
+                minWidth: 112,
+                resizable: false
+              }
             ]}
             rows={filteredRegionSites.map((site) => ({
               id: site.id,
@@ -36370,10 +37162,215 @@ function AdminMasterDataManager({
                 ),
                 region: site.region,
                 localOwner: getConfigUserName(config, site.localProductOwnerId),
-                status: <AdminStatusPill active={site.active} />
+                status: <AdminStatusPill active={site.active} />,
+                actions: (
+                  <button
+                    aria-label={`Edit ${site.label}`}
+                    className="secondary-button admin-row-edit-button"
+                    type="button"
+                    onClick={() => editRegionSite(site)}
+                  >
+                    <TegelIcon name="edit" size="16px" />
+                    Edit
+                  </button>
+                )
               }
             }))}
               emptyMessage="No regions or sites match the current filters."
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (activeTab === "departments") {
+      return (
+        <div className="admin-editor-layout admin-users-layout">
+          {renderDepartmentEditorModal()}
+          <div className="admin-master-table-stack">
+            {renderMasterTableToolbar()}
+            {renderMasterSelectionToolbar({
+              ariaLabel: "Department table actions",
+              selectedSummary: selectedDepartments.length
+                ? `${formatCount(selectedDepartments.length)} selected`
+                : "No departments selected",
+              helperText: "Use row Edit for one department. Delete requires one inactive department with no products.",
+              activeActionLabel: selectedDepartmentActiveActionLabel,
+              hasSelection: selectedDepartments.length > 0,
+              canDelete: canDeleteSelectedDepartment,
+              onAdd: openCreateDepartmentModal,
+              onActiveChange: changeSelectedDepartmentsActiveState,
+              onDelete: deleteSelectedDepartment
+            })}
+            <AdminConfigTable
+              title="Departments"
+              summary={`${formatCount(filteredDepartments.length)} shown / ${formatCount(config.departments.filter((department) => department.active).length)} active / ${formatCount(config.departments.length)} total`}
+              columns={[
+                {
+                  key: "select",
+                  label: (
+                    <input
+                      aria-checked={allFilteredDepartmentsSelected ? "true" : someFilteredDepartmentsSelected ? "mixed" : "false"}
+                      aria-label="Select all visible departments"
+                      checked={allFilteredDepartmentsSelected}
+                      type="checkbox"
+                      onChange={(event) => toggleFilteredDepartmentSelection(event.target.checked)}
+                    />
+                  ),
+                  className: "admin-config-table-select"
+                },
+                { key: "department", label: "Department" },
+                { key: "products", label: "Products" },
+                { key: "status", label: "Status", className: "admin-config-table-status" },
+                {
+                  key: "actions",
+                  label: "Actions",
+                  className: "admin-config-table-actions-cell",
+                  width: 120,
+                  minWidth: 112,
+                  resizable: false
+                }
+              ]}
+              rows={filteredDepartments.map((department) => {
+                const productCount = config.products.filter((product) => product.departmentId === department.id).length;
+
+                return {
+                  id: department.id,
+                  active: department.active,
+                  editing: editingDepartmentId === department.id,
+                  selected: selectedDepartmentIds.includes(department.id),
+                  cells: {
+                    select: (
+                      <input
+                        aria-label={`Select ${department.name}`}
+                        checked={selectedDepartmentIds.includes(department.id)}
+                        type="checkbox"
+                        onChange={(event) => toggleDepartmentSelection(department.id, event.target.checked)}
+                      />
+                    ),
+                    department: (
+                      <div className="admin-config-cell-stack">
+                        <strong>{department.name}</strong>
+                        <span>{department.description || department.id}</span>
+                      </div>
+                    ),
+                    products: formatCount(productCount),
+                    status: <AdminStatusPill active={department.active} />,
+                    actions: (
+                      <button
+                        aria-label={`Edit ${department.name}`}
+                        className="secondary-button admin-row-edit-button"
+                        type="button"
+                        onClick={() => editDepartment(department)}
+                      >
+                        <TegelIcon name="edit" size="16px" />
+                        Edit
+                      </button>
+                    )
+                  }
+                };
+              })}
+              emptyMessage="No departments match the current filters."
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (activeTab === "productDomains") {
+      return (
+        <div className="admin-editor-layout admin-users-layout">
+          {renderProductDomainEditorModal()}
+          <div className="admin-master-table-stack">
+            {renderMasterTableToolbar()}
+            {renderMasterSelectionToolbar({
+              ariaLabel: "Product domain table actions",
+              selectedSummary: selectedProductDomains.length
+                ? `${formatCount(selectedProductDomains.length)} selected`
+                : "No product domains selected",
+              helperText: "Use row Edit for one product domain. Delete requires one inactive domain with no products.",
+              activeActionLabel: selectedProductDomainActiveActionLabel,
+              hasSelection: selectedProductDomains.length > 0,
+              canDelete: canDeleteSelectedProductDomain,
+              onAdd: openCreateProductDomainModal,
+              onActiveChange: changeSelectedProductDomainsActiveState,
+              onDelete: deleteSelectedProductDomain
+            })}
+            <AdminConfigTable
+              title="Product domains"
+              summary={`${formatCount(filteredProductDomains.length)} shown / ${formatCount(config.productDomains.filter((domain) => domain.active).length)} active / ${formatCount(config.productDomains.length)} total`}
+              columns={[
+                {
+                  key: "select",
+                  label: (
+                    <input
+                      aria-checked={
+                        allFilteredProductDomainsSelected
+                          ? "true"
+                          : someFilteredProductDomainsSelected
+                            ? "mixed"
+                            : "false"
+                      }
+                      aria-label="Select all visible product domains"
+                      checked={allFilteredProductDomainsSelected}
+                      type="checkbox"
+                      onChange={(event) => toggleFilteredProductDomainSelection(event.target.checked)}
+                    />
+                  ),
+                  className: "admin-config-table-select"
+                },
+                { key: "domain", label: "Product domain" },
+                { key: "products", label: "Products" },
+                { key: "status", label: "Status", className: "admin-config-table-status" },
+                {
+                  key: "actions",
+                  label: "Actions",
+                  className: "admin-config-table-actions-cell",
+                  width: 120,
+                  minWidth: 112,
+                  resizable: false
+                }
+              ]}
+              rows={filteredProductDomains.map((domain) => {
+                const productCount = config.products.filter((product) => product.productDomainId === domain.id).length;
+
+                return {
+                  id: domain.id,
+                  active: domain.active,
+                  editing: editingProductDomainId === domain.id,
+                  selected: selectedProductDomainIds.includes(domain.id),
+                  cells: {
+                    select: (
+                      <input
+                        aria-label={`Select ${domain.name}`}
+                        checked={selectedProductDomainIds.includes(domain.id)}
+                        type="checkbox"
+                        onChange={(event) => toggleProductDomainSelection(domain.id, event.target.checked)}
+                      />
+                    ),
+                    domain: (
+                      <div className="admin-config-cell-stack">
+                        <strong>{domain.name}</strong>
+                        <span>{domain.description || domain.id}</span>
+                      </div>
+                    ),
+                    products: formatCount(productCount),
+                    status: <AdminStatusPill active={domain.active} />,
+                    actions: (
+                      <button
+                        aria-label={`Edit ${domain.name}`}
+                        className="secondary-button admin-row-edit-button"
+                        type="button"
+                        onClick={() => editProductDomain(domain)}
+                      >
+                        <TegelIcon name="edit" size="16px" />
+                        Edit
+                      </button>
+                    )
+                  }
+                };
+              })}
+              emptyMessage="No product domains match the current filters."
             />
           </div>
         </div>
@@ -36389,13 +37386,11 @@ function AdminMasterDataManager({
             {renderMasterSelectionToolbar({
               ariaLabel: "Product table actions",
               selectedSummary: selectedProducts.length ? `${formatCount(selectedProducts.length)} selected` : "No products selected",
-              helperText: "Edit and delete require one selected product. Delete is available after deactivation.",
+              helperText: "Use row Edit for one product. Delete requires one inactive selected product.",
               activeActionLabel: selectedProductActiveActionLabel,
               hasSelection: selectedProducts.length > 0,
-              canEdit: canEditSelectedProduct,
               canDelete: canDeleteSelectedProduct,
               onAdd: openCreateProductModal,
-              onEdit: editSelectedProduct,
               onActiveChange: changeSelectedProductsActiveState,
               onDelete: deleteSelectedProduct
             })}
@@ -36422,8 +37417,12 @@ function AdminMasterDataManager({
               },
               { key: "product", label: "Product", className: "admin-product-column-name", width: 220, minWidth: 170 },
               { key: "owner", label: "Owner", className: "admin-product-column-owner", width: 150, minWidth: 120 },
-              { key: "source", label: "Source", className: "admin-product-column-jira", width: 180, minWidth: 140 },
-              { key: "jira", label: "Jira project", className: "admin-product-column-jira", width: 220, minWidth: 160 },
+              { key: "department", label: "Department", className: "admin-product-column-taxonomy", width: 170, minWidth: 140 },
+              { key: "domain", label: "Domain", className: "admin-product-column-taxonomy", width: 150, minWidth: 120 },
+              { key: "source", label: "Source of truth", className: "admin-product-column-jira", width: 220, minWidth: 160 },
+              ...(hasJiraConfiguredProducts
+                ? [{ key: "jira", label: "Jira project", className: "admin-product-column-jira", width: 220, minWidth: 160 }]
+                : []),
               { key: "prus", label: "PRUs", className: "admin-product-column-prus", width: 240, minWidth: 160 },
               { key: "assignments", label: "Assignments", className: "admin-product-column-assignments", width: 126, minWidth: 112 },
               {
@@ -36432,6 +37431,14 @@ function AdminMasterDataManager({
                 className: "admin-config-table-status",
                 width: 96,
                 minWidth: 88,
+                resizable: false
+              },
+              {
+                key: "actions",
+                label: "Actions",
+                className: "admin-config-table-actions-cell",
+                width: 120,
+                minWidth: 112,
                 resizable: false
               }
             ]}
@@ -36456,12 +37463,18 @@ function AdminMasterDataManager({
                   </div>
                 ),
                 owner: product.productOwnerName || "No owner",
-                source: getProductTicketSource(product) === "jira" ? "Jira" : "Nexus-support portal",
-                jira: (
-                  <span className="admin-config-url-cell">
-                    {productUsesJira(product) ? product.jiraProjectKey || "No Jira project" : "Not used"}
-                  </span>
-                ),
+                department: getConfigDepartmentName(config, product.departmentId),
+                domain: getConfigProductDomainName(config, product.productDomainId),
+                source: getProductTicketSourceLabel(product),
+                ...(hasJiraConfiguredProducts
+                  ? {
+                      jira: (
+                        <span className="admin-config-url-cell">
+                          {productUsesJira(product) ? product.jiraProjectKey || "No Jira project" : "Platform"}
+                        </span>
+                      )
+                    }
+                  : {}),
                 prus: (
                   <div className="admin-config-cell-stack admin-product-pru-cell">
                     <strong>{formatScopedCount(product.prus.map((pru) => pru.name), "PRU", "PRUs")}</strong>
@@ -36469,7 +37482,18 @@ function AdminMasterDataManager({
                   </div>
                 ),
                 assignments: formatCount(product.roleAssignments.length),
-                status: <AdminStatusPill active={product.active} />
+                status: <AdminStatusPill active={product.active} />,
+                actions: (
+                  <button
+                    aria-label={`Edit ${product.productName}`}
+                    className="secondary-button admin-row-edit-button"
+                    type="button"
+                    onClick={() => editProduct(product)}
+                  >
+                    <TegelIcon name="edit" size="16px" />
+                    Edit
+                  </button>
+                )
               }
             }))}
               emptyMessage="No products match the current filters."
@@ -36488,13 +37512,11 @@ function AdminMasterDataManager({
             {renderMasterSelectionToolbar({
               ariaLabel: "PRU table actions",
               selectedSummary: selectedPrus.length ? `${formatCount(selectedPrus.length)} selected` : "No PRUs selected",
-              helperText: "Edit and delete require one selected PRU. Deactivate/activate supports multiple PRUs.",
+              helperText: "Use row Edit for one PRU. Deactivate/activate supports multiple PRUs.",
               activeActionLabel: selectedPruActiveActionLabel,
               hasSelection: selectedPrus.length > 0,
-              canEdit: canEditSelectedPru,
               canDelete: canDeleteSelectedPru,
               onAdd: openCreatePruModal,
-              onEdit: editSelectedPru,
               onActiveChange: changeSelectedPrusActiveState,
               onDelete: deleteSelectedPru
             })}
@@ -36521,7 +37543,15 @@ function AdminMasterDataManager({
               { key: "site", label: "Site" },
               { key: "localOwner", label: "Local PO" },
               { key: "modules", label: "Modules" },
-              { key: "status", label: "Status", className: "admin-config-table-status" }
+              { key: "status", label: "Status", className: "admin-config-table-status" },
+              {
+                key: "actions",
+                label: "Actions",
+                className: "admin-config-table-actions-cell",
+                width: 120,
+                minWidth: 112,
+                resizable: false
+              }
             ]}
             rows={filteredPrus.map((pru) => {
               const pruKey = getPruConfigKey(pru.productId, pru.id);
@@ -36551,7 +37581,18 @@ function AdminMasterDataManager({
                 site: pru.site || "No site",
                 localOwner: getConfigUserName(config, pru.localProductOwnerId),
                 modules: formatCount(pru.modules.length),
-                status: <AdminStatusPill active={pru.active} />
+                status: <AdminStatusPill active={pru.active} />,
+                actions: (
+                  <button
+                    aria-label={`Edit ${pru.name}`}
+                    className="secondary-button admin-row-edit-button"
+                    type="button"
+                    onClick={() => editPru(pru)}
+                  >
+                    <TegelIcon name="edit" size="16px" />
+                    Edit
+                  </button>
+                )
                 }
               };
             })}
@@ -36571,13 +37612,11 @@ function AdminMasterDataManager({
             {renderMasterSelectionToolbar({
               ariaLabel: "Module table actions",
               selectedSummary: selectedModules.length ? `${formatCount(selectedModules.length)} selected` : "No modules selected",
-              helperText: "Edit and delete require one selected module. Deactivate/activate supports multiple modules.",
+              helperText: "Use row Edit for one module. Deactivate/activate supports multiple modules.",
               activeActionLabel: selectedModuleActiveActionLabel,
               hasSelection: selectedModules.length > 0,
-              canEdit: canEditSelectedModule,
               canDelete: canDeleteSelectedModule,
               onAdd: openCreateModuleModal,
-              onEdit: editSelectedModule,
               onActiveChange: changeSelectedModulesActiveState,
               onDelete: deleteSelectedModule
             })}
@@ -36602,7 +37641,15 @@ function AdminMasterDataManager({
               { key: "product", label: "Product" },
               { key: "pru", label: "PRU" },
               ...(hasJiraConfiguredProducts ? [{ key: "jira", label: "Jira component" }] : []),
-              { key: "status", label: "Status", className: "admin-config-table-status" }
+              { key: "status", label: "Status", className: "admin-config-table-status" },
+              {
+                key: "actions",
+                label: "Actions",
+                className: "admin-config-table-actions-cell",
+                width: 120,
+                minWidth: 112,
+                resizable: false
+              }
             ]}
             rows={filteredVisibleModules.map((module) => {
               const moduleKey = getModuleConfigKey(module.productId, module.pruId, module.id);
@@ -36635,7 +37682,18 @@ function AdminMasterDataManager({
                 jira: productUsesJira(getConfigProductById(config, module.productId))
                   ? module.jiraComponent || "No Jira component"
                   : "Not used",
-                status: <AdminStatusPill active={module.active} />
+                status: <AdminStatusPill active={module.active} />,
+                actions: (
+                  <button
+                    aria-label={`Edit ${module.name}`}
+                    className="secondary-button admin-row-edit-button"
+                    type="button"
+                    onClick={() => editModule(module)}
+                  >
+                    <TegelIcon name="edit" size="16px" />
+                    Edit
+                  </button>
+                )
                 }
               };
             })}
@@ -36656,13 +37714,11 @@ function AdminMasterDataManager({
             selectedSummary: selectedTicketTypes.length
               ? `${formatCount(selectedTicketTypes.length)} selected`
               : "No ticket types selected",
-            helperText: "Edit and delete require one selected ticket type. Delete is available after deactivation.",
+            helperText: "Use row Edit for one ticket type. Delete requires one inactive selected ticket type.",
             activeActionLabel: selectedTicketTypeActiveActionLabel,
             hasSelection: selectedTicketTypes.length > 0,
-            canEdit: canEditSelectedTicketType,
             canDelete: canDeleteSelectedTicketType,
             onAdd: openCreateTicketTypeModal,
-            onEdit: editSelectedTicketType,
             onActiveChange: changeSelectedTicketTypesActiveState,
             onDelete: deleteSelectedTicketType
           })}
@@ -36686,7 +37742,15 @@ function AdminMasterDataManager({
             { key: "type", label: "Ticket type" },
             { key: "color", label: "Color" },
             { key: "sort", label: "Sort" },
-            { key: "status", label: "Status", className: "admin-config-table-status" }
+            { key: "status", label: "Status", className: "admin-config-table-status" },
+            {
+              key: "actions",
+              label: "Actions",
+              className: "admin-config-table-actions-cell",
+              width: 120,
+              minWidth: 112,
+              resizable: false
+            }
           ]}
           rows={filteredTicketTypes.map((ticketType) => ({
             id: ticketType.id,
@@ -36710,7 +37774,18 @@ function AdminMasterDataManager({
               ),
               color: ticketType.color,
               sort: ticketType.sortOrder,
-              status: <AdminStatusPill active={ticketType.active} />
+              status: <AdminStatusPill active={ticketType.active} />,
+              actions: (
+                <button
+                  aria-label={`Edit ${ticketType.label}`}
+                  className="secondary-button admin-row-edit-button"
+                  type="button"
+                  onClick={() => editTicketType(ticketType)}
+                >
+                  <TegelIcon name="edit" size="16px" />
+                  Edit
+                </button>
+              )
             }
           }))}
             emptyMessage="No ticket types match the current filters."
@@ -36726,6 +37801,8 @@ function AdminMasterDataManager({
         <AdminSummaryCard label="Active users" value={config.users.filter((user) => user.active).length} />
         <AdminSummaryCard label="Configured roles" value={config.roleDomains.length} />
         <AdminSummaryCard label="Regions / sites" value={config.regionSites.length} />
+        <AdminSummaryCard label="Departments" value={config.departments.length} />
+        <AdminSummaryCard label="Product domains" value={config.productDomains.length} />
         <AdminSummaryCard label="Products" value={config.products.length} />
         <AdminSummaryCard label="PRUs" value={allPrus.length} />
         <AdminSummaryCard label="Modules" value={allModules.length} />
@@ -36781,7 +37858,7 @@ function TicketWorkflowManager({
     })
   );
   const availableWorkflowRoles = getWorkflowRoleOptions(config).filter((role) => !selectedOwnerRoles.has(role.key));
-  const hasJiraProducts = config.products.some((product) => productUsesJira(product));
+  const hasJiraProducts = configUsesJira(config);
   const selectedJiraCreatorSteps = selectedSteps.filter((step) => workflowForm.jiraCreatorStepIds.includes(step.id));
   const selectedJiraCreatorLabels = selectedJiraCreatorSteps.map(
     (step) => workflowForm.stepOverrides[step.id]?.label || step.label
@@ -38204,10 +39281,27 @@ function NotificationTemplateManager({
   );
   const [error, setError] = useState("");
   const roleOptions = getRoleOptions(config);
+  const notificationEventSelectOptions = getConfigNotificationEventOptions(config);
+  const visibleNotificationTemplates = config.notificationTemplates.filter(
+    (template) => configUsesJira(config) || !isJiraNotificationEventType(template.eventType)
+  );
   const previewTemplate = buildNotificationTemplateFromForm(
     templateForm,
     editingTemplateId ?? "notification-preview"
   );
+
+  useEffect(() => {
+    if (notificationEventSelectOptions.some((option) => option.value === templateForm.eventType)) {
+      return;
+    }
+
+    const fallbackEventType = notificationEventSelectOptions[0]?.value ?? "ticketSubmitted";
+    setTemplateForm((current) => ({
+      ...current,
+      eventType: fallbackEventType,
+      severity: getDefaultNotificationSeverity(fallbackEventType)
+    }));
+  }, [notificationEventSelectOptions, templateForm.eventType]);
 
   function resetTemplateForm() {
     setEditingTemplateId(null);
@@ -38261,16 +39355,16 @@ function NotificationTemplateManager({
   return (
     <div className="notification-template-manager">
       <div className="admin-metric-grid">
-        <AdminSummaryCard label="Templates" value={config.notificationTemplates.length} />
+        <AdminSummaryCard label="Templates" value={visibleNotificationTemplates.length} />
         <AdminSummaryCard
           label="Active templates"
-          value={config.notificationTemplates.filter((template) => template.active).length}
+          value={visibleNotificationTemplates.filter((template) => template.active).length}
         />
         <AdminSummaryCard
           label="Email-enabled"
-          value={config.notificationTemplates.filter((template) => template.deliveryMode !== "inAppOnly").length}
+          value={visibleNotificationTemplates.filter((template) => template.deliveryMode !== "inAppOnly").length}
         />
-        <AdminSummaryCard label="Role routes" value={new Set(config.notificationTemplates.flatMap((template) => template.enabledRoles)).size} />
+        <AdminSummaryCard label="Role routes" value={new Set(visibleNotificationTemplates.flatMap((template) => template.enabledRoles)).size} />
       </div>
       <div className="admin-editor-layout notification-template-layout">
         <form className="admin-editor-form admin-form" onSubmit={saveTemplate}>
@@ -38295,7 +39389,7 @@ function NotificationTemplateManager({
                 });
               }}
             >
-              {notificationEventOptions.map((option) => (
+              {notificationEventSelectOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -38371,7 +39465,7 @@ function NotificationTemplateManager({
         <div className="notification-template-main">
           <NotificationTemplatePreview config={config} template={previewTemplate} />
           <div className="admin-editable-list">
-            {config.notificationTemplates.map((template) => (
+            {visibleNotificationTemplates.map((template) => (
               <article className="admin-editable-record notification-template-record" key={template.id}>
                 <div className="admin-record-main">
                   <div className="admin-record-header">
@@ -38507,7 +39601,9 @@ function IntegrationConfigurationPanel({
   const [smtpForm, setSmtpForm] = useState<SmtpConfigFormState>(() =>
     buildSmtpConfigForm(config.integrations.smtp)
   );
-  const [activeIntegration, setActiveIntegration] = useState<IntegrationProviderKey>("jira");
+  const [activeIntegration, setActiveIntegration] = useState<IntegrationProviderKey>(() =>
+    configUsesJira(config) ? "jira" : "ai"
+  );
   const [jiraError, setJiraError] = useState("");
   const [jiraSuccessMessage, setJiraSuccessMessage] = useState("");
   const [aiError, setAiError] = useState("");
@@ -38536,9 +39632,16 @@ function IntegrationConfigurationPanel({
   const [isSearchingGitLabCode, setIsSearchingGitLabCode] = useState(false);
   const [isLoadingGitLabFile, setIsLoadingGitLabFile] = useState(false);
   const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+  const hasJiraProducts = configUsesJira(config);
   const activeGitLabProducts = config.products.filter((product) => product.active);
   const gitlabProductMappings = config.integrations.gitlab.productRepositoryMappings;
   const selectedGitLabProduct = activeGitLabProducts.find((product) => product.id === gitlabForm.selectedProductId);
+
+  useEffect(() => {
+    if (!hasJiraProducts && activeIntegration === "jira") {
+      setActiveIntegration("ai");
+    }
+  }, [activeIntegration, hasJiraProducts]);
 
   useEffect(() => {
     setJiraForm((current) => {
@@ -39914,27 +41017,29 @@ function IntegrationConfigurationPanel({
   return (
     <div className="integration-settings-layout">
       <aside className="integration-secondary-sidebar" aria-label="Integration providers">
-        <button
-          className={`integration-provider-button ${activeIntegration === "jira" ? "is-active" : ""}`}
-          type="button"
-          aria-pressed={activeIntegration === "jira"}
-          onClick={() => setActiveIntegration("jira")}
-        >
-          <span className="integration-provider-heading">
-            <span className="integration-provider-icon">
-              <TegelIcon name="route" size="18px" />
+        {hasJiraProducts ? (
+          <button
+            className={`integration-provider-button ${activeIntegration === "jira" ? "is-active" : ""}`}
+            type="button"
+            aria-pressed={activeIntegration === "jira"}
+            onClick={() => setActiveIntegration("jira")}
+          >
+            <span className="integration-provider-heading">
+              <span className="integration-provider-icon">
+                <TegelIcon name="route" size="18px" />
+              </span>
+              <span>
+                <strong>Jira</strong>
+                <small>Issue sync and handoff</small>
+              </span>
             </span>
-            <span>
-              <strong>Jira</strong>
-              <small>Issue sync and handoff</small>
+            <span className={`integration-provider-status ${config.integrations.jira.enabled ? "is-active" : "is-inactive"}`}>
+              {config.integrations.jira.enabled ? "Enabled" : "Disabled"}
             </span>
-          </span>
-          <span className={`integration-provider-status ${config.integrations.jira.enabled ? "is-active" : "is-inactive"}`}>
-            {config.integrations.jira.enabled ? "Enabled" : "Disabled"}
-          </span>
-          <span className="integration-provider-meta">Project {config.integrations.jira.defaultProjectKey || "not set"}</span>
-          <span className="integration-provider-meta">{jiraForm.token ? "Local token saved" : `Token ${getJiraTokenStatus(config.integrations.jira).toLowerCase()}`}</span>
-        </button>
+            <span className="integration-provider-meta">Project {config.integrations.jira.defaultProjectKey || "not set"}</span>
+            <span className="integration-provider-meta">{jiraForm.token ? "Local token saved" : `Token ${getJiraTokenStatus(config.integrations.jira).toLowerCase()}`}</span>
+          </button>
+        ) : null}
 
         <button
           className={`integration-provider-button ${activeIntegration === "ai" ? "is-active" : ""}`}
@@ -39948,7 +41053,7 @@ function IntegrationConfigurationPanel({
             </span>
             <span>
               <strong>AI</strong>
-              <small>Chat and Jira writing</small>
+              <small>{hasJiraProducts ? "Chat and Jira writing" : "Chat and portal writing"}</small>
             </span>
           </span>
           <span className={`integration-provider-status ${config.integrations.ai.enabled ? "is-active" : "is-inactive"}`}>
@@ -40034,7 +41139,7 @@ function IntegrationConfigurationPanel({
       </aside>
 
       <div className="integration-settings-main">
-        {activeIntegration === "jira" ? (
+        {activeIntegration === "jira" && hasJiraProducts ? (
           <div className="integration-settings-grid" aria-label="Jira settings">
             <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveJiraConfig}>
               <h3>Jira settings</h3>
@@ -40607,7 +41712,7 @@ function IntegrationConfigurationPanel({
                   <p className="admin-hint">No product repositories mapped yet.</p>
                 )}
                 <p className="admin-hint">
-                  Groups and projects are loaded from the GitLab token permissions. Select a product and project, then save the mapping for Jira requirement reviews.
+                  Groups and projects are loaded from the GitLab token permissions. Select a product and project, then save the mapping for requirement reviews.
                 </p>
               </div>
               <div className="integration-operation-panel">
@@ -40788,14 +41893,16 @@ function IntegrationConfigurationPanel({
                 <span>Graph endpoint</span>
                 <strong>{microsoftGraphEventEndpoint}</strong>
                 <span>Required scopes</span>
-                <strong>{entraRequiredScopes.join(", ")}</strong>
+                <strong>{entraRequiredScopes.join(", ")} (login)</strong>
+                <span>Meeting scopes</span>
+                <strong>{entraMeetingScopes.join(", ")}</strong>
                 <span>Admin consent URL</span>
                 <strong>{buildEntraAdminConsentUrl(entraForm) || "Complete app ID, tenant, and redirect URI first"}</strong>
                 <span>Storage</span>
                 <strong>Browser localStorage, env fallback supported</strong>
               </div>
               <p className="admin-hint">
-                Add this redirect URI to the Entra app registration as a Single-page application URI. These values are public MSAL settings used by the Outlook/Teams meeting modal; no client secret is needed for delegated browser sign-in. If users see Need admin approval, an Entra tenant admin must grant consent for the Graph permissions.
+                Add this redirect URI to the Entra app registration as a Single-page application URI. Sign-in only requests User.Read. Calendar/meeting scopes are requested when creating a meeting; if that step shows Need admin approval, an Entra admin must grant consent for those permissions.
               </p>
               <div className="admin-form-actions">
                 <button
@@ -40839,7 +41946,7 @@ function IntegrationConfigurationPanel({
                 <span>Redirect URI</span>
                 <strong>{entraForm.redirectUri || "Not configured"}</strong>
                 <span>Permissions</span>
-                <strong>{entraRequiredScopes.length} delegated scopes</strong>
+                <strong>User.Read login · meeting scopes on demand</strong>
                 <span>Meeting timezone</span>
                 <strong>Europe/Stockholm</strong>
               </div>
@@ -41217,6 +42324,9 @@ function AdminConfigTable({
   const getResizeLabel = (column: AdminConfigTableColumn) => {
     return `Resize ${typeof column.label === "string" ? column.label : column.key} column`;
   };
+  const getCardLabel = (column: AdminConfigTableColumn) => {
+    return typeof column.label === "string" ? column.label : "Select";
+  };
 
   return (
     <section className="admin-config-table-card" aria-labelledby={tableId}>
@@ -41271,7 +42381,7 @@ function AdminConfigTable({
                   key={row.id}
                 >
                   {columns.map((column) => (
-                    <td className={column.className} key={`${row.id}-${column.key}`}>
+                    <td className={column.className} data-label={getCardLabel(column)} key={`${row.id}-${column.key}`}>
                       {row.cells[column.key] ?? null}
                     </td>
                   ))}
@@ -41557,15 +42667,8 @@ function AdminCheckbox({
 function AdminFormActions({ editing, onCancel }: { editing: boolean; onCancel: () => void }) {
   return (
     <div className="admin-form-actions">
-      {editing ? (
-        <button className="secondary-button" type="button" onClick={onCancel}>
-          Cancel
-        </button>
-      ) : null}
-      <button className="primary-button" type="submit">
-        <TegelIcon name="save" size="16px" />
-        {editing ? "Save changes" : "Create"}
-      </button>
+      {editing ? <TegelButton text="Cancel" variant="secondary" onClick={onCancel} /> : null}
+      <TegelButton iconName="save" text={editing ? "Save changes" : "Create"} type="submit" />
     </div>
   );
 }
@@ -43467,37 +44570,5 @@ function CommentPanel({
         </form>
       ) : null}
     </section>
-  );
-}
-
-function PanelHeader({
-  title,
-  description,
-  iconName
-}: {
-  title: string;
-  description: string;
-  iconName: TegelIconName;
-}) {
-  return (
-    <header className="panel-header">
-      <div className="panel-icon">
-        <TegelIcon name={iconName} size="19px" />
-      </div>
-      <div>
-        <h2>{title}</h2>
-        <p>{description}</p>
-      </div>
-    </header>
-  );
-}
-
-function EmptyState({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="empty-state">
-      <TegelIcon name="info" size="20px" />
-      <strong>{title}</strong>
-      <p>{body}</p>
-    </div>
   );
 }

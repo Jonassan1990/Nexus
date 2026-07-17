@@ -1,14 +1,8 @@
-import {
-  InteractionRequiredAuthError,
-  PublicClientApplication,
-  type AccountInfo,
-  type Configuration
-} from "@azure/msal-browser";
+import { acquireGraphMeetingAccessToken, getActiveMsalAccount } from "@/lib/auth/msal-instance";
+import { getAccountEmail } from "@/lib/auth/msal-config";
 
 const graphBaseUrl = "https://graph.microsoft.com/v1.0";
 const defaultTimeZone = "Europe/Stockholm";
-const graphScopes = ["User.Read", "Calendars.ReadWrite", "OnlineMeetings.ReadWrite"];
-const localIntegrationSecretsStorageKey = "nexus-integration-secrets-v1";
 
 type GraphEventAttendee = {
   emailAddress: {
@@ -56,6 +50,7 @@ export type CreateOutlookMeetingResult = {
   joinUrl: string;
   isOnlineMeeting: boolean;
   onlineMeetingProvider: string;
+  organizerEmail: string;
 };
 
 class MicrosoftGraphClientError extends Error {
@@ -67,163 +62,27 @@ class MicrosoftGraphClientError extends Error {
   }
 }
 
-let graphClient: PublicClientApplication | null = null;
-let graphClientInit: Promise<PublicClientApplication> | null = null;
-let graphClientConfigKey = "";
-
-function readLocalEntraConfig(): { clientId: string; tenantId: string; redirectUri: string } {
-  if (typeof window === "undefined") {
-    return { clientId: "", tenantId: "", redirectUri: "" };
-  }
-
+export async function getGraphToken(): Promise<string> {
   try {
-    const savedSecrets = window.localStorage.getItem(localIntegrationSecretsStorageKey);
-    const parsedSecrets = savedSecrets ? JSON.parse(savedSecrets) as {
-      entraClientId?: string;
-      entraTenantId?: string;
-      entraRedirectUri?: string;
-    } : {};
-
-    return {
-      clientId: parsedSecrets.entraClientId?.trim() ?? "",
-      tenantId: parsedSecrets.entraTenantId?.trim() ?? "",
-      redirectUri: parsedSecrets.entraRedirectUri?.trim() ?? ""
-    };
-  } catch {
-    return { clientId: "", tenantId: "", redirectUri: "" };
-  }
-}
-
-function getMicrosoftGraphConfig(): { clientId: string; tenantId: string; redirectUri: string } {
-  const localConfig = readLocalEntraConfig();
-  const envClientId = (
-    process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_CLIENT_ID ??
-    process.env.NEXT_PUBLIC_MICROSOFT_CLIENT_ID ??
-    ""
-  ).trim();
-  const envTenantId = (
-    process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_TENANT_ID ??
-    process.env.NEXT_PUBLIC_MICROSOFT_TENANT_ID ??
-    ""
-  ).trim();
-  const clientId = localConfig.clientId || envClientId;
-  const tenantId = localConfig.tenantId || envTenantId;
-  const redirectUri =
-    localConfig.redirectUri ||
-    (process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_REDIRECT_URI ?? "").trim() ||
-    (typeof window !== "undefined" ? window.location.origin : "");
-  const missing = [
-    clientId ? "" : "NEXT_PUBLIC_MICROSOFT_GRAPH_CLIENT_ID",
-    tenantId ? "" : "NEXT_PUBLIC_MICROSOFT_GRAPH_TENANT_ID"
-  ].filter(Boolean);
-
-  if (missing.length > 0) {
+    return await acquireGraphMeetingAccessToken();
+  } catch (error) {
     throw new MicrosoftGraphClientError(
-      "Microsoft Graph sign-in is not configured.",
-      missing.map((name) => `${name} is required.`)
+      error instanceof Error ? error.message : "Failed to acquire a Microsoft Graph access token."
     );
   }
-
-  return { clientId, tenantId, redirectUri };
 }
 
-async function getMsalClient(): Promise<PublicClientApplication> {
-  if (typeof window === "undefined") {
-    throw new MicrosoftGraphClientError("Microsoft Graph sign-in is only available in the browser.");
-  }
+export function getSignedInGraphUser(): { displayName: string; email: string } | null {
+  const account = getActiveMsalAccount();
 
-  const { clientId, tenantId, redirectUri } = getMicrosoftGraphConfig();
-  const nextConfigKey = [clientId, tenantId, redirectUri].join("|");
-
-  if (graphClientConfigKey && graphClientConfigKey !== nextConfigKey) {
-    graphClient = null;
-    graphClientInit = null;
-  }
-
-  if (graphClient) {
-    return graphClient;
-  }
-
-  if (!graphClientInit) {
-    graphClientInit = (async () => {
-      const configuration: Configuration = {
-        auth: {
-          clientId,
-          authority: `https://login.microsoftonline.com/${tenantId}`,
-          redirectUri
-        },
-        cache: {
-          cacheLocation: "sessionStorage"
-        }
-      };
-      const client = new PublicClientApplication(configuration);
-
-      await client.initialize();
-      graphClient = client;
-      graphClientConfigKey = nextConfigKey;
-
-      return client;
-    })();
-  }
-
-  return graphClientInit;
-}
-
-function selectGraphAccount(accounts: AccountInfo[]): AccountInfo | null {
-  if (accounts.length === 0) {
+  if (!account) {
     return null;
   }
 
-  return accounts[0];
-}
-
-export async function getGraphToken(): Promise<string> {
-  const client = await getMsalClient();
-  const activeAccount = client.getActiveAccount() ?? selectGraphAccount(client.getAllAccounts());
-
-  if (!activeAccount) {
-    const loginResult = await client.loginPopup({ scopes: graphScopes });
-
-    client.setActiveAccount(loginResult.account);
-
-    if (!loginResult.accessToken) {
-      throw new MicrosoftGraphClientError("Microsoft Graph sign-in did not return an access token.");
-    }
-
-    return loginResult.accessToken;
-  }
-
-  try {
-    const silentResult = await client.acquireTokenSilent({
-      account: activeAccount,
-      scopes: graphScopes
-    });
-
-    client.setActiveAccount(silentResult.account);
-
-    if (!silentResult.accessToken) {
-      throw new MicrosoftGraphClientError("Microsoft Graph silent token acquisition did not return an access token.");
-    }
-
-    return silentResult.accessToken;
-  } catch (error) {
-    if (!(error instanceof InteractionRequiredAuthError)) {
-      throw error;
-    }
-
-    const popupResult = await client.acquireTokenPopup({
-      account: activeAccount,
-      scopes: graphScopes
-    });
-
-    client.setActiveAccount(popupResult.account);
-
-    if (!popupResult.accessToken) {
-      throw new MicrosoftGraphClientError("Microsoft Graph token popup did not return an access token.");
-    }
-
-    return popupResult.accessToken;
-  }
+  return {
+    displayName: account.name?.trim() || account.username || "Signed-in user",
+    email: getAccountEmail(account)
+  };
 }
 
 function normalizeDateTimeValue(value: string): string {
@@ -289,6 +148,7 @@ async function fetchGraphEvent(accessToken: string, eventId: string): Promise<Gr
 
 export async function createOutlookMeeting(input: CreateOutlookMeetingInput): Promise<CreateOutlookMeetingResult> {
   const accessToken = await getGraphToken();
+  const signedInUser = getSignedInGraphUser();
   const bodyContent = buildMeetingBody(input);
   const graphPayload = {
     subject: input.title.trim(),
@@ -355,6 +215,7 @@ export async function createOutlookMeeting(input: CreateOutlookMeetingInput): Pr
     joinUrl,
     isOnlineMeeting: Boolean(eventWithOnlineMeeting.isOnlineMeeting ?? createdEvent.isOnlineMeeting),
     onlineMeetingProvider:
-      eventWithOnlineMeeting.onlineMeetingProvider ?? createdEvent.onlineMeetingProvider ?? ""
+      eventWithOnlineMeeting.onlineMeetingProvider ?? createdEvent.onlineMeetingProvider ?? "",
+    organizerEmail: signedInUser?.email ?? ""
   };
 }

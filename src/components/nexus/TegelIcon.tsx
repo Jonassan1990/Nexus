@@ -1,21 +1,11 @@
 "use client";
 
-import { defineCustomElements, TdsIcon } from "@scania/tegel-react";
+import { TdsIcon } from "@scania/tegel-react";
 import type { ComponentProps } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { ensureTegelElements } from "./TegelProvider";
 
 export type TegelIconName = NonNullable<ComponentProps<typeof TdsIcon>["name"]>;
-
-let areTegelElementsDefined = false;
-
-function ensureTegelElements(): void {
-  if (areTegelElementsDefined) {
-    return;
-  }
-
-  defineCustomElements();
-  areTegelElementsDefined = true;
-}
 
 export function TegelIcon({
   name,
@@ -28,9 +18,23 @@ export function TegelIcon({
   title?: string;
   className?: string;
 }) {
+  const [mounted, setMounted] = useState(false);
+
   useEffect(() => {
     ensureTegelElements();
+    setMounted(true);
   }, []);
+
+  if (!mounted) {
+    return (
+      <span
+        aria-hidden={!title}
+        className={`tegel-icon-fallback ${className}`.trim()}
+        style={{ width: size, height: size }}
+        title={title}
+      />
+    );
+  }
 
   return (
     <TdsIcon

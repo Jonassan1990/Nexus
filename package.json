@@ -7,20 +7,27 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:graph-calendar": "node scripts/graph-calendar-test.mjs",
+    "outbox:process": "node scripts/process-outbox.mjs",
+    "test:a11y": "playwright test",
+    "test:a11y:ui": "playwright test --ui"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.14.0",
-    "@scania/tegel": "^1.54.0",
-    "@scania/tegel-react": "^1.54.0",
+    "@scania/tegel": "^1.59.1",
+    "@scania/tegel-react": "^1.59.1",
     "@types/nodemailer": "^8.0.0",
+    "dotenv": "^17.4.2",
     "next": "^16.2.7",
     "nodemailer": "^8.0.8",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@eslint/eslintrc": "^3.2.0",
+    "@playwright/test": "^1.61.1",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
@@ -31,5 +38,13 @@
   },
   "overrides": {
     "postcss": "^8.5.15"
-  }
+  },
+  "description": "Modern enterprise governance and support portal prototype built with Next.js, React, and TypeScript.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

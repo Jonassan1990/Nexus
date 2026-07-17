@@ -14,6 +14,7 @@ import {
 } from "@/lib/jira-attachments";
 import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
+import { enqueueOutboxJob } from "@/lib/local-database";
 
 export const runtime = "nodejs";
 
@@ -65,6 +66,29 @@ export async function POST(request: NextRequest) {
 
   if (errors.length > 0) {
     return errorResponse("validation_failed", "Jira task creation request failed validation.", errors);
+  }
+
+  if (process.env.NEXUS_OUTBOX_JIRA === "1") {
+    const job = enqueueOutboxJob({
+      type: "jira_create",
+      payload: {
+        ticketKey: payload.issue?.sourceTicketKey?.trim() || summary,
+        summary,
+        issue: payload.issue ?? {},
+        projectKey: config.defaultProjectKey,
+        issueType: config.defaultIssueType
+      }
+    });
+
+    return NextResponse.json(
+      {
+        data: {
+          status: "queued",
+          outboxJobId: job.id
+        }
+      },
+      { status: 202 }
+    );
   }
 
   const description =

@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import { isValidEmail, type SmtpActionConfig } from "@/lib/integration-actions";
 import {
   claimNotificationDelivery,
+  enqueueOutboxJob,
   markNotificationDeliveryFailed,
   markNotificationDeliverySent
 } from "@/lib/local-database";
@@ -127,6 +128,40 @@ export async function POST(request: NextRequest) {
     }))
     .filter((recipient) => recipient.address);
   const idempotencyKey = payload.idempotencyKey?.trim() || "";
+
+  // When enabled, persist to outbox for AWS/local workers instead of sending inline.
+  if (process.env.NEXUS_OUTBOX_EMAIL === "1") {
+    const job = enqueueOutboxJob({
+      type: "email_notification",
+      payload: {
+        idempotencyKey: idempotencyKey || undefined,
+        config: {
+          enabled: config.enabled,
+          host: config.host,
+          port: config.port,
+          security: config.security,
+          fromName: config.fromName,
+          fromEmail: config.fromEmail
+        },
+        message: {
+          to: message.to,
+          subject: message.subject,
+          body: message.body,
+          htmlBody: message.htmlBody
+        }
+      }
+    });
+
+    return NextResponse.json(
+      {
+        data: {
+          status: "queued",
+          outboxJobId: job.id
+        }
+      },
+      { status: 202 }
+    );
+  }
 
   if (idempotencyKey) {
     let deliveryClaim: ReturnType<typeof claimNotificationDelivery>;
