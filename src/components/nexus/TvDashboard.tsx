@@ -34,29 +34,39 @@ export function TvDashboard() {
           <strong>{breached}</strong>
         </div>
       </section>
-      <section className="tv-ticket-grid">
-        {tickets.map((ticket) => {
-          const health = summarizeWorkflowHealth(ticket);
+      <section className="tv-ticket-grid" aria-live="polite">
+        {tickets.length === 0 ? (
+          <div className="tv-empty-state">
+            <TegelIcon name="info" size="28px" />
+            <div>
+              <h2>No tickets to display</h2>
+              <p>New or active tickets will appear here when they are available.</p>
+            </div>
+          </div>
+        ) : (
+          tickets.map((ticket) => {
+            const health = summarizeWorkflowHealth(ticket);
 
-          return (
-            <article className={`tv-ticket state-${ticket.slaState}`} key={ticket.key}>
-              <div className="tv-ticket-top">
-                <strong>{ticket.key}</strong>
-                <span>{ticket.slaLabel}</span>
-              </div>
-              <h2>{ticket.title}</h2>
-              <p>
-                {ticket.product} · {ticket.site}
-              </p>
-              <div className="tv-progress">
-                <TegelIcon name="route" size="22px" />
-                <span>
-                  {health.completed}/{health.total} gates complete
-                </span>
-              </div>
-            </article>
-          );
-        })}
+            return (
+              <article className={`tv-ticket state-${ticket.slaState}`} key={ticket.key}>
+                <div className="tv-ticket-top">
+                  <strong>{ticket.key}</strong>
+                  <span>{ticket.slaLabel}</span>
+                </div>
+                <h2>{ticket.title}</h2>
+                <p>
+                  {ticket.product} · {ticket.site}
+                </p>
+                <div className="tv-progress">
+                  <TegelIcon name="route" size="22px" />
+                  <span>
+                    {health.completed}/{health.total} gates complete
+                  </span>
+                </div>
+              </article>
+            );
+          })
+        )}
       </section>
     </main>
   );

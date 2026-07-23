@@ -8,20 +8,29 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "ci": "npm run lint && npm run typecheck && npm run build",
     "test:graph-calendar": "node scripts/graph-calendar-test.mjs",
     "outbox:process": "node scripts/process-outbox.mjs",
     "test:a11y": "playwright test",
     "test:a11y:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.4.0",
     "@scania/tegel": "^1.59.1",
     "@scania/tegel-react": "^1.59.1",
-    "@types/nodemailer": "^8.0.0",
+    "@tanstack/react-query": "^5.101.4",
+    "@tanstack/react-table": "^8.21.3",
+    "date-fns": "^4.4.0",
     "dotenv": "^17.4.2",
-    "next": "^16.2.7",
-    "nodemailer": "^8.0.8",
+    "next": "^16.2.11",
+    "nodemailer": "^9.0.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-hook-form": "^7.82.0",
+    "sonner": "^2.0.7",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
@@ -30,13 +39,19 @@
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
+    "@types/nodemailer": "^8.0.0",
     "eslint": "^9.17.0",
-    "eslint-config-next": "^16.2.6",
+    "eslint-config-next": "^16.2.11",
     "playwright": "^1.60.0",
+    "prettier": "^3.9.6",
     "typescript": "^5.7.2"
   },
   "overrides": {
     "postcss": "^8.5.15"
+  },
+  "engines": {
+    "node": ">=20.9.0",
+    "npm": ">=10"
   },
   "description": "Modern enterprise governance and support portal prototype built with Next.js, React, and TypeScript.",
   "main": "index.js",

@@ -79,6 +79,126 @@ body {
   overflow-x: hidden;
 }
 
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  padding: 10px 14px;
+  color: #ffffff;
+  background: var(--accent);
+  border: 2px solid #ffffff;
+  box-shadow: var(--focus-ring);
+  transform: translateY(-160%);
+  transition: transform var(--motion-fast) ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.app-recovery,
+.app-loading {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(760px 360px at 12% 0%, rgba(22, 65, 127, 0.12), transparent 60%),
+    var(--bg);
+}
+
+.app-recovery-card,
+.app-loading-card {
+  width: min(100%, 560px);
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+}
+
+.app-recovery-card {
+  display: grid;
+  gap: 14px;
+}
+
+.app-recovery-eyebrow {
+  margin: 0;
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-recovery-card h1 {
+  margin: 0;
+  font-size: clamp(26px, 5vw, 36px);
+  line-height: 1.1;
+}
+
+.app-recovery-card p:not(.app-recovery-eyebrow) {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.app-recovery-card .primary-button {
+  width: fit-content;
+  margin-top: 6px;
+}
+
+.app-loading-card {
+  display: grid;
+  gap: 18px;
+}
+
+.app-loading-bar,
+.app-loading-panel {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-muted);
+}
+
+.app-loading-bar::after,
+.app-loading-panel::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  transform: translateX(-100%);
+  animation: appLoadingShimmer 1.4s ease-in-out infinite;
+  content: "";
+}
+
+.app-loading-bar {
+  height: 12px;
+}
+
+.app-loading-bar-short {
+  width: 28%;
+}
+
+.app-loading-bar-title {
+  width: 72%;
+  height: 32px;
+}
+
+.app-loading-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.app-loading-panel {
+  min-height: 120px;
+}
+
+@keyframes appLoadingShimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
 button,
 input,
 select,
@@ -14190,6 +14310,35 @@ tds-button:active {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
+}
+
+.tv-empty-state {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  gap: 14px;
+  min-height: 160px;
+  padding: 24px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.tv-empty-state svg,
+.tv-empty-state tds-icon {
+  flex: 0 0 auto;
+  color: var(--accent-2);
+}
+
+.tv-empty-state h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.tv-empty-state p {
+  margin: 6px 0 0;
+  line-height: 1.5;
 }
 
 .tv-ticket {

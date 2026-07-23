@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { getLocalDatabasePath, readAdminConfig, saveAdminConfig } from "@/lib/local-database";
 import type { AdminConfig } from "@/lib/admin-config";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const configRequestSchema = z.object({
+  config: z.unknown()
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -78,8 +83,21 @@ export function GET() {
 }
 
 export async function PUT(request: NextRequest) {
-  const payload = (await request.json().catch(() => null)) as { config?: unknown } | null;
-  const config = payload?.config;
+  const parsedPayload = configRequestSchema.safeParse(await request.json().catch(() => null));
+
+  if (!parsedPayload.success) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "invalid_json",
+          message: "Request body must include a config object."
+        }
+      },
+      { status: 400 }
+    );
+  }
+
+  const config = parsedPayload.data.config;
   const errors = validateAdminConfig(config);
 
   if (errors.length > 0) {

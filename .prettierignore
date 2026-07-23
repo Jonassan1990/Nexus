@@ -1,0 +1,7 @@
+.next
+.env*
+coverage
+db/*.sqlite
+node_modules
+playwright-report
+test-results

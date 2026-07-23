@@ -15451,7 +15451,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           onSelectModule={openModule}
         />
         <div className="workspace">
-          <main className="workspace-main">
+          <main className="workspace-main" id="main-content" tabIndex={-1}>
             <ModuleHeader
               activeModule={activeModule}
               hasJiraProducts={hasJiraProductConfig}

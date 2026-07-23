@@ -1,5 +1,3 @@
-"use client";
-
 import { NexusPortal } from "@/components/nexus/NexusPortal";
 
 export default function Home() {
