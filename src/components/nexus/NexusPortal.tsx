@@ -15437,12 +15437,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         notifications={visibleNotifications}
         isMounted={isTegelShellMounted}
       />
-      <div
-        className={`app-shell ${isSideNavCompact ? "is-side-nav-compact" : ""}`}
-        style={{
-          gridTemplateColumns: isSideNavCompact ? "56px minmax(0, 1fr)" : "272px minmax(0, 1fr)"
-        }}
-      >
+      <div className={`app-shell ${isSideNavCompact ? "is-side-nav-compact" : ""}`}>
         <PortalSidebar
           isMobileOpen={isSideMenuOpen}
           activeModule={activeModule}
@@ -15968,40 +15963,53 @@ function TopBar({
 
           <div className="tegel-profile-body">
             <div className="tegel-mobile-profile-controls">
-              <label className="tegel-mobile-profile-field">
+              <div className="tegel-mobile-profile-field">
                 <span>{t.shell.user}</span>
-                <select
+                <div
+                  className="tegel-mobile-profile-picker"
+                  role="listbox"
                   aria-label={t.shell.user}
-                  value={selectedPersonaId}
-                  onChange={(event) => {
-                    setIsAttentionOpen(false);
-                    setIsNotificationPopoverOpen(false);
-                    onPersonaChange(event.target.value);
-                  }}
                 >
                   {rolePersonaOptions.map((item) => (
-                    <option key={item.id} value={item.id}>
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="option"
+                      aria-selected={item.id === selectedPersonaId}
+                      className={item.id === selectedPersonaId ? "is-selected" : ""}
+                      onClick={() => {
+                        if (item.id === selectedPersonaId) {
+                          return;
+                        }
+
+                        setIsAttentionOpen(false);
+                        setIsNotificationPopoverOpen(false);
+                        onPersonaChange(item.id);
+                      }}
+                    >
                       {formatPersonaOptionLabel(item)}
-                    </option>
+                    </button>
                   ))}
-                </select>
-              </label>
-              <label className="tegel-mobile-profile-field">
+                </div>
+              </div>
+              <div className="tegel-mobile-profile-field">
                 <span>{t.shell.language}</span>
-                <select
-                  aria-label={t.shell.language}
-                  value={locale}
-                  onChange={(event) => {
-                    setLocale(event.target.value as AppLocale);
-                  }}
-                >
+                <div className="tegel-mobile-locale-picker" role="group" aria-label={t.shell.language}>
                   {(Object.keys(localeLabels) as AppLocale[]).map((code) => (
-                    <option key={code} value={code}>
+                    <button
+                      key={code}
+                      type="button"
+                      className={locale === code ? "is-selected" : ""}
+                      aria-pressed={locale === code}
+                      onClick={() => {
+                        setLocale(code);
+                      }}
+                    >
                       {localeLabels[code]}
-                    </option>
+                    </button>
                   ))}
-                </select>
-              </label>
+                </div>
+              </div>
             </div>
             <dl className="tegel-profile-summary" aria-label="Access and coverage">
               <div>
