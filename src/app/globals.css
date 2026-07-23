@@ -13168,10 +13168,9 @@ tds-button:active {
 .release-plan-ticket-header,
 .release-plan-ticket-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.35fr) minmax(100px, 0.65fr) minmax(130px, 0.8fr) minmax(
-      130px,
-      0.8fr
-    ) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr);
+  grid-template-columns:
+    minmax(180px, 1.35fr) minmax(100px, 0.65fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr)
+    minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr);
   gap: 10px;
   align-items: center;
 }
@@ -13522,10 +13521,9 @@ tds-button:active {
 .sprint-task-table-header,
 .sprint-task-table-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1.35fr) minmax(100px, 0.65fr) minmax(150px, 0.95fr) minmax(
-      140px,
-      0.8fr
-    ) minmax(130px, 0.75fr) minmax(86px, 0.45fr) minmax(86px, 0.45fr) minmax(140px, 0.8fr);
+  grid-template-columns:
+    minmax(210px, 1.35fr) minmax(100px, 0.65fr) minmax(150px, 0.95fr) minmax(140px, 0.8fr)
+    minmax(130px, 0.75fr) minmax(86px, 0.45fr) minmax(86px, 0.45fr) minmax(140px, 0.8fr);
   min-width: 1110px;
 }
 
@@ -14584,10 +14582,9 @@ tds-button:active {
 
   .release-plan-ticket-header,
   .release-plan-ticket-row {
-    grid-template-columns: minmax(170px, 1.35fr) minmax(96px, 0.65fr) minmax(120px, 0.75fr) minmax(
-        120px,
-        0.75fr
-      ) minmax(110px, 0.7fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr);
+    grid-template-columns:
+      minmax(170px, 1.35fr) minmax(96px, 0.65fr) minmax(120px, 0.75fr) minmax(120px, 0.75fr)
+      minmax(110px, 0.7fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr);
   }
 
   .sprint-lane-grid {
