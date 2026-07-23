@@ -15708,7 +15708,9 @@ function TopBar({
   }
 
   return (
-    <div className="tegel-header-shell">
+    <div
+      className={`tegel-header-shell${isAttentionOpen || isNotificationPopoverOpen ? " is-mobile-popover-open" : ""}`}
+    >
       <div className="mobile-tegel-header" aria-label="Nexus-support portal mobile header">
         <button
           className="mobile-header-button"
@@ -15718,14 +15720,37 @@ function TopBar({
         >
           <span className="mobile-menu-lines" aria-hidden="true" />
         </button>
-        <strong>Nexus-support portal</strong>
-        <button
-          className="mobile-header-button"
-          type="button"
-          aria-label="Application switcher"
-        >
-          <span className="mobile-launcher-dots" aria-hidden="true" />
-        </button>
+        <div className="mobile-header-title">
+          <strong>{t.shell.portalTitle}</strong>
+          <span>{selectedPersona.displayName}</span>
+        </div>
+        <div className="mobile-header-actions">
+          <button
+            ref={notificationTriggerRef}
+            className="mobile-header-button mobile-header-icon-button"
+            type="button"
+            aria-controls="header-notification-panel"
+            aria-expanded={isNotificationPopoverOpen}
+            aria-label={`${headerNotificationBadgeCount} notifications`}
+            onClick={openNotificationPopover}
+          >
+            <TegelIcon name="notification" size="20px" />
+            {headerNotificationBadgeCount > 0 ? (
+              <span className="tegel-notification-count">{headerNotificationBadgeCount}</span>
+            ) : null}
+          </button>
+          <button
+            ref={profileTriggerRef}
+            className="mobile-header-button mobile-header-profile-button"
+            type="button"
+            aria-controls="header-attention-panel"
+            aria-expanded={isAttentionOpen}
+            aria-label={`Profile ${selectedPersona.displayName}`}
+            onClick={openProfilePopover}
+          >
+            {selectedPersona.initials}
+          </button>
+        </div>
       </div>
       <TdsHeader aria-label="Nexus-support portal header">
         <TdsHeaderHamburger
@@ -15942,6 +15967,42 @@ function TopBar({
           </header>
 
           <div className="tegel-profile-body">
+            <div className="tegel-mobile-profile-controls">
+              <label className="tegel-mobile-profile-field">
+                <span>{t.shell.user}</span>
+                <select
+                  aria-label={t.shell.user}
+                  value={selectedPersonaId}
+                  onChange={(event) => {
+                    setIsAttentionOpen(false);
+                    setIsNotificationPopoverOpen(false);
+                    onPersonaChange(event.target.value);
+                  }}
+                >
+                  {rolePersonaOptions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {formatPersonaOptionLabel(item)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="tegel-mobile-profile-field">
+                <span>{t.shell.language}</span>
+                <select
+                  aria-label={t.shell.language}
+                  value={locale}
+                  onChange={(event) => {
+                    setLocale(event.target.value as AppLocale);
+                  }}
+                >
+                  {(Object.keys(localeLabels) as AppLocale[]).map((code) => (
+                    <option key={code} value={code}>
+                      {localeLabels[code]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <dl className="tegel-profile-summary" aria-label="Access and coverage">
               <div>
                 <dt>Primary role</dt>

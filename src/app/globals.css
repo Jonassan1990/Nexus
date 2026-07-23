@@ -14562,21 +14562,132 @@ tds-button:active {
 
   .mobile-tegel-header {
     display: grid;
-    grid-template-columns: var(--topbar-height) minmax(0, 1fr) var(--topbar-height);
+    grid-template-columns: var(--topbar-height) minmax(0, 1fr) auto;
     align-items: center;
+    gap: 4px;
     height: var(--topbar-height);
     min-height: var(--topbar-height);
+    padding-right: 4px;
     color: #ffffff;
     background: var(--accent);
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
-  .mobile-tegel-header strong {
+  .mobile-header-title {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+    padding-right: 4px;
+  }
+
+  .mobile-header-title strong {
     overflow: hidden;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 760;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .mobile-header-title span {
+    overflow: hidden;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .mobile-header-icon-button {
+    position: relative;
+  }
+
+  .mobile-header-profile-button {
+    width: 36px;
+    height: 36px;
+    margin-right: 6px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    background: #ffffff;
+    border-radius: 999px;
+  }
+
+  .mobile-header-icon-button .tegel-notification-count {
+    top: 8px;
+    right: 6px;
+  }
+
+  .tegel-mobile-profile-controls {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, #ffffff);
+  }
+
+  .tegel-mobile-profile-field {
+    display: grid;
+    gap: 6px;
+  }
+
+  .tegel-mobile-profile-field > span {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .tegel-mobile-profile-field select {
+    width: 100%;
+    min-height: 42px;
+    padding: 8px 10px;
+    color: var(--text);
+    font: inherit;
+    background: var(--surface-strong);
+    border: 1px solid var(--border);
+    border-radius: 0;
+  }
+
+  .tegel-header-shell.is-mobile-popover-open::after {
+    position: fixed;
+    inset: var(--topbar-height) 0 0 0;
+    z-index: 500;
+    background: rgba(4, 30, 66, 0.42);
+    content: "";
+    pointer-events: none;
+  }
+
+  .tegel-profile-popover,
+  .tegel-notification-popover {
+    position: fixed;
+    top: calc(var(--topbar-height) + 8px);
+    right: 8px;
+    left: 8px;
+    z-index: 520;
+    width: auto;
+    max-height: calc(100dvh - var(--topbar-height) - 16px);
+  }
+
+  .tegel-profile-popover::before,
+  .tegel-notification-popover::before {
+    display: none;
+  }
+
+  .module-header h1,
+  .module-header h2,
+  .panel-header strong {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .mobile-header-button {
