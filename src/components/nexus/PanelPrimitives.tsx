@@ -1,4 +1,3 @@
-import { TegelBanner } from "./TegelUi";
 import { TegelIcon } from "./TegelIcon";
 import type { TegelIconName } from "./TegelIcon";
 
@@ -28,8 +27,14 @@ export function PanelHeader({
 
 export function EmptyState({ title, body }: { title: string; body: string }) {
   return (
-    <div className="empty-state tegel-empty-state">
-      <TegelBanner header={title} iconName="info" subheader={body} variant="information" />
+    <div className="empty-state tegel-empty-state" role="status">
+      <span className="tegel-empty-state-icon" aria-hidden="true">
+        <TegelIcon name="info" size="20px" />
+      </span>
+      <div className="tegel-empty-state-copy">
+        <strong>{title}</strong>
+        <p>{body}</p>
+      </div>
     </div>
   );
 }

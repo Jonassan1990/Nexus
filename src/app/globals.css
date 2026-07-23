@@ -2312,13 +2312,44 @@ tds-button:active {
 }
 
 .tegel-empty-state {
-  padding: 0;
-  border: 0;
-  background: transparent;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 14px 16px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent-2) 24%, var(--border));
+  border-left: 4px solid var(--accent-2);
 }
 
-.tegel-empty-state tds-banner {
-  width: 100%;
+.tegel-empty-state-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--accent-2);
+}
+
+.tegel-empty-state-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tegel-empty-state-copy strong {
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.tegel-empty-state-copy p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .tegel-text-field-fallback {
