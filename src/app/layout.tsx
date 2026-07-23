@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { AuthProvider } from "@/components/auth/AuthProvider";
 import { TegelProvider } from "@/components/nexus/TegelProvider";
 import { LocaleProvider } from "@/lib/i18n/LocaleProvider";
 import "./globals.css";
@@ -24,9 +23,7 @@ export default function RootLayout({
     <html className="scania" lang="en" suppressHydrationWarning>
       <body className="tds-mode-light" suppressHydrationWarning>
         <TegelProvider>
-          <LocaleProvider>
-            <AuthProvider>{children}</AuthProvider>
-          </LocaleProvider>
+          <LocaleProvider>{children}</LocaleProvider>
         </TegelProvider>
       </body>
     </html>

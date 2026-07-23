@@ -136,10 +136,8 @@ import type { JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { nextActionLabel, summarizeWorkflowHealth } from "@/lib/workflow-engine";
 import {
   createOutlookMeeting,
-  getSignedInGraphUser,
   type CreateOutlookMeetingResult
 } from "@/lib/microsoft-graph-client";
-import { useAuth, type AuthUser } from "@/components/auth/AuthProvider";
 import { TegelIcon } from "./TegelIcon";
 import type { TegelIconName } from "./TegelIcon";
 import { TegelButton, TegelTag, TegelTextField } from "./TegelUi";
@@ -1666,8 +1664,6 @@ function addNotificationReadKeysForPersona(
 
 const defaultAiTestPrompt = "Tell me about yourself.";
 const legacyAiTestPrompt = "Write a short Jira handoff summary for a production support request.";
-const entraRequiredScopes = ["User.Read"] as const;
-const entraMeetingScopes = ["User.Read", "Calendars.ReadWrite", "OnlineMeetings.ReadWrite"] as const;
 const microsoftGraphEventEndpoint = "https://graph.microsoft.com/v1.0/me/events";
 const ticketStateOptions = [
   { value: "intake", label: "Intake" },
@@ -11260,7 +11256,6 @@ function createTicketFromForm(
 }
 
 export function NexusPortal() {
-  const { user: authUser, logout: logoutEntra } = useAuth();
   const [activeModule, setActiveModule] = useState<ModuleKey>("dashboard");
   const [config, setConfig] = useState<AdminConfig>(() => createEmptyAdminConfig());
   const [hasLoadedConfig, setHasLoadedConfig] = useState(false);
@@ -11291,7 +11286,6 @@ export function NexusPortal() {
   const emailNotificationsInFlightRef = useRef<Set<string>>(new Set());
   const initialTicketLinkHandledRef = useRef(false);
   const startupJiraSyncHandledRef = useRef(false);
-  const hasSyncedEntraPersonaRef = useRef(false);
 
   const roleOptions = useMemo(() => getRoleOptions(config), [config]);
   const rolePersonaOptions = useMemo(() => buildRolePersonaOptions(config), [config]);
@@ -11305,38 +11299,6 @@ export function NexusPortal() {
   );
   const selectedPersona = getPersonaForRole(config, selectedUserPersona, role);
 
-  useEffect(() => {
-    if (hasSyncedEntraPersonaRef.current || !authUser?.email || !rolePersonaOptions.length) {
-      return;
-    }
-
-    const authEmail = authUser.email.trim().toLowerCase();
-    const authName = (authUser.displayName || "").trim().toLowerCase();
-    const emailMatches = rolePersonaOptions.filter(
-      (option) => option.email.trim().toLowerCase() === authEmail
-    );
-    const matched =
-      emailMatches.find((option) => option.displayName.trim().toLowerCase() === authName) ??
-      emailMatches.find((option) => personaHasRole(option, "admin")) ??
-      emailMatches.find((option) => option.productIds.includes(ALL_SCOPE_VALUE)) ??
-      emailMatches[0];
-
-    hasSyncedEntraPersonaRef.current = true;
-
-    if (!matched) {
-      return;
-    }
-
-    setSelectedPersonaId(matched.id);
-    setActingRoleAccessEnabled(false);
-    const nextSessionPersona = getSessionRolePersona(config, matched, false);
-    const nextModuleRole = getPersonaRoleForModule(nextSessionPersona, activeModule);
-    setRole(nextModuleRole ?? nextSessionPersona.role);
-
-    if (!nextModuleRole) {
-      setActiveModule(firstAccessibleModuleForPersona(nextSessionPersona));
-    }
-  }, [activeModule, authUser, config, rolePersonaOptions]);
   const hasJiraProductConfig = configUsesJira(config);
   const personaScopedTickets = useMemo(
     () => getPersonaScopedTickets(ticketList, config, selectedPersona),
@@ -15446,7 +15408,6 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
     <div className="app-frame scania">
       <TopBar
         attentionItems={headerAttentionItems}
-        authUser={authUser}
         config={config}
         activePersona={selectedPersona}
         actingRoleAccessEnabled={actingRoleAccessEnabled}
@@ -15457,16 +15418,21 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         ticketSearchQuery={query}
         onConfigChange={setConfig}
         onActingRoleAccessChange={changeActingRoleAccess}
-        onLogout={() => {
-          void logoutEntra();
-        }}
         onPersonaChange={changePersona}
         onOpenModule={openModule}
         onOpenNotification={openNotificationItem}
         onOpenNotifications={() => setActiveModule("notifications")}
         onTicketSearchChange={setQuery}
         onTicketSearchSubmit={searchAndOpenTicket}
-        onToggleMenu={() => setIsSideMenuOpen((isOpen) => !isOpen)}
+        onToggleMenu={() => {
+          setIsSideMenuOpen((isOpen) => {
+            const next = !isOpen;
+            if (next) {
+              setIsSideNavCompact(false);
+            }
+            return next;
+          });
+        }}
         notificationCount={visibleNotifications.filter((item) => item.unread).length}
         notifications={visibleNotifications}
         isMounted={isTegelShellMounted}
@@ -15478,6 +15444,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         }}
       >
         <PortalSidebar
+          isMobileOpen={isSideMenuOpen}
           activeModule={activeModule}
           attentionCounts={attentionCountsByModule}
           items={visibleNavItems}
@@ -15567,7 +15534,6 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
 
 function TopBar({
   attentionItems,
-  authUser,
   config,
   activePersona,
   actingRoleAccessEnabled,
@@ -15581,7 +15547,6 @@ function TopBar({
   isMounted,
   onConfigChange,
   onActingRoleAccessChange,
-  onLogout,
   onPersonaChange,
   onOpenModule,
   onOpenNotification,
@@ -15591,7 +15556,6 @@ function TopBar({
   onOpenNotifications
 }: {
   attentionItems: HeaderAttentionItem[];
-  authUser: AuthUser | null;
   config: AdminConfig;
   activePersona: RolePersonaOption;
   actingRoleAccessEnabled: boolean;
@@ -15605,7 +15569,6 @@ function TopBar({
   isMounted: boolean;
   onConfigChange: Dispatch<SetStateAction<AdminConfig>>;
   onActingRoleAccessChange: (enabled: boolean) => void;
-  onLogout: () => void;
   onPersonaChange: (personaId: string) => void;
   onOpenModule: (module: ModuleKey) => void;
   onOpenNotification: (notification: NotificationItem) => void;
@@ -15973,11 +15936,6 @@ function TopBar({
                 <p className="tegel-profile-kicker">{t.shell.activeUser}</p>
                 <strong>{selectedPersona.displayName}</strong>
                 <span>{selectedPersona.email || "No email configured"}</span>
-                {authUser?.email ? (
-                  <small className="tegel-profile-signed-in">
-                    {t.shell.signedInAs} {authUser.email}
-                  </small>
-                ) : null}
               </div>
             </div>
             <span className="tegel-profile-role-pill">{activePersona.roleLabel}</span>
@@ -16026,17 +15984,6 @@ function TopBar({
             ) : null}
           </div>
 
-          {authUser ? (
-            <footer className="tegel-profile-footer">
-              <TegelButton
-                className="tegel-profile-signout"
-                fullbleed
-                text={t.shell.signOut}
-                variant="secondary"
-                onClick={onLogout}
-              />
-            </footer>
-          ) : null}
         </section>
       ) : null}
       {isNotificationPopoverOpen ? (
@@ -26038,7 +25985,6 @@ function OutlookMeetingModal({
   const [submitState, setSubmitState] = useState<"idle" | "submitting">("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState<CreateOutlookMeetingResult | null>(null);
-  const organizer = getSignedInGraphUser();
   const isSubmitting = submitState === "submitting";
 
   useEffect(() => {
@@ -26071,11 +26017,6 @@ function OutlookMeetingModal({
 
   async function submitForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!getSignedInGraphUser()) {
-      setError("Sign in with Microsoft Entra ID before creating a meeting.");
-      return;
-    }
 
     const title = form.title.trim();
     const attendeeValidation = parseOutlookMeetingAttendees(form.attendees);
@@ -26161,17 +26102,9 @@ function OutlookMeetingModal({
         <form className="ticket-form outlook-meeting-form" onSubmit={(event) => void submitForm(event)}>
           <div className="outlook-meeting-organizer form-field-wide" role="status">
             <strong>Organizer</strong>
-            {organizer ? (
-              <span>
-                {organizer.displayName}
-                {organizer.email ? ` (${organizer.email})` : ""} — meeting is created on this Entra
-                account&apos;s calendar.
-              </span>
-            ) : (
-              <span className="form-error">
-                No Entra session found. Sign in again before creating a meeting.
-              </span>
-            )}
+            <span>
+              Meetings are created via the configured Microsoft Graph service account (server-side).
+            </span>
           </div>
           <label className="form-field form-field-wide">
             <span>Meeting title</span>
@@ -26270,7 +26203,7 @@ function OutlookMeetingModal({
             <button className="secondary-button" type="button" onClick={onClose} disabled={isSubmitting}>
               Close
             </button>
-            <button className="primary-button" type="submit" disabled={isSubmitting || !organizer}>
+            <button className="primary-button" type="submit" disabled={isSubmitting}>
               <TegelIcon name="calendar" size="16px" />
               {isSubmitting ? "Creating..." : "Create meeting"}
             </button>
@@ -31837,6 +31770,9 @@ type EntraConfigFormState = {
 };
 
 type IntegrationProviderKey = "jira" | "smtp" | "ai" | "gitlab" | "entra";
+
+const entraRequiredScopes = ["User.Read"] as const;
+const entraMeetingScopes = ["User.Read", "Calendars.ReadWrite", "OnlineMeetings.ReadWrite"] as const;
 
 type IntegrationTestResult = {
   tone: "success" | "warning" | "danger";
@@ -41086,30 +41022,6 @@ function IntegrationConfigurationPanel({
           <span className="integration-provider-meta">{config.integrations.gitlab.apiBaseUrl || "Base URL not configured"}</span>
           <span className="integration-provider-meta">
             {gitlabForm.token ? "Local GitLab token saved" : `Token ${getGitLabTokenStatus(config.integrations.gitlab).toLowerCase()}`}
-          </span>
-        </button>
-
-        <button
-          className={`integration-provider-button ${activeIntegration === "entra" ? "is-active" : ""}`}
-          type="button"
-          aria-pressed={activeIntegration === "entra"}
-          onClick={() => setActiveIntegration("entra")}
-        >
-          <span className="integration-provider-heading">
-            <span className="integration-provider-icon">
-              <TegelIcon name="global" size="18px" />
-            </span>
-            <span>
-              <strong>Entra/Azure</strong>
-              <small>Graph calendar auth</small>
-            </span>
-          </span>
-          <span className={`integration-provider-status ${entraForm.clientId && entraForm.tenantId ? "is-active" : "is-inactive"}`}>
-            {entraForm.clientId && entraForm.tenantId ? "Configured" : "Missing"}
-          </span>
-          <span className="integration-provider-meta">{entraForm.tenantId || "Tenant not set"}</span>
-          <span className="integration-provider-meta">
-            {entraForm.redirectUri ? "Redirect URI configured" : "Redirect URI not set"}
           </span>
         </button>
 

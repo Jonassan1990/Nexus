@@ -14,7 +14,6 @@
     "test:a11y:ui": "playwright test --ui"
   },
   "dependencies": {
-    "@azure/msal-browser": "^5.14.0",
     "@scania/tegel": "^1.59.1",
     "@scania/tegel-react": "^1.59.1",
     "@types/nodemailer": "^8.0.0",

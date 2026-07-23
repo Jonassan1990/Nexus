@@ -18,6 +18,8 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+The portal opens directly — no sign-in screen. Select your persona from the header profile menu.
+
 Tickets and admin configuration persist to a local SQLite database at
 `db/nexus-local.sqlite` by default. Set `NEXUS_LOCAL_DB_PATH` to use a different
 local database file. The generated SQLite files are intentionally ignored by git.

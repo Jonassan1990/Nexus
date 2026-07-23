@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 import { TegelIcon, type TegelIconName } from "./TegelIcon";
 
@@ -15,6 +15,7 @@ export function PortalSidebar<TModule extends string>({
   attentionCounts,
   items,
   isCompact,
+  isMobileOpen,
   isMounted,
   onClose,
   onCollapse,
@@ -25,6 +26,7 @@ export function PortalSidebar<TModule extends string>({
   attentionCounts: Partial<Record<TModule, number>>;
   items: readonly PortalNavItem<TModule>[];
   isCompact: boolean;
+  isMobileOpen?: boolean;
   isMounted: boolean;
   onClose: () => void;
   onCollapse: () => void;
@@ -35,6 +37,28 @@ export function PortalSidebar<TModule extends string>({
   const railWidthPx = isCompact ? 56 : 272;
   const { t } = useLocale();
   const moduleLabels = t.modules as Record<string, string>;
+
+  useEffect(() => {
+    if (!isMobileOpen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isMobileOpen, onClose]);
 
   if (!isMounted) {
     return <aside className="tegel-side-fallback" aria-hidden="true" />;
@@ -65,66 +89,77 @@ export function PortalSidebar<TModule extends string>({
   }
 
   return (
-    <aside
-      className={`tegel-side-shell ${isCompact ? "is-compact" : "is-expanded"}`}
-      aria-label="Primary navigation"
-      onMouseEnter={expandSideNavigation}
-      onMouseLeave={() => {
-        hoverExpandLockedRef.current = false;
-      }}
-      style={{
-        width: railWidthPx,
-        maxWidth: railWidthPx,
-        minWidth: 0
-      }}
-    >
-      <nav className="tegel-side-menu" aria-label="Modules">
-        {items.map((item) => {
-          const attentionCount = attentionCounts[item.key] ?? 0;
-          const isSelected = activeModule === item.key;
-          const label = moduleLabels[item.key] ?? item.label;
-          const navButtonLabel = isCompact
-            ? `${label}${attentionCount > 0 ? `, ${attentionCount} item${attentionCount === 1 ? "" : "s"} need attention` : ""}`
-            : undefined;
-
-          return (
-            <button
-              key={item.key}
-              className={`tegel-side-menu-button${isSelected ? " is-selected" : ""}`}
-              aria-current={isSelected ? "page" : undefined}
-              aria-label={navButtonLabel}
-              onClick={() => {
-                onSelectModule(item.key);
-                onClose();
-              }}
-              title={isCompact ? label : undefined}
-              type="button"
-            >
-              <TegelIcon name={item.iconName} />
-              <span className="tegel-side-menu-label">{label}</span>
-              {attentionCount > 0 ? (
-                <span
-                  aria-label={`${attentionCount} ${label} item${attentionCount === 1 ? "" : "s"} need attention`}
-                  className="tegel-side-attention-count"
-                >
-                  {attentionCount}
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </nav>
-      <button
-        className="tegel-side-toggle"
-        type="button"
-        aria-expanded={!isCompact}
-        aria-label={isCompact ? t.shell.expandNav : t.shell.collapseNav}
-        title={isCompact ? t.shell.expandNav : t.shell.collapseNav}
-        onClick={toggleSideNavigation}
+    <>
+      {isMobileOpen ? (
+        <button
+          type="button"
+          className="mobile-nav-scrim"
+          aria-label="Close navigation"
+          onClick={onClose}
+        />
+      ) : null}
+      <aside
+        className={`tegel-side-shell ${isCompact ? "is-compact" : "is-expanded"}${isMobileOpen ? " is-mobile-open" : ""}`}
+        aria-label="Primary navigation"
+        aria-hidden={isMobileOpen === false ? undefined : false}
+        onMouseEnter={expandSideNavigation}
+        onMouseLeave={() => {
+          hoverExpandLockedRef.current = false;
+        }}
+        style={{
+          width: railWidthPx,
+          maxWidth: railWidthPx,
+          minWidth: 0
+        }}
       >
-        <TegelIcon name="chevron_right" size="18px" />
-        {!isCompact ? <span>{t.shell.collapseNav}</span> : null}
-      </button>
-    </aside>
+        <nav className="tegel-side-menu" aria-label="Modules">
+          {items.map((item) => {
+            const attentionCount = attentionCounts[item.key] ?? 0;
+            const isSelected = activeModule === item.key;
+            const label = moduleLabels[item.key] ?? item.label;
+            const navButtonLabel = isCompact
+              ? `${label}${attentionCount > 0 ? `, ${attentionCount} item${attentionCount === 1 ? "" : "s"} need attention` : ""}`
+              : undefined;
+
+            return (
+              <button
+                key={item.key}
+                className={`tegel-side-menu-button${isSelected ? " is-selected" : ""}`}
+                aria-current={isSelected ? "page" : undefined}
+                aria-label={navButtonLabel}
+                onClick={() => {
+                  onSelectModule(item.key);
+                  onClose();
+                }}
+                title={isCompact ? label : undefined}
+                type="button"
+              >
+                <TegelIcon name={item.iconName} />
+                <span className="tegel-side-menu-label">{label}</span>
+                {attentionCount > 0 ? (
+                  <span
+                    aria-label={`${attentionCount} ${label} item${attentionCount === 1 ? "" : "s"} need attention`}
+                    className="tegel-side-attention-count"
+                  >
+                    {attentionCount}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </nav>
+        <button
+          className="tegel-side-toggle"
+          type="button"
+          aria-expanded={!isCompact}
+          aria-label={isCompact ? t.shell.expandNav : t.shell.collapseNav}
+          title={isCompact ? t.shell.expandNav : t.shell.collapseNav}
+          onClick={toggleSideNavigation}
+        >
+          <TegelIcon name="chevron_right" size="18px" />
+          {!isCompact ? <span>{t.shell.collapseNav}</span> : null}
+        </button>
+      </aside>
+    </>
   );
 }
