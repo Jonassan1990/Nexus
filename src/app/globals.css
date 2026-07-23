@@ -15163,6 +15163,96 @@ tds-button:active {
     padding-bottom: 2px;
   }
 
+  /*
+   * User administration needs a purpose-built card treatment on phones.
+   * Desktop column widths are otherwise still applied to the cells after the
+   * table switches to display:block, leaving only a few pixels for values.
+   */
+  .admin-user-table tbody {
+    gap: 12px;
+  }
+
+  .admin-user-table tbody tr {
+    position: relative;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
+    padding: 16px;
+    border-color: color-mix(in srgb, var(--border) 88%, #ffffff);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .admin-user-table th,
+  .admin-user-table td,
+  .admin-user-table th:nth-child(n),
+  .admin-user-table td:nth-child(n) {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .admin-user-table td {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .admin-user-table td::before {
+    line-height: 1.2;
+  }
+
+  .admin-user-table td:nth-child(2),
+  .admin-user-table td:nth-child(9),
+  .admin-user-table td:nth-child(10) {
+    grid-column: 1 / -1;
+  }
+
+  .admin-user-table .admin-user-select-column {
+    position: absolute;
+    top: 18px;
+    right: 16px;
+    display: block;
+    width: auto;
+    padding: 0;
+  }
+
+  .admin-user-table .admin-user-select-column::before,
+  .admin-user-table td:nth-child(2)::before,
+  .admin-user-table-actions::before {
+    display: none;
+  }
+
+  .admin-user-table td:nth-child(2) {
+    display: block;
+    padding: 0 36px 12px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, #ffffff);
+  }
+
+  .admin-user-table td:nth-child(2) .admin-user-cell-stack {
+    gap: 4px;
+  }
+
+  .admin-user-table td:nth-child(2) .admin-user-cell-stack strong {
+    font-size: 16px;
+    line-height: 1.2;
+  }
+
+  .admin-user-table td:nth-child(2) .admin-user-cell-stack span {
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .admin-user-table td:nth-child(9) {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 2px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 78%, #ffffff);
+  }
+
+  .admin-user-table td:nth-child(9)::before {
+    margin-right: auto;
+  }
+
   .admin-user-actions-column,
   .admin-user-table-actions,
   .admin-config-table-actions-cell {
@@ -15182,8 +15272,16 @@ tds-button:active {
 
   .admin-user-table-actions .secondary-button,
   .admin-row-edit-button {
-    width: fit-content;
-    min-width: 104px;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+  }
+
+  .admin-user-table tbody tr.is-selected {
+    background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+    border-color: color-mix(in srgb, var(--accent-2) 42%, var(--border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-2) 20%, transparent);
   }
 
   .admin-user-form-grid {
