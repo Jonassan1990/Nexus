@@ -88,7 +88,9 @@ function validatePayload(payload: SendNotificationEmailPayload): string[] {
   const hasPassword = Boolean(config.password?.trim());
 
   if (hasUsername !== hasPassword) {
-    errors.push("SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP.");
+    errors.push(
+      "SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP."
+    );
   }
 
   if (payload.idempotencyKey !== undefined) {
@@ -169,7 +171,8 @@ export async function POST(request: NextRequest) {
     try {
       deliveryClaim = claimNotificationDelivery(idempotencyKey, recipients.length);
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : "Unknown notification delivery claim failure.";
+      const messageText =
+        error instanceof Error ? error.message : "Unknown notification delivery claim failure.";
 
       console.error(
         JSON.stringify({
@@ -321,6 +324,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return errorResponse("smtp_send_failed", "SMTP server rejected or failed the notification email.", [messageText], 502);
+    return errorResponse(
+      "smtp_send_failed",
+      "SMTP server rejected or failed the notification email.",
+      [messageText],
+      502
+    );
   }
 }

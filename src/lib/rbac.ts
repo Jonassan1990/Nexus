@@ -44,9 +44,6 @@ export function canView(role: RoleKey, visibility: VisibilityLevel): boolean {
   return visibilityMatrix[visibility].includes(role);
 }
 
-export function filterVisible<T extends { visibility: VisibilityLevel }>(
-  items: T[],
-  role: RoleKey
-): T[] {
+export function filterVisible<T extends { visibility: VisibilityLevel }>(items: T[], role: RoleKey): T[] {
   return items.filter((item) => canView(role, item.visibility));
 }

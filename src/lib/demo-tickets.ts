@@ -506,7 +506,8 @@ export function buildDemoTickets(): Ticket[] {
       risk: "Low",
       slaLabel: "15d response target",
       slaState: "healthy",
-      description: "Quality team requested longer retention for calibration audit evidence to support ISO audits.",
+      description:
+        "Quality team requested longer retention for calibration audit evidence to support ISO audits.",
       dynamicFields: {
         retentionPeriod: "24 months",
         storageImpact: "Approx. 120 GB additional"

@@ -111,9 +111,7 @@ function getTicketPayload(payload: unknown): unknown {
 export function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const query = searchParams.get("q")?.trim().toLowerCase() ?? "";
-  const role = isRoleKey(searchParams.get("role"))
-    ? searchParams.get("role")
-    : "requester";
+  const role = isRoleKey(searchParams.get("role")) ? searchParams.get("role") : "requester";
 
   const result = listTickets()
     .filter((ticket) => {

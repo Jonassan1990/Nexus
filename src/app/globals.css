@@ -44,8 +44,12 @@
   --sidebar-width: 272px;
   --sidebar-compact-width: 56px;
   --topbar-height: 56px;
-  --font-sans: var(--type-body-02-font-family, var(--scania-font-family-default, "Scania Sans")), "Segoe UI", Arial, sans-serif;
-  --font-display: var(--type-headline-01-font-family, var(--scania-font-family-display, "Scania Sans Headline")), var(--font-sans);
+  --font-sans:
+    var(--type-body-02-font-family, var(--scania-font-family-default, "Scania Sans")), "Segoe UI", Arial,
+    sans-serif;
+  --font-display:
+    var(--type-headline-01-font-family, var(--scania-font-family-display, "Scania Sans Headline")),
+    var(--font-sans);
 }
 
 * {
@@ -103,9 +107,7 @@ body {
   min-height: 100dvh;
   place-items: center;
   padding: 24px;
-  background:
-    radial-gradient(760px 360px at 12% 0%, rgba(22, 65, 127, 0.12), transparent 60%),
-    var(--bg);
+  background: radial-gradient(760px 360px at 12% 0%, rgba(22, 65, 127, 0.12), transparent 60%), var(--bg);
 }
 
 .app-recovery-card,
@@ -756,7 +758,11 @@ tds-icon,
   border-radius: var(--radius-sm);
   text-align: left;
   box-shadow: var(--shadow-xs);
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .tegel-header-notification-row:hover,
@@ -1031,7 +1037,11 @@ tds-icon,
   border-radius: var(--radius-sm);
   text-align: left;
   box-shadow: var(--shadow-xs);
-  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .tegel-attention-item:hover,
@@ -1380,7 +1390,10 @@ tds-icon,
   display: block;
   width: 48px;
   height: 48px;
-  background-image: var(--scania-symbol-svg-local, var(--tds-background-image-scania-symbol-svg-local, var(--scania-symbol-svg)));
+  background-image: var(
+    --scania-symbol-svg-local,
+    var(--tds-background-image-scania-symbol-svg-local, var(--scania-symbol-svg))
+  );
   background-repeat: no-repeat;
   background-position: center;
   background-size: contain;
@@ -1396,7 +1409,10 @@ tds-icon,
   display: block;
   width: 104px;
   height: 16px;
-  background-image: var(--scania-wordmark-svg-local, var(--tds-background-image-scania-wordmark-svg-local, var(--scania-wordmark-svg)));
+  background-image: var(
+    --scania-wordmark-svg-local,
+    var(--tds-background-image-scania-wordmark-svg-local, var(--scania-wordmark-svg))
+  );
   background-repeat: no-repeat;
   background-position: left center;
   background-size: contain;
@@ -1444,7 +1460,10 @@ tds-icon,
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease;
 }
 
 .nav-item svg,
@@ -1589,7 +1608,10 @@ tds-icon,
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
 }
 
 .icon-button:hover,
@@ -1672,8 +1694,7 @@ tds-icon,
   padding: 20px 22px 18px;
   overflow: hidden;
   background:
-    linear-gradient(115deg, color-mix(in srgb, var(--accent) 10%, #ffffff) 0%, #ffffff 42%),
-    var(--surface);
+    linear-gradient(115deg, color-mix(in srgb, var(--accent) 10%, #ffffff) 0%, #ffffff 42%), var(--surface);
   border: 1px solid var(--border);
   border-radius: 0;
   box-shadow: var(--shadow-sm);
@@ -1761,7 +1782,9 @@ tds-icon,
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .module-search:focus-within {
@@ -2014,7 +2037,9 @@ tds-icon,
 }
 
 .ticket-list-table tbody tr {
-  transition: background 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .ticket-list-table tbody tr:nth-child(even) {
@@ -2250,7 +2275,9 @@ tds-icon,
 }
 
 tds-button {
-  transition: transform var(--motion-fast) var(--motion-ease), filter var(--motion-fast) ease;
+  transition:
+    transform var(--motion-fast) var(--motion-ease),
+    filter var(--motion-fast) ease;
 }
 
 tds-button:active {
@@ -3757,7 +3784,10 @@ tds-button:active {
   border-radius: var(--radius);
   text-align: left;
   box-shadow: var(--shadow-xs);
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .approval-list-item:hover,
@@ -4612,7 +4642,11 @@ tds-button:active {
   color: var(--accent);
   background:
     radial-gradient(circle at center, var(--surface) 0 56%, transparent 57%),
-    conic-gradient(var(--success) 0 var(--done), var(--danger) var(--done) calc(var(--done) + var(--blocked)), color-mix(in srgb, var(--accent) 16%, #e8edf4) 0);
+    conic-gradient(
+      var(--success) 0 var(--done),
+      var(--danger) var(--done) calc(var(--done) + var(--blocked)),
+      color-mix(in srgb, var(--accent) 16%, #e8edf4) 0
+    );
   border-radius: 999px;
 }
 
@@ -4837,7 +4871,10 @@ tds-button:active {
   border-left: 4px solid var(--accent);
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .dashboard-attention-row:hover,
@@ -4973,7 +5010,11 @@ tds-button:active {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .queue-filter-bar button:hover,
@@ -5055,7 +5096,11 @@ tds-button:active {
   border-radius: var(--radius);
   box-shadow: var(--shadow-xs);
   text-align: left;
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .queue-row:hover,
@@ -5263,9 +5308,7 @@ tds-button:active {
   justify-content: space-between;
   gap: 18px;
   padding: 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.86)),
-    var(--surface);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.86)), var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
@@ -5378,7 +5421,10 @@ tds-button:active {
   font-size: 13px;
   font-weight: 760;
   white-space: nowrap;
-  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
 }
 
 .tabs button:hover,
@@ -5582,7 +5628,9 @@ tds-button:active {
   background: color-mix(in srgb, var(--accent) 7%, var(--surface-strong));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
   border-left-color: var(--accent-2);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent), var(--shadow-xs);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent),
+    var(--shadow-xs);
 }
 
 .ticket-lifecycle-step.lifecycle-waiting {
@@ -5747,17 +5795,23 @@ tds-button:active {
 
 .workflow-command-action.action-tone-critical {
   border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
-  box-shadow: inset 3px 0 0 var(--danger), var(--shadow-xs);
+  box-shadow:
+    inset 3px 0 0 var(--danger),
+    var(--shadow-xs);
 }
 
 .workflow-command-action.action-tone-active {
   border-color: color-mix(in srgb, var(--warning) 26%, var(--border));
-  box-shadow: inset 3px 0 0 var(--warning), var(--shadow-xs);
+  box-shadow:
+    inset 3px 0 0 var(--warning),
+    var(--shadow-xs);
 }
 
 .workflow-command-action.action-tone-complete {
   border-color: color-mix(in srgb, var(--success) 22%, var(--border));
-  box-shadow: inset 3px 0 0 var(--success), var(--shadow-xs);
+  box-shadow:
+    inset 3px 0 0 var(--success),
+    var(--shadow-xs);
 }
 
 .workflow-status-override {
@@ -5908,7 +5962,9 @@ tds-button:active {
   background: color-mix(in srgb, var(--accent) 6%, var(--surface-strong));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
   border-left-color: var(--accent-2);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 15%, transparent), var(--shadow-xs);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 15%, transparent),
+    var(--shadow-xs);
 }
 
 .workflow-step.step-waiting .step-body,
@@ -6053,7 +6109,11 @@ tds-button:active {
   border: 1px solid color-mix(in srgb, var(--border) 82%, #ffffff);
   border-radius: var(--radius);
   box-shadow: var(--shadow-xs);
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
 }
 
 .thread-row,
@@ -6075,7 +6135,9 @@ tds-button:active {
 .thread-list.is-expanded .thread-row {
   background: #ffffff;
   border-color: color-mix(in srgb, var(--accent-2) 34%, var(--border));
-  box-shadow: inset 4px 0 0 color-mix(in srgb, var(--accent-2) 80%, #ffffff), var(--shadow-sm);
+  box-shadow:
+    inset 4px 0 0 color-mix(in srgb, var(--accent-2) 80%, #ffffff),
+    var(--shadow-sm);
   animation: clarificationOpenHighlight 1800ms ease-out 0s 2;
 }
 
@@ -6524,7 +6586,10 @@ tds-button:active {
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-xs);
   cursor: pointer;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
 }
 
 .jira-queue-row:hover,
@@ -6532,7 +6597,9 @@ tds-button:active {
 .jira-queue-row.is-selected {
   background: var(--surface);
   border-color: color-mix(in srgb, var(--accent-2) 42%, var(--border));
-  box-shadow: inset 3px 0 0 var(--accent-2), var(--shadow-sm);
+  box-shadow:
+    inset 3px 0 0 var(--accent-2),
+    var(--shadow-sm);
   outline: none;
 }
 
@@ -7042,7 +7109,10 @@ tds-button:active {
   border: 1px solid color-mix(in srgb, var(--border) 84%, #ffffff);
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .gitlab-result-button:hover,
@@ -7403,7 +7473,11 @@ tds-button:active {
   font-size: 12px;
   font-weight: 740;
   text-align: left;
-  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease;
 }
 
 .escalation-summary-item:hover,
@@ -8818,7 +8892,9 @@ tds-button:active {
   gap: 18px;
   background: #ffffff;
   border-color: color-mix(in srgb, var(--accent-2) 28%, var(--border));
-  box-shadow: inset 4px 0 0 color-mix(in srgb, var(--accent-2) 76%, #ffffff), var(--shadow-sm);
+  box-shadow:
+    inset 4px 0 0 color-mix(in srgb, var(--accent-2) 76%, #ffffff),
+    var(--shadow-sm);
   animation: notificationOpenHighlight 1500ms ease-out 0s 2;
 }
 
@@ -8830,7 +8906,9 @@ tds-button:active {
 .notification-row.is-unread {
   background: color-mix(in srgb, var(--warning-soft) 44%, #ffffff);
   border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
-  box-shadow: inset 5px 0 0 var(--warning), 0 8px 22px rgba(77, 38, 10, 0.12);
+  box-shadow:
+    inset 5px 0 0 var(--warning),
+    0 8px 22px rgba(77, 38, 10, 0.12);
   animation: notificationAttentionPulse 1600ms ease-out 0s 3;
 }
 
@@ -9319,7 +9397,10 @@ tds-button:active {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
 }
 
 .admin-section-button svg,
@@ -9376,7 +9457,11 @@ tds-button:active {
   border: 1px solid color-mix(in srgb, var(--border) 84%, #ffffff);
   border-radius: var(--radius);
   box-shadow: var(--shadow-xs);
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
 }
 
 .admin-summary-card:hover,
@@ -9693,7 +9778,10 @@ tds-button:active {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   text-align: left;
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .database-table-button:hover,
@@ -9951,7 +10039,10 @@ tds-button:active {
   border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 760;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
 }
 
 .admin-master-tab:hover,
@@ -10113,7 +10204,10 @@ tds-button:active {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
   cursor: pointer;
   text-align: left;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
 }
 
 .admin-multi-select-trigger:hover {
@@ -10335,9 +10429,7 @@ tds-button:active {
   z-index: 2;
   margin: auto -22px -22px;
   padding: 12px 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), #ffffff 30%),
-    var(--surface);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), #ffffff 30%), var(--surface);
   border-top: 1px solid var(--border);
 }
 
@@ -11145,7 +11237,9 @@ tds-button:active {
 
 .workflow-preview-card.is-jira-creator {
   border-color: color-mix(in srgb, var(--success) 34%, var(--border));
-  box-shadow: inset 3px 0 0 var(--success), var(--shadow-sm);
+  box-shadow:
+    inset 3px 0 0 var(--success),
+    var(--shadow-sm);
 }
 
 .workflow-role-pill {
@@ -11508,9 +11602,7 @@ tds-button:active {
 
 .form-template-preview,
 .notification-template-preview {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.72)),
-    var(--surface);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.72)), var(--surface);
 }
 
 .preview-topline {
@@ -11558,23 +11650,33 @@ tds-button:active {
   background: var(--surface-strong);
   border: 1px solid color-mix(in srgb, var(--border) 84%, #ffffff);
   border-radius: var(--radius-sm);
-  box-shadow: inset 4px 0 0 var(--accent-2), var(--shadow-xs);
+  box-shadow:
+    inset 4px 0 0 var(--accent-2),
+    var(--shadow-xs);
 }
 
 .notification-envelope.severity-info {
-  box-shadow: inset 4px 0 0 var(--accent-2), var(--shadow-xs);
+  box-shadow:
+    inset 4px 0 0 var(--accent-2),
+    var(--shadow-xs);
 }
 
 .notification-envelope.severity-warning {
-  box-shadow: inset 4px 0 0 var(--warning), var(--shadow-xs);
+  box-shadow:
+    inset 4px 0 0 var(--warning),
+    var(--shadow-xs);
 }
 
 .notification-envelope.severity-critical {
-  box-shadow: inset 4px 0 0 var(--danger), var(--shadow-xs);
+  box-shadow:
+    inset 4px 0 0 var(--danger),
+    var(--shadow-xs);
 }
 
 .notification-envelope.severity-success {
-  box-shadow: inset 4px 0 0 var(--success), var(--shadow-xs);
+  box-shadow:
+    inset 4px 0 0 var(--success),
+    var(--shadow-xs);
 }
 
 .notification-envelope > div:first-child {
@@ -11673,14 +11775,12 @@ tds-button:active {
 
 .email-config-summary {
   background:
-    linear-gradient(135deg, rgba(4, 30, 66, 0.04), rgba(255, 255, 255, 0) 44%),
-    var(--surface-strong);
+    linear-gradient(135deg, rgba(4, 30, 66, 0.04), rgba(255, 255, 255, 0) 44%), var(--surface-strong);
 }
 
 .jira-config-summary {
   background:
-    linear-gradient(135deg, rgba(4, 30, 66, 0.055), rgba(255, 255, 255, 0) 46%),
-    var(--surface-strong);
+    linear-gradient(135deg, rgba(4, 30, 66, 0.055), rgba(255, 255, 255, 0) 46%), var(--surface-strong);
 }
 
 .integration-config-form {
@@ -11711,7 +11811,10 @@ tds-button:active {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-xs);
-  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .integration-provider-button:hover,
@@ -11724,7 +11827,9 @@ tds-button:active {
 }
 
 .integration-provider-button.is-active {
-  box-shadow: inset 3px 0 0 var(--accent), var(--shadow-sm);
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    var(--shadow-sm);
 }
 
 .integration-provider-heading {
@@ -11925,7 +12030,12 @@ tds-button:active {
   background: var(--surface-strong);
   border: 1px solid color-mix(in srgb, var(--border) 84%, #ffffff);
   border-radius: var(--radius-sm);
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font:
+    12px/1.5 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    "Liberation Mono",
+    monospace;
   white-space: pre-wrap;
 }
 
@@ -11998,7 +12108,11 @@ tds-button:active {
   border: 1px solid color-mix(in srgb, var(--border) 84%, #ffffff);
   border-radius: var(--radius);
   box-shadow: var(--shadow-xs);
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
 }
 
 .admin-editable-record:hover {
@@ -12450,7 +12564,9 @@ tds-button:active {
   content: "";
   background: var(--ji-surface);
   border-radius: inherit;
-  box-shadow: inset 0 0 0 1px var(--ji-border), inset 0 0 18px rgb(15 23 42 / 5%);
+  box-shadow:
+    inset 0 0 0 1px var(--ji-border),
+    inset 0 0 18px rgb(15 23 42 / 5%);
 }
 
 .jira-insight-donut strong,
@@ -13052,7 +13168,10 @@ tds-button:active {
 .release-plan-ticket-header,
 .release-plan-ticket-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.35fr) minmax(100px, 0.65fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr);
+  grid-template-columns: minmax(180px, 1.35fr) minmax(100px, 0.65fr) minmax(130px, 0.8fr) minmax(
+      130px,
+      0.8fr
+    ) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr);
   gap: 10px;
   align-items: center;
 }
@@ -13403,7 +13522,10 @@ tds-button:active {
 .sprint-task-table-header,
 .sprint-task-table-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1.35fr) minmax(100px, 0.65fr) minmax(150px, 0.95fr) minmax(140px, 0.8fr) minmax(130px, 0.75fr) minmax(86px, 0.45fr) minmax(86px, 0.45fr) minmax(140px, 0.8fr);
+  grid-template-columns: minmax(210px, 1.35fr) minmax(100px, 0.65fr) minmax(150px, 0.95fr) minmax(
+      140px,
+      0.8fr
+    ) minmax(130px, 0.75fr) minmax(86px, 0.45fr) minmax(86px, 0.45fr) minmax(140px, 0.8fr);
   min-width: 1110px;
 }
 
@@ -13480,7 +13602,10 @@ tds-button:active {
 
 .sla-card.is-clickable {
   cursor: pointer;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .sla-card.is-clickable:hover,
@@ -13532,8 +13657,7 @@ tds-button:active {
   gap: 10px;
   padding: 28px 24px;
   color: var(--text-muted);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 35%, #ffffff), #ffffff);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 35%, #ffffff), #ffffff);
   border: 1px dashed color-mix(in srgb, var(--accent-2) 28%, var(--border));
   border-radius: 0;
 }
@@ -13595,9 +13719,7 @@ tds-button:active {
   justify-content: space-between;
   gap: 16px;
   padding: 20px 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.86)),
-    var(--surface);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.86)), var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
@@ -13674,7 +13796,10 @@ tds-button:active {
   font-size: 14px;
   outline: none;
   box-shadow: none;
-  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background 120ms ease;
 }
 
 .form-field textarea {
@@ -13700,7 +13825,10 @@ tds-button:active {
   border: 1px solid color-mix(in srgb, var(--border) 90%, #ffffff);
   border-radius: var(--radius-sm);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
 }
 
 .rich-text-box:focus-within {
@@ -13945,7 +14073,9 @@ tds-button:active {
   opacity: 0;
   pointer-events: none;
   transform: translateY(4px);
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
 }
 
 .rich-text-image-preview-trigger:hover::after,
@@ -14454,7 +14584,10 @@ tds-button:active {
 
   .release-plan-ticket-header,
   .release-plan-ticket-row {
-    grid-template-columns: minmax(170px, 1.35fr) minmax(96px, 0.65fr) minmax(120px, 0.75fr) minmax(120px, 0.75fr) minmax(110px, 0.7fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr);
+    grid-template-columns: minmax(170px, 1.35fr) minmax(96px, 0.65fr) minmax(120px, 0.75fr) minmax(
+        120px,
+        0.75fr
+      ) minmax(110px, 0.7fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr) minmax(100px, 0.65fr);
   }
 
   .sprint-lane-grid {
@@ -14983,7 +15116,9 @@ tds-button:active {
     width: 24px;
     height: 2px;
     background: currentColor;
-    box-shadow: 0 -7px 0 currentColor, 0 7px 0 currentColor;
+    box-shadow:
+      0 -7px 0 currentColor,
+      0 7px 0 currentColor;
   }
 
   .mobile-launcher-dots {
@@ -16003,12 +16138,17 @@ tds-button:active {
   0%,
   100% {
     background: #ffffff;
-    box-shadow: inset 4px 0 0 color-mix(in srgb, var(--accent-2) 76%, #ffffff), var(--shadow-sm);
+    box-shadow:
+      inset 4px 0 0 color-mix(in srgb, var(--accent-2) 76%, #ffffff),
+      var(--shadow-sm);
   }
 
   50% {
     background: color-mix(in srgb, var(--accent-soft) 52%, #ffffff);
-    box-shadow: inset 4px 0 0 var(--accent-2), 0 0 0 3px color-mix(in srgb, var(--accent-2) 16%, transparent), var(--shadow-sm);
+    box-shadow:
+      inset 4px 0 0 var(--accent-2),
+      0 0 0 3px color-mix(in srgb, var(--accent-2) 16%, transparent),
+      var(--shadow-sm);
   }
 }
 
@@ -16016,12 +16156,17 @@ tds-button:active {
   0%,
   100% {
     background: color-mix(in srgb, var(--warning-soft) 44%, #ffffff);
-    box-shadow: inset 5px 0 0 var(--warning), 0 8px 22px rgba(77, 38, 10, 0.12);
+    box-shadow:
+      inset 5px 0 0 var(--warning),
+      0 8px 22px rgba(77, 38, 10, 0.12);
   }
 
   50% {
     background: color-mix(in srgb, var(--warning-soft) 76%, #ffffff);
-    box-shadow: inset 5px 0 0 var(--warning), 0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent), 0 12px 28px rgba(77, 38, 10, 0.18);
+    box-shadow:
+      inset 5px 0 0 var(--warning),
+      0 0 0 3px color-mix(in srgb, var(--warning) 22%, transparent),
+      0 12px 28px rgba(77, 38, 10, 0.18);
   }
 }
 
@@ -16029,12 +16174,17 @@ tds-button:active {
   0%,
   100% {
     background: #ffffff;
-    box-shadow: inset 4px 0 0 color-mix(in srgb, var(--accent-2) 80%, #ffffff), var(--shadow-sm);
+    box-shadow:
+      inset 4px 0 0 color-mix(in srgb, var(--accent-2) 80%, #ffffff),
+      var(--shadow-sm);
   }
 
   50% {
     background: color-mix(in srgb, var(--accent-soft) 46%, #ffffff);
-    box-shadow: inset 4px 0 0 var(--accent-2), 0 0 0 3px color-mix(in srgb, var(--accent-2) 16%, transparent), var(--shadow-sm);
+    box-shadow:
+      inset 4px 0 0 var(--accent-2),
+      0 0 0 3px color-mix(in srgb, var(--accent-2) 16%, transparent),
+      var(--shadow-sm);
   }
 }
 

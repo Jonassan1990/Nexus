@@ -235,9 +235,7 @@ export async function listGitLabProjects(
   limit = 50
 ): Promise<GitLabProjectResult[]> {
   const searchTerm = query.trim();
-  const path = groupId
-    ? `groups/${encodeURIComponent(String(groupId))}/projects`
-    : "projects";
+  const path = groupId ? `groups/${encodeURIComponent(String(groupId))}/projects` : "projects";
   const url = buildGitLabApiUrl(config, path, {
     search: searchTerm || undefined,
     membership: groupId ? undefined : true,

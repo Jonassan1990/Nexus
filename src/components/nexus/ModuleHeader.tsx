@@ -1,10 +1,7 @@
 "use client";
 
 import { useLocale } from "@/lib/i18n/LocaleProvider";
-import {
-  getScopedModuleHeaderDescription,
-  getScopedModuleHeaderTitle
-} from "@/lib/portal-copy";
+import { getScopedModuleHeaderDescription, getScopedModuleHeaderTitle } from "@/lib/portal-copy";
 import type { RoleKey, Ticket } from "@/lib/types";
 import { TegelButton } from "./TegelUi";
 import { TegelIcon, type TegelIconName } from "./TegelIcon";

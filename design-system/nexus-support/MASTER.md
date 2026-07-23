@@ -20,18 +20,18 @@
 
 ### Color Palette
 
-| Role | Hex | CSS Variable |
-|------|-----|--------------|
-| Primary | `#041e42` | `--accent` (Scania blue-800) |
-| On Primary | `#FFFFFF` | `--color-on-primary` |
-| Secondary | `#16417f` | `--accent-2` |
-| Accent/CTA | `#041e42` | `--accent` |
-| Background | `#F5F7FA` | `--bg` |
-| Foreground | `#0B1220` | `--text` |
-| Muted | `#F0F3F7` | `--surface-strong` |
-| Border | `#D7DDE7` | `--border` |
-| Destructive | `#480008` | `--danger` |
-| Ring | `#16417f` | `--accent-2` |
+| Role        | Hex       | CSS Variable                 |
+| ----------- | --------- | ---------------------------- |
+| Primary     | `#041e42` | `--accent` (Scania blue-800) |
+| On Primary  | `#FFFFFF` | `--color-on-primary`         |
+| Secondary   | `#16417f` | `--accent-2`                 |
+| Accent/CTA  | `#041e42` | `--accent`                   |
+| Background  | `#F5F7FA` | `--bg`                       |
+| Foreground  | `#0B1220` | `--text`                     |
+| Muted       | `#F0F3F7` | `--surface-strong`           |
+| Border      | `#D7DDE7` | `--border`                   |
+| Destructive | `#480008` | `--danger`                   |
+| Ring        | `#16417f` | `--accent-2`                 |
 
 **Color Notes:** Scania navy chrome + cool grey workspace. No purple.
 
@@ -44,25 +44,25 @@
 
 ### Spacing Variables
 
-*Density: 8/10 — Dense / Dashboard*
+_Density: 8/10 — Dense / Dashboard_
 
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--space-xs` | `2px` / `0.125rem` | Tight gaps |
-| `--space-sm` | `4px` / `0.25rem` | Icon gaps, inline spacing |
-| `--space-md` | `8px` / `0.5rem` | Standard padding |
-| `--space-lg` | `12px` / `0.75rem` | Section padding |
-| `--space-xl` | `16px` / `1rem` | Large gaps |
-| `--space-2xl` | `24px` / `1.5rem` | Section margins |
-| `--space-3xl` | `32px` / `2rem` | Hero padding |
+| Token         | Value              | Usage                     |
+| ------------- | ------------------ | ------------------------- |
+| `--space-xs`  | `2px` / `0.125rem` | Tight gaps                |
+| `--space-sm`  | `4px` / `0.25rem`  | Icon gaps, inline spacing |
+| `--space-md`  | `8px` / `0.5rem`   | Standard padding          |
+| `--space-lg`  | `12px` / `0.75rem` | Section padding           |
+| `--space-xl`  | `16px` / `1rem`    | Large gaps                |
+| `--space-2xl` | `24px` / `1.5rem`  | Section margins           |
+| `--space-3xl` | `32px` / `2rem`    | Hero padding              |
 
 ### Shadow Depths
 
-| Level | Value | Usage |
-|-------|-------|-------|
-| `--shadow-sm` | `0 1px 2px rgba(0,0,0,0.05)` | Subtle lift |
-| `--shadow-md` | `0 4px 6px rgba(0,0,0,0.1)` | Cards, buttons |
-| `--shadow-lg` | `0 10px 15px rgba(0,0,0,0.1)` | Modals, dropdowns |
+| Level         | Value                          | Usage                       |
+| ------------- | ------------------------------ | --------------------------- |
+| `--shadow-sm` | `0 1px 2px rgba(0,0,0,0.05)`   | Subtle lift                 |
+| `--shadow-md` | `0 4px 6px rgba(0,0,0,0.1)`    | Cards, buttons              |
+| `--shadow-lg` | `0 10px 15px rgba(0,0,0,0.1)`  | Modals, dropdowns           |
 | `--shadow-xl` | `0 20px 25px rgba(0,0,0,0.15)` | Hero images, featured cards |
 
 ---
@@ -74,7 +74,7 @@
 ```css
 /* Primary Button */
 .btn-primary {
-  background: #0369A1;
+  background: #0369a1;
   color: white;
   padding: 12px 24px;
   border-radius: 8px;
@@ -91,8 +91,8 @@
 /* Secondary Button */
 .btn-secondary {
   background: transparent;
-  color: #0F172A;
-  border: 2px solid #0F172A;
+  color: #0f172a;
+  border: 2px solid #0f172a;
   padding: 12px 24px;
   border-radius: 8px;
   font-weight: 600;
@@ -105,7 +105,7 @@
 
 ```css
 .card {
-  background: #F8FAFC;
+  background: #f8fafc;
   border-radius: 12px;
   padding: 24px;
   box-shadow: var(--shadow-md);
@@ -124,16 +124,16 @@
 ```css
 .input {
   padding: 12px 16px;
-  border: 1px solid #E2E8F0;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   font-size: 16px;
   transition: border-color 200ms ease;
 }
 
 .input:focus {
-  border-color: #0F172A;
+  border-color: #0f172a;
   outline: none;
-  box-shadow: 0 0 0 3px #0F172A20;
+  box-shadow: 0 0 0 3px #0f172a20;
 }
 ```
 
@@ -182,7 +182,14 @@
 **Page Transition** (Subtle) — Trigger: route change | Duration: 200-300ms | Easing: `power1.inOut`
 
 ```js
-gsap.to(main, { opacity: 0, duration: 0.2, onComplete: () => { navigate(); gsap.fromTo(main, { opacity: 0 }, { opacity: 1, duration: 0.2 }); } });
+gsap.to(main, {
+  opacity: 0,
+  duration: 0.2,
+  onComplete: () => {
+    navigate();
+    gsap.fromTo(main, { opacity: 0 }, { opacity: 1, duration: 0.2 });
+  }
+});
 ```
 
 **Framework notes:** Pair with the router's transition hooks (Next.js App Router transitions, React Router's useNavigate, Vue Router's beforeEach/afterEach)

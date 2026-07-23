@@ -9,10 +9,7 @@ import {
   validateJiraActionConfig,
   type JiraActionConfig
 } from "@/lib/integration-actions";
-import {
-  uploadJiraIssueAttachments,
-  type JiraIssueAttachmentInput
-} from "@/lib/jira-attachments";
+import { uploadJiraIssueAttachments, type JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 
@@ -67,7 +64,7 @@ function getValidJiraIssueKey(value?: string): string {
     const parsedUrl = new URL(trimmedValue);
     const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
     const browseSegmentIndex = pathSegments.findIndex((segment) => segment.toLowerCase() === "browse");
-    const issueKey = browseSegmentIndex >= 0 ? pathSegments[browseSegmentIndex + 1] ?? "" : "";
+    const issueKey = browseSegmentIndex >= 0 ? (pathSegments[browseSegmentIndex + 1] ?? "") : "";
     const browseIssueKeyMatch = /^([A-Z][A-Z0-9_]{1,15}-\d+)$/i.exec(issueKey);
 
     return browseIssueKeyMatch ? browseIssueKeyMatch[1].toUpperCase() : "";
@@ -152,7 +149,11 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       const details = [
         responseBody?.errorMessages?.join(" "),
-        responseBody?.errors ? Object.entries(responseBody.errors).map(([key, value]) => `${key}: ${value}`).join(" ") : ""
+        responseBody?.errors
+          ? Object.entries(responseBody.errors)
+              .map(([key, value]) => `${key}: ${value}`)
+              .join(" ")
+          : ""
       ].filter((detail): detail is string => Boolean(detail));
 
       console.error(
@@ -169,7 +170,9 @@ export async function POST(request: NextRequest) {
         return errorResponse(
           "jira_issue_not_found",
           `Jira issue ${jiraKey} was not found in Jira.`,
-          details.length > 0 ? details : ["The linked Jira key does not exist or is not visible to the configured Jira token."],
+          details.length > 0
+            ? details
+            : ["The linked Jira key does not exist or is not visible to the configured Jira token."],
           response.status
         );
       }
@@ -177,7 +180,9 @@ export async function POST(request: NextRequest) {
       return errorResponse(
         "jira_update_failed",
         `Jira returned HTTP ${response.status} while updating the task.`,
-        details.length > 0 ? details : ["Check Jira issue key, token scope, workflow status, and field permissions."],
+        details.length > 0
+          ? details
+          : ["Check Jira issue key, token scope, workflow status, and field permissions."],
         response.status
       );
     }
@@ -195,7 +200,11 @@ export async function POST(request: NextRequest) {
       sprint: payload.issue?.sprint
     });
     const issueStatusResult = await fetchJiraIssueStatus(config, jiraKey);
-    const attachmentResult = await uploadJiraIssueAttachments(config, jiraKey, payload.issue?.attachments ?? []);
+    const attachmentResult = await uploadJiraIssueAttachments(
+      config,
+      jiraKey,
+      payload.issue?.attachments ?? []
+    );
     const warnings = issueStatusResult.ok
       ? [...placementResult.warnings, ...attachmentResult.warnings]
       : [
@@ -250,6 +259,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return errorResponse("jira_request_failed", "Could not reach Jira update issue endpoint.", [message], 502);
+    return errorResponse(
+      "jira_request_failed",
+      "Could not reach Jira update issue endpoint.",
+      [message],
+      502
+    );
   }
 }

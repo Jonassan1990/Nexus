@@ -108,7 +108,7 @@ export function extractJiraProjectKey(value?: string): string {
     }
 
     const browseSegmentIndex = pathSegments.findIndex((segment) => segment.toLowerCase() === "browse");
-    const issueKey = browseSegmentIndex >= 0 ? pathSegments[browseSegmentIndex + 1] ?? "" : "";
+    const issueKey = browseSegmentIndex >= 0 ? (pathSegments[browseSegmentIndex + 1] ?? "") : "";
     const browseIssueKeyMatch = /^([A-Z][A-Z0-9_]{1,15})-\d+$/i.exec(issueKey);
 
     return browseIssueKeyMatch ? browseIssueKeyMatch[1].toUpperCase() : "";
@@ -129,7 +129,7 @@ export function extractJiraIssueKey(value?: string): string {
     const parsedUrl = new URL(trimmedValue);
     const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
     const browseSegmentIndex = pathSegments.findIndex((segment) => segment.toLowerCase() === "browse");
-    const issueKey = browseSegmentIndex >= 0 ? pathSegments[browseSegmentIndex + 1] ?? "" : "";
+    const issueKey = browseSegmentIndex >= 0 ? (pathSegments[browseSegmentIndex + 1] ?? "") : "";
     const browseIssueKeyMatch = /^([A-Z][A-Z0-9_]{1,15}-\d+)$/i.exec(issueKey);
 
     return browseIssueKeyMatch ? browseIssueKeyMatch[1].toUpperCase() : "";
@@ -202,7 +202,9 @@ export function validateJiraActionConfig(config: JiraActionConfig): string[] {
   }
 
   if (!config.token?.trim()) {
-    errors.push("Paste a Jira token or PAT for this test. Saved token status cannot be used because secrets are not stored in the browser.");
+    errors.push(
+      "Paste a Jira token or PAT for this test. Saved token status cannot be used because secrets are not stored in the browser."
+    );
   }
 
   return errors;
@@ -249,10 +251,7 @@ export function formatJiraOriginalEstimate(estimateHours?: number): string | und
   const totalMinutes = Math.round(estimateHours * 60);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  const parts = [
-    hours > 0 ? `${hours}h` : "",
-    minutes > 0 ? `${minutes}m` : ""
-  ].filter(Boolean);
+  const parts = [hours > 0 ? `${hours}h` : "", minutes > 0 ? `${minutes}m` : ""].filter(Boolean);
 
   return parts.join(" ");
 }

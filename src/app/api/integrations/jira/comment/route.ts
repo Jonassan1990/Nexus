@@ -120,7 +120,9 @@ export async function POST(request: NextRequest) {
         return errorResponse(
           "jira_issue_not_found",
           `Jira issue ${jiraKey} was not found in Jira.`,
-          details.length > 0 ? details : ["The linked Jira key does not exist or is not visible to the configured Jira token."],
+          details.length > 0
+            ? details
+            : ["The linked Jira key does not exist or is not visible to the configured Jira token."],
           response.status
         );
       }

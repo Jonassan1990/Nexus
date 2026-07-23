@@ -15,29 +15,12 @@ export type BuiltInRoleKey =
 
 export type RoleKey = BuiltInRoleKey | (string & {});
 
-export type VisibilityLevel =
-  | "public"
-  | "approvers_only"
-  | "it_only"
-  | "architecture_only"
-  | "admin_only";
+export type VisibilityLevel = "public" | "approvers_only" | "it_only" | "architecture_only" | "admin_only";
 
 export type TicketState =
-  | "intake"
-  | "clarification"
-  | "approval"
-  | "jira_draft"
-  | "jira_synced"
-  | "escalated"
-  | "closed";
+  "intake" | "clarification" | "approval" | "jira_draft" | "jira_synced" | "escalated" | "closed";
 
-export type WorkflowStepStatus =
-  | "complete"
-  | "active"
-  | "waiting"
-  | "blocked"
-  | "delegated"
-  | "optional";
+export type WorkflowStepStatus = "complete" | "active" | "waiting" | "blocked" | "delegated" | "optional";
 
 export type WorkflowRoleType = "approval" | "review" | "inform";
 

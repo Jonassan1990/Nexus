@@ -36,13 +36,5 @@ export function TegelIcon({
     );
   }
 
-  return (
-    <TdsIcon
-      className={className}
-      name={name}
-      size={size}
-      svgTitle={title}
-      tdsAriaHidden={!title}
-    />
-  );
+  return <TdsIcon className={className} name={name} size={size} svgTitle={title} tdsAriaHidden={!title} />;
 }

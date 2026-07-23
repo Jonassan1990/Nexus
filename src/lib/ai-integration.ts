@@ -110,7 +110,9 @@ export function validateAiActionConfig(config: AiActionConfig): string[] {
   }
 
   if (!resolveOpenAiApiKey(config)) {
-    errors.push("OpenAI API key is required. Configure OPENAI_API_KEY on the server or provide a local integration key.");
+    errors.push(
+      "OpenAI API key is required. Configure OPENAI_API_KEY on the server or provide a local integration key."
+    );
   }
 
   return errors;

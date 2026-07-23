@@ -98,15 +98,17 @@ async function fetchJira<T>(url: string, config: JiraActionConfig): Promise<Jira
     signal: AbortSignal.timeout(20000)
   });
   const responseBody = (await response.json().catch(() => null)) as
-    | { errorMessages?: string[]; errors?: Record<string, string> }
-    | T
-    | null;
+    { errorMessages?: string[]; errors?: Record<string, string> } | T | null;
 
   if (!response.ok) {
     const errorBody = responseBody as { errorMessages?: string[]; errors?: Record<string, string> } | null;
     const details = [
       errorBody?.errorMessages?.join(" "),
-      errorBody?.errors ? Object.entries(errorBody.errors).map(([key, value]) => `${key}: ${value}`).join(" ") : ""
+      errorBody?.errors
+        ? Object.entries(errorBody.errors)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join(" ")
+        : ""
     ].filter((detail): detail is string => Boolean(detail));
 
     return {
@@ -152,14 +154,17 @@ function buildJiraStatusMetadata(projectStatuses: JiraProjectStatusesResponse): 
   colorName: string;
   issueTypes: string[];
 }> {
-  const statusesByKey = new Map<string, {
-    id: string;
-    name: string;
-    categoryKey: string;
-    categoryName: string;
-    colorName: string;
-    issueTypes: string[];
-  }>();
+  const statusesByKey = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      categoryKey: string;
+      categoryName: string;
+      colorName: string;
+      issueTypes: string[];
+    }
+  >();
 
   for (const issueType of projectStatuses) {
     const issueTypeName = issueType.name?.trim() || "Unnamed issue type";
@@ -215,10 +220,7 @@ export async function POST(request: NextRequest) {
   const projectEndpoint = buildJiraEndpoint(config, `project/${encodeURIComponent(projectKey)}`);
   const issueTypesEndpoint = buildJiraEndpoint(config, "issuetype");
   const prioritiesEndpoint = buildJiraEndpoint(config, "priority");
-  const statusesEndpoint = buildJiraEndpoint(
-    config,
-    `project/${encodeURIComponent(projectKey)}/statuses`
-  );
+  const statusesEndpoint = buildJiraEndpoint(config, `project/${encodeURIComponent(projectKey)}/statuses`);
   const assignableUsersEndpoint = buildJiraEndpoint(
     config,
     `user/assignable/search?project=${encodeURIComponent(projectKey)}&maxResults=50`
@@ -285,14 +287,13 @@ export async function POST(request: NextRequest) {
     const selectedIssueType = issueTypes.find(
       (issueType) => issueType.name.toLowerCase() === config.defaultIssueType.trim().toLowerCase()
     );
-    const boards =
-      boardsResult.ok
-        ? boardsResult.data.values?.map((board) => ({
-            id: String(board.id ?? ""),
-            name: board.name ?? "Unnamed board",
-            type: board.type ?? "board"
-          })) ?? []
-        : [];
+    const boards = boardsResult.ok
+      ? (boardsResult.data.values?.map((board) => ({
+          id: String(board.id ?? ""),
+          name: board.name ?? "Unnamed board",
+          type: board.type ?? "board"
+        })) ?? [])
+      : [];
     const statuses = statusesResult.ok ? buildJiraStatusMetadata(statusesResult.data) : [];
     const sprintResults = await Promise.all(
       boards
@@ -358,28 +359,26 @@ export async function POST(request: NextRequest) {
             releaseDate: version.releaseDate ?? "",
             userReleaseDate: version.userReleaseDate ?? ""
           })) ?? [],
-        priorities:
-          prioritiesResult.ok
-            ? prioritiesResult.data.map((priority) => ({
-                id: priority.id ?? "",
-                name: priority.name ?? "Unnamed priority",
-                statusColor: priority.statusColor ?? ""
-              }))
-            : [],
+        priorities: prioritiesResult.ok
+          ? prioritiesResult.data.map((priority) => ({
+              id: priority.id ?? "",
+              name: priority.name ?? "Unnamed priority",
+              statusColor: priority.statusColor ?? ""
+            }))
+          : [],
         statuses,
-        assignableUsers:
-          assignableUsersResult.ok
-            ? assignableUsersResult.data.map((user) => ({
-                id: user.accountId ?? user.key ?? user.name ?? "",
-                name: user.displayName ?? user.name ?? user.key ?? user.accountId ?? "Unnamed user",
-                email: user.emailAddress ?? "",
-                active: user.active !== false
-              }))
-            : [],
+        assignableUsers: assignableUsersResult.ok
+          ? assignableUsersResult.data.map((user) => ({
+              id: user.accountId ?? user.key ?? user.name ?? "",
+              name: user.displayName ?? user.name ?? user.key ?? user.accountId ?? "Unnamed user",
+              email: user.emailAddress ?? "",
+              active: user.active !== false
+            }))
+          : [],
         boards,
         sprints: sprintResults.flatMap(({ board, result }) =>
           result.ok
-            ? result.data.values?.map((sprint) => ({
+            ? (result.data.values?.map((sprint) => ({
                 id: String(sprint.id ?? ""),
                 name: sprint.name ?? "Unnamed sprint",
                 state: sprint.state ?? "",
@@ -387,7 +386,7 @@ export async function POST(request: NextRequest) {
                 boardName: board.name,
                 startDate: sprint.startDate ?? "",
                 endDate: sprint.endDate ?? ""
-              })) ?? []
+              })) ?? [])
             : []
         ),
         warnings
@@ -403,6 +402,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return errorResponse("jira_sync_request_failed", "Could not reach Jira metadata endpoints.", [message], 502);
+    return errorResponse(
+      "jira_sync_request_failed",
+      "Could not reach Jira metadata endpoints.",
+      [message],
+      502
+    );
   }
 }

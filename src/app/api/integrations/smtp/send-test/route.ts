@@ -67,7 +67,9 @@ function validatePayload(payload: SendTestEmailPayload): string[] {
   const hasPassword = Boolean(config.password?.trim());
 
   if (hasUsername !== hasPassword) {
-    errors.push("SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP.");
+    errors.push(
+      "SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP."
+    );
   }
 
   return errors;
@@ -161,6 +163,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return errorResponse("smtp_send_failed", "SMTP server rejected or failed the test email.", [messageText], 502);
+    return errorResponse(
+      "smtp_send_failed",
+      "SMTP server rejected or failed the test email.",
+      [messageText],
+      502
+    );
   }
 }

@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractJiraIssueKey, validateJiraActionConfig, type JiraActionConfig } from "@/lib/integration-actions";
+import {
+  extractJiraIssueKey,
+  validateJiraActionConfig,
+  type JiraActionConfig
+} from "@/lib/integration-actions";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 
 export const runtime = "nodejs";
@@ -76,7 +80,9 @@ export async function POST(request: NextRequest) {
       return errorResponse(
         "jira_status_sync_failed",
         `Jira returned HTTP ${result.status} while syncing issue status.`,
-        result.details.length > 0 ? result.details : ["Check Jira issue key, token scope, and field permissions."],
+        result.details.length > 0
+          ? result.details
+          : ["Check Jira issue key, token scope, and field permissions."],
         result.status
       );
     }
@@ -109,6 +115,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return errorResponse("jira_request_failed", "Could not reach Jira issue status endpoint.", [message], 502);
+    return errorResponse(
+      "jira_request_failed",
+      "Could not reach Jira issue status endpoint.",
+      [message],
+      502
+    );
   }
 }

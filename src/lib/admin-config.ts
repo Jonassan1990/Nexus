@@ -257,13 +257,7 @@ export interface NotificationTemplate {
 }
 
 export type FormFieldType =
-  | "shortText"
-  | "longText"
-  | "number"
-  | "date"
-  | "singleSelect"
-  | "multiSelect"
-  | "yesNo";
+  "shortText" | "longText" | "number" | "date" | "singleSelect" | "multiSelect" | "yesNo";
 
 export type FormComponentType =
   | "textField"
@@ -320,17 +314,19 @@ export interface TicketTypeWorkflowConfig {
   jiraCreatorStepIds?: string[];
   stepOverrides?: Record<
     string,
-    Partial<Pick<
-      WorkflowTemplateStep,
-      | "label"
-      | "ownerRole"
-      | "workflowType"
-      | "required"
-      | "parallelGroup"
-      | "slaHours"
-      | "allowDelegation"
-      | "allowClarification"
-    >>
+    Partial<
+      Pick<
+        WorkflowTemplateStep,
+        | "label"
+        | "ownerRole"
+        | "workflowType"
+        | "required"
+        | "parallelGroup"
+        | "slaHours"
+        | "allowDelegation"
+        | "allowClarification"
+      >
+    >
   >;
   active: boolean;
   updatedAt: string;
@@ -446,7 +442,9 @@ export function normalizeProductModuleConfig(module: ProductModuleConfig): Produ
 export function normalizeProductPruConfig(pru: ProductPruConfig): ProductPruConfig {
   return {
     ...pru,
-    modules: Array.isArray(pru.modules) ? pru.modules.map((module) => normalizeProductModuleConfig(module)) : [],
+    modules: Array.isArray(pru.modules)
+      ? pru.modules.map((module) => normalizeProductModuleConfig(module))
+      : [],
     active: pru.active ?? true
   };
 }
@@ -914,7 +912,12 @@ export const productConfigs: ProductConfig[] = [
     roleAssignments: [
       { id: "cal-local-po", role: "local_product_owner", userIds: ["user-maja-lind"], active: true },
       { id: "cal-global-po", role: "global_product_owner", userIds: ["user-sara-blom"], active: true },
-      { id: "cal-solution-architect", role: "solution_architect", userIds: ["user-oskar-nordin"], active: true },
+      {
+        id: "cal-solution-architect",
+        role: "solution_architect",
+        userIds: ["user-oskar-nordin"],
+        active: true
+      },
       { id: "cal-architect", role: "software_architect", userIds: ["user-oskar-nordin"], active: true },
       { id: "cal-developer", role: "developer", userIds: ["user-jonas-ny"], active: true }
     ],
@@ -974,7 +977,12 @@ export const productConfigs: ProductConfig[] = [
     roleAssignments: [
       { id: "variant-global-po", role: "global_product_owner", userIds: ["user-sara-blom"], active: true },
       { id: "variant-business", role: "business_architect", userIds: ["user-sara-blom"], active: true },
-      { id: "variant-solution-architect", role: "solution_architect", userIds: ["user-oskar-nordin"], active: true },
+      {
+        id: "variant-solution-architect",
+        role: "solution_architect",
+        userIds: ["user-oskar-nordin"],
+        active: true
+      },
       { id: "variant-architect", role: "software_architect", userIds: ["user-oskar-nordin"], active: true },
       { id: "variant-security", role: "security_reviewer", userIds: ["user-nina-ek"], active: true },
       { id: "variant-developer", role: "developer", userIds: ["user-jonas-ny"], active: true }
@@ -1085,7 +1093,9 @@ export function isLegacyDefaultPriorityConfig(priorities: ConfigOption[]): boole
     return false;
   }
 
-  return priorities.every((priority) => legacyDefaultPriorityLabelSet.has(priority.label.trim().toLowerCase()));
+  return priorities.every((priority) =>
+    legacyDefaultPriorityLabelSet.has(priority.label.trim().toLowerCase())
+  );
 }
 
 export function getJiraPriorityOptions(): ConfigOption<Ticket["priority"]>[] {
@@ -1175,7 +1185,13 @@ Your response is required before the release process can continue.`,
     deliveryMode: "inAppAndEmail",
     severity: "warning",
     active: true,
-    enabledRoles: ["local_product_owner", "global_product_owner", "business_architect", "solution_architect", "software_architect"]
+    enabledRoles: [
+      "local_product_owner",
+      "global_product_owner",
+      "business_architect",
+      "solution_architect",
+      "software_architect"
+    ]
   },
   {
     id: "tpl-clarification-requested",
@@ -1467,9 +1483,7 @@ export function getAdminUserName(userId: string): string {
 export function getAdminRoleLabel(roleKey: RoleKey): string {
   return (
     roles.find((role) => role.key === roleKey)?.label ??
-    roleKey
-      .replace(/[_-]+/g, " ")
-      .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    roleKey.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
   );
 }
 
@@ -1526,17 +1540,13 @@ export function getDefaultProductConfig(): ProductConfig | undefined {
 }
 
 export function getDefaultWorkflowTemplate(ticketTypeId: string): WorkflowTemplate | undefined {
-  const workflow = ticketTypeWorkflows.find(
-    (item) => item.ticketTypeId === ticketTypeId && item.active
-  );
+  const workflow = ticketTypeWorkflows.find((item) => item.ticketTypeId === ticketTypeId && item.active);
 
   return workflowTemplates.find((template) => template.id === workflow?.workflowTemplateId);
 }
 
 export function getSlaPolicyForTicketType(ticketTypeId: string): SlaPolicy | undefined {
-  const workflow = ticketTypeWorkflows.find(
-    (item) => item.ticketTypeId === ticketTypeId && item.active
-  );
+  const workflow = ticketTypeWorkflows.find((item) => item.ticketTypeId === ticketTypeId && item.active);
   const template = getDefaultWorkflowTemplate(ticketTypeId);
   const escalationPolicyId = workflow?.escalationPolicyId ?? template?.escalationPolicyId;
 

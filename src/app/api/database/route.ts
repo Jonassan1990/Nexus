@@ -111,7 +111,8 @@ export async function DELETE(request: NextRequest) {
       {
         error: {
           code: "production_blocked",
-          message: "Local ticket cleanup is available only on localhost or when local test tools are explicitly enabled."
+          message:
+            "Local ticket cleanup is available only on localhost or when local test tools are explicitly enabled."
         }
       },
       { status: 403 }

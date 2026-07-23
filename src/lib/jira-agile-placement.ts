@@ -1,8 +1,4 @@
-import {
-  buildJiraAgileEndpoint,
-  buildJiraHeaders,
-  type JiraActionConfig
-} from "./integration-actions";
+import { buildJiraAgileEndpoint, buildJiraHeaders, type JiraActionConfig } from "./integration-actions";
 
 type JiraPagedResponse<T> = {
   values?: T[];
@@ -39,13 +35,21 @@ export type JiraAgilePlacementResult = {
 };
 
 function normalizeJiraName(value?: string): string {
-  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function getJiraErrorDetails(body: JiraErrorBody | null, fallback: string): string {
   const details = [
     body?.errorMessages?.join(" "),
-    body?.errors ? Object.entries(body.errors).map(([key, value]) => `${key}: ${value}`).join(" ") : ""
+    body?.errors
+      ? Object.entries(body.errors)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(" ")
+      : ""
   ].filter(Boolean);
 
   return details.length > 0 ? details.join(" ") : fallback;
@@ -75,7 +79,9 @@ async function fetchJiraJson<T>(url: string, config: JiraActionConfig): Promise<
   const responseBody = (await response.json().catch(() => null)) as T | JiraErrorBody | null;
 
   if (!response.ok) {
-    throw new Error(getJiraErrorDetails(responseBody as JiraErrorBody | null, `Jira returned HTTP ${response.status}.`));
+    throw new Error(
+      getJiraErrorDetails(responseBody as JiraErrorBody | null, `Jira returned HTTP ${response.status}.`)
+    );
   }
 
   return responseBody as T;

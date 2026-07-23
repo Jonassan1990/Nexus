@@ -8,10 +8,7 @@ import {
   validateJiraActionConfig,
   type JiraActionConfig
 } from "@/lib/integration-actions";
-import {
-  uploadJiraIssueAttachments,
-  type JiraIssueAttachmentInput
-} from "@/lib/jira-attachments";
+import { uploadJiraIssueAttachments, type JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 import { enqueueOutboxJob } from "@/lib/local-database";
@@ -131,14 +128,22 @@ export async function POST(request: NextRequest) {
       signal: AbortSignal.timeout(20000)
     });
 
-    const responseBody = (await response.json().catch(() => null)) as
-      | { key?: string; id?: string; self?: string; errors?: Record<string, string>; errorMessages?: string[] }
-      | null;
+    const responseBody = (await response.json().catch(() => null)) as {
+      key?: string;
+      id?: string;
+      self?: string;
+      errors?: Record<string, string>;
+      errorMessages?: string[];
+    } | null;
 
     if (!response.ok) {
       const details = [
         responseBody?.errorMessages?.join(" "),
-        responseBody?.errors ? Object.entries(responseBody.errors).map(([key, value]) => `${key}: ${value}`).join(" ") : ""
+        responseBody?.errors
+          ? Object.entries(responseBody.errors)
+              .map(([key, value]) => `${key}: ${value}`)
+              .join(" ")
+          : ""
       ].filter((detail): detail is string => Boolean(detail));
 
       console.error(
@@ -153,7 +158,9 @@ export async function POST(request: NextRequest) {
       return errorResponse(
         "jira_create_failed",
         `Jira returned HTTP ${response.status} while creating the task.`,
-        details.length > 0 ? details : ["Check Jira project, issue type, token scope, and field permissions."],
+        details.length > 0
+          ? details
+          : ["Check Jira project, issue type, token scope, and field permissions."],
         response.status
       );
     }
@@ -263,6 +270,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return errorResponse("jira_request_failed", "Could not reach Jira create issue endpoint.", [message], 502);
+    return errorResponse(
+      "jira_request_failed",
+      "Could not reach Jira create issue endpoint.",
+      [message],
+      502
+    );
   }
 }

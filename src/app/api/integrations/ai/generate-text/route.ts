@@ -65,26 +65,40 @@ export async function POST(request: NextRequest) {
     mode !== "requirement_review" &&
     mode !== "escalation_meeting_series"
   ) {
-    errors.push("AI generation mode must be chat, jira_field, release_note, requirement_review, or escalation_meeting_series.");
+    errors.push(
+      "AI generation mode must be chat, jira_field, release_note, requirement_review, or escalation_meeting_series."
+    );
   }
 
   if (mode === "chat" && !payload.prompt?.trim()) {
     errors.push("Prompt is required for AI chat generation.");
   }
 
-  if (mode === "jira_field" && (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))) {
+  if (
+    mode === "jira_field" &&
+    (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))
+  ) {
     errors.push("Jira field generation requires a context object.");
   }
 
-  if (mode === "release_note" && (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))) {
+  if (
+    mode === "release_note" &&
+    (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))
+  ) {
     errors.push("Release note generation requires a context object.");
   }
 
-  if (mode === "requirement_review" && (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))) {
+  if (
+    mode === "requirement_review" &&
+    (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))
+  ) {
     errors.push("Requirement review requires a context object.");
   }
 
-  if (mode === "escalation_meeting_series" && (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))) {
+  if (
+    mode === "escalation_meeting_series" &&
+    (!payload.context || typeof payload.context !== "object" || Array.isArray(payload.context))
+  ) {
     errors.push("Escalation meeting series generation requires a context object.");
   }
 

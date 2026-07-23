@@ -6,9 +6,7 @@ const tenantId = process.env.TENANT_ID;
 const clientId = process.env.CLIENT_ID;
 const clientSecret = process.env.CLIENT_SECRET;
 const mailbox =
-  process.env.GRAPH_CALENDAR_MAILBOX ||
-  process.env.GRAPH_ORGANIZER_EMAIL ||
-  "nexusportal@scania.com";
+  process.env.GRAPH_CALENDAR_MAILBOX || process.env.GRAPH_ORGANIZER_EMAIL || "nexusportal@scania.com";
 
 const graphBaseUrl = "https://graph.microsoft.com/v1.0";
 
@@ -79,9 +77,7 @@ async function requestJson(url, options) {
 
 async function getAccessToken() {
   const tokenEndpoint =
-    "https://login.microsoftonline.com/" +
-    encodeURIComponent(tenantId) +
-    "/oauth2/v2.0/token";
+    "https://login.microsoftonline.com/" + encodeURIComponent(tenantId) + "/oauth2/v2.0/token";
 
   const form = new URLSearchParams();
   form.append("client_id", clientId);
@@ -92,7 +88,9 @@ async function getAccessToken() {
   console.log("\nTOKEN REQUEST");
   console.log("POST " + tokenEndpoint);
   console.log("Content-Type: application/x-www-form-urlencoded");
-  console.log("Body: client_id=<hidden>&client_secret=<hidden>&scope=https://graph.microsoft.com/.default&grant_type=client_credentials");
+  console.log(
+    "Body: client_id=<hidden>&client_secret=<hidden>&scope=https://graph.microsoft.com/.default&grant_type=client_credentials"
+  );
 
   const tokenResponse = await requestJson(tokenEndpoint, {
     method: "POST",
@@ -111,10 +109,7 @@ async function getAccessToken() {
 
 async function readEvents(accessToken) {
   const url =
-    graphBaseUrl +
-    "/users/" +
-    encodeURIComponent(mailbox) +
-    "/events?$top=10&$orderby=start/dateTime";
+    graphBaseUrl + "/users/" + encodeURIComponent(mailbox) + "/events?$top=10&$orderby=start/dateTime";
 
   console.log("\nREAD EVENTS REQUEST");
   console.log("GET " + url);
@@ -150,8 +145,7 @@ async function createTestEvent(accessToken) {
   const start = new Date(Date.now() + 10 * 60 * 1000);
   const end = new Date(Date.now() + 30 * 60 * 1000);
 
-  const url =
-    graphBaseUrl + "/users/" + encodeURIComponent(mailbox) + "/events";
+  const url = graphBaseUrl + "/users/" + encodeURIComponent(mailbox) + "/events";
 
   const payload = {
     subject: "Test Event from Nexus Portal",

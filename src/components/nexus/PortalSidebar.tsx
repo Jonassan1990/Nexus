@@ -91,12 +91,7 @@ export function PortalSidebar<TModule extends string>({
   return (
     <>
       {isMobileOpen ? (
-        <button
-          type="button"
-          className="mobile-nav-scrim"
-          aria-label="Close navigation"
-          onClick={onClose}
-        />
+        <button type="button" className="mobile-nav-scrim" aria-label="Close navigation" onClick={onClose} />
       ) : null}
       <aside
         className={`tegel-side-shell ${isCompact ? "is-compact" : "is-expanded"}${isMobileOpen ? " is-mobile-open" : ""}`}

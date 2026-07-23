@@ -25,9 +25,8 @@ export async function POST(request: NextRequest) {
   }
 
   const errors = validateGitLabActionConfig(payload.config);
-  const groupId = payload.groupId === undefined || payload.groupId === ""
-    ? undefined
-    : Number(payload.groupId);
+  const groupId =
+    payload.groupId === undefined || payload.groupId === "" ? undefined : Number(payload.groupId);
 
   if (groupId !== undefined && (!Number.isInteger(groupId) || groupId <= 0)) {
     errors.push("Group ID must be a positive integer when provided.");

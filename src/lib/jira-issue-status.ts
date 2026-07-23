@@ -49,8 +49,7 @@ export type JiraIssueCommentData = {
 };
 
 export type JiraIssueStatusFetchResult =
-  | { ok: true; data: JiraIssueStatusData }
-  | { ok: false; status: number; details: string[] };
+  { ok: true; data: JiraIssueStatusData } | { ok: false; status: number; details: string[] };
 
 type JiraIssueAttachmentResponse = {
   id?: string;
@@ -119,12 +118,24 @@ type JiraVersionResponse = JiraIssueFixVersionData & Pick<JiraIssueResponse, "er
 const jiraInlineImageMaxBytes = 5 * 1024 * 1024;
 const jiraInlineImageMaxPerComment = 4;
 const jiraImageWarningLimit = 5;
-const jiraSafeInlineImageMimeTypes = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
+const jiraSafeInlineImageMimeTypes = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp"
+]);
 
-export function getJiraErrorDetails(body: Pick<JiraIssueResponse, "errors" | "errorMessages"> | null): string[] {
+export function getJiraErrorDetails(
+  body: Pick<JiraIssueResponse, "errors" | "errorMessages"> | null
+): string[] {
   return [
     body?.errorMessages?.join(" "),
-    body?.errors ? Object.entries(body.errors).map(([key, value]) => `${key}: ${value}`).join(" ") : ""
+    body?.errors
+      ? Object.entries(body.errors)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(" ")
+      : ""
   ].filter((detail): detail is string => Boolean(detail));
 }
 
@@ -197,7 +208,7 @@ function escapeHtml(value: string): string {
         return "&lt;";
       case ">":
         return "&gt;";
-      case "\"":
+      case '"':
         return "&quot;";
       case "'":
         return "&#39;";
@@ -246,7 +257,9 @@ function normalizeJiraImageMimeType(value?: string | null): string {
   return normalizedValue === "image/jpg" ? "image/jpeg" : normalizedValue;
 }
 
-function buildJiraAttachmentLookup(attachments: JiraIssueAttachmentResponse[]): Map<string, JiraIssueAttachmentResponse> {
+function buildJiraAttachmentLookup(
+  attachments: JiraIssueAttachmentResponse[]
+): Map<string, JiraIssueAttachmentResponse> {
   const lookup = new Map<string, JiraIssueAttachmentResponse>();
 
   for (const attachment of attachments) {
@@ -301,14 +314,20 @@ async function fetchJiraInlineCommentImage(
   }
 
   if (typeof attachment.size === "number" && attachment.size > jiraInlineImageMaxBytes) {
-    recordJiraImageWarning(warnings, `Jira image ${fileName} was not imported because it is larger than 5 MB.`);
+    recordJiraImageWarning(
+      warnings,
+      `Jira image ${fileName} was not imported because it is larger than 5 MB.`
+    );
     return null;
   }
 
   const attachmentUrl = resolveJiraAttachmentUrl(config, attachment.content || attachment.thumbnail);
 
   if (!attachmentUrl) {
-    recordJiraImageWarning(warnings, `Jira image ${fileName} could not be imported because Jira did not provide a trusted attachment URL.`);
+    recordJiraImageWarning(
+      warnings,
+      `Jira image ${fileName} could not be imported because Jira did not provide a trusted attachment URL.`
+    );
     return null;
   }
 
@@ -323,7 +342,10 @@ async function fetchJiraInlineCommentImage(
     });
 
     if (!response.ok) {
-      recordJiraImageWarning(warnings, `Jira image ${fileName} could not be imported because Jira returned HTTP ${response.status}.`);
+      recordJiraImageWarning(
+        warnings,
+        `Jira image ${fileName} could not be imported because Jira returned HTTP ${response.status}.`
+      );
       return null;
     }
 
@@ -332,14 +354,20 @@ async function fetchJiraInlineCommentImage(
     const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
 
     if (Number.isFinite(contentLength) && contentLength > jiraInlineImageMaxBytes) {
-      recordJiraImageWarning(warnings, `Jira image ${fileName} was not imported because it is larger than 5 MB.`);
+      recordJiraImageWarning(
+        warnings,
+        `Jira image ${fileName} was not imported because it is larger than 5 MB.`
+      );
       return null;
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
 
     if (buffer.byteLength > jiraInlineImageMaxBytes) {
-      recordJiraImageWarning(warnings, `Jira image ${fileName} was not imported because it is larger than 5 MB.`);
+      recordJiraImageWarning(
+        warnings,
+        `Jira image ${fileName} was not imported because it is larger than 5 MB.`
+      );
       return null;
     }
 
@@ -368,8 +396,9 @@ async function loadJiraCommentImages(
   warnings: string[]
 ): Promise<Map<string, JiraInlineCommentImage>> {
   const imagesByName = new Map<string, JiraInlineCommentImage>();
-  const uniqueReferenceNames = Array.from(new Set(references.map((reference) => reference.normalizedName)))
-    .slice(0, jiraInlineImageMaxPerComment);
+  const uniqueReferenceNames = Array.from(
+    new Set(references.map((reference) => reference.normalizedName))
+  ).slice(0, jiraInlineImageMaxPerComment);
 
   for (const normalizedName of uniqueReferenceNames) {
     const attachment = attachmentLookup.get(normalizedName);
@@ -463,7 +492,9 @@ async function fetchJiraIssueComments(
 
   if (!response.ok) {
     const details = getJiraErrorDetails(responseBody);
-    throw new Error(details.length > 0 ? details.join(" ") : `Jira returned HTTP ${response.status} while loading comments.`);
+    throw new Error(
+      details.length > 0 ? details.join(" ") : `Jira returned HTTP ${response.status} while loading comments.`
+    );
   }
 
   const comments = await Promise.all(
@@ -478,9 +509,8 @@ async function fetchJiraIssueComments(
         timeoutMs,
         warnings
       );
-      const bodyWithInlineImages = imageReferences.length > 0
-        ? inlineJiraCommentImages(body, imagesByName)
-        : body;
+      const bodyWithInlineImages =
+        imageReferences.length > 0 ? inlineJiraCommentImages(body, imagesByName) : body;
       const author =
         comment.author?.displayName?.trim() ||
         comment.author?.name?.trim() ||
@@ -589,7 +619,9 @@ async function enrichJiraFixVersions(
           : version;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown Jira version lookup failure.";
-        warnings.push(`Jira fix version ${version.name} was synced, but its release date could not be loaded. ${message}`);
+        warnings.push(
+          `Jira fix version ${version.name} was synced, but its release date could not be loaded. ${message}`
+        );
 
         return version;
       }
@@ -608,10 +640,7 @@ export async function fetchJiraIssueStatus(
   const fields = options.includeComments
     ? "status,resolution,fixVersions,timeoriginalestimate,timeestimate,aggregatetimeoriginalestimate,aggregatetimeestimate,attachment"
     : "status,resolution,fixVersions,timeoriginalestimate,timeestimate,aggregatetimeoriginalestimate,aggregatetimeestimate";
-  const endpoint = buildJiraEndpoint(
-    config,
-    `issue/${encodeURIComponent(jiraKey)}?fields=${fields}`
-  );
+  const endpoint = buildJiraEndpoint(config, `issue/${encodeURIComponent(jiraKey)}?fields=${fields}`);
 
   const response = await fetch(endpoint, {
     method: "GET",

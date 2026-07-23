@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode
-} from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { localeLabels, messages, type AppLocale } from "./messages";
 
 const STORAGE_KEY = "nexus-portal-locale";

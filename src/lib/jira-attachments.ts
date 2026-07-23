@@ -1,8 +1,4 @@
-import {
-  buildJiraEndpoint,
-  buildJiraHeaders,
-  type JiraActionConfig
-} from "./integration-actions";
+import { buildJiraEndpoint, buildJiraHeaders, type JiraActionConfig } from "./integration-actions";
 
 export type JiraIssueAttachmentInput = {
   id?: string;
@@ -49,10 +45,16 @@ type PreparedJiraAttachment =
 const jiraAttachmentMaxUploadBytes = 50 * 1024 * 1024;
 const defaultAttachmentMimeType = "application/octet-stream";
 
-function getJiraErrorDetails(body: Pick<JiraIssueAttachmentsResponse, "errors" | "errorMessages"> | null): string[] {
+function getJiraErrorDetails(
+  body: Pick<JiraIssueAttachmentsResponse, "errors" | "errorMessages"> | null
+): string[] {
   return [
     body?.errorMessages?.join(" "),
-    body?.errors ? Object.entries(body.errors).map(([key, value]) => `${key}: ${value}`).join(" ") : ""
+    body?.errors
+      ? Object.entries(body.errors)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join(" ")
+      : ""
   ].filter((detail): detail is string => Boolean(detail));
 }
 
@@ -91,7 +93,10 @@ function parseAttachmentDataUrl(value: string): { mimeType: string; content: Buf
 
   const metadata = value.slice("data:".length, commaIndex);
   const data = value.slice(commaIndex + 1);
-  const metadataParts = metadata.split(";").map((part) => part.trim()).filter(Boolean);
+  const metadataParts = metadata
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
   const isBase64 = metadataParts.some((part) => part.toLowerCase() === "base64");
   const mimeType = metadataParts.find((part) => part.includes("/")) || defaultAttachmentMimeType;
 

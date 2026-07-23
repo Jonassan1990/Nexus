@@ -221,13 +221,14 @@ function normalizeRecurrence(
     return null;
   }
 
-  const frequency = recurrence.frequency === "daily" || recurrence.frequency === "monthly"
-    ? recurrence.frequency
-    : "weekly";
-  const interval = Number.isFinite(recurrence.interval) && recurrence.interval && recurrence.interval > 0
-    ? Math.max(1, Math.min(99, Math.round(recurrence.interval)))
-    : 1;
-  const startDate = recurrence.startDate?.trim() || getDatePart(normalizeDateTimeValue(input.startDateTime ?? ""));
+  const frequency =
+    recurrence.frequency === "daily" || recurrence.frequency === "monthly" ? recurrence.frequency : "weekly";
+  const interval =
+    Number.isFinite(recurrence.interval) && recurrence.interval && recurrence.interval > 0
+      ? Math.max(1, Math.min(99, Math.round(recurrence.interval)))
+      : 1;
+  const startDate =
+    recurrence.startDate?.trim() || getDatePart(normalizeDateTimeValue(input.startDateTime ?? ""));
   const endDate = recurrence.endDate?.trim() ?? "";
   const daysOfWeek = Array.from(
     new Set(
@@ -270,7 +271,7 @@ function normalizeAttendees(attendees?: TeamsMeetingAttendeeInput[]): Normalized
           address: email,
           name
         },
-        type: attendee.type === "optional" ? "optional" as const : "required" as const
+        type: attendee.type === "optional" ? ("optional" as const) : ("required" as const)
       };
     })
     .filter((attendee) => attendee.emailAddress.address);
@@ -358,30 +359,32 @@ function validateClientCredentialsConfig(): void {
 }
 
 function getGraphErrorDetails(body: GraphErrorBody | null): string[] {
-  return [
-    body?.error?.code ? `Graph code: ${body.error.code}` : "",
-    body?.error?.message ?? ""
-  ].filter(Boolean);
+  return [body?.error?.code ? `Graph code: ${body.error.code}` : "", body?.error?.message ?? ""].filter(
+    Boolean
+  );
 }
 
 async function getClientCredentialsAccessToken(): Promise<string> {
   validateClientCredentialsConfig();
 
   const tenantId = readRequiredEnv("TENANT_ID");
-  const response = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: new URLSearchParams({
-      client_id: readRequiredEnv("CLIENT_ID"),
-      client_secret: readRequiredEnv("CLIENT_SECRET"),
-      grant_type: "client_credentials",
-      // The .default scope uses the application permissions granted to the Entra app registration.
-      scope: graphScope
-    }),
-    signal: AbortSignal.timeout(15000)
-  });
+  const response = await fetch(
+    `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        client_id: readRequiredEnv("CLIENT_ID"),
+        client_secret: readRequiredEnv("CLIENT_SECRET"),
+        grant_type: "client_credentials",
+        // The .default scope uses the application permissions granted to the Entra app registration.
+        scope: graphScope
+      }),
+      signal: AbortSignal.timeout(15000)
+    }
+  );
   const body = (await response.json().catch(() => null)) as GraphTokenResponse | null;
 
   if (!response.ok || !body?.access_token) {
@@ -389,7 +392,9 @@ async function getClientCredentialsAccessToken(): Promise<string> {
       response.status,
       body?.error ?? "entra_token_failed",
       "Microsoft Entra ID did not return an access token.",
-      [body?.error_description ?? "Check CLIENT_ID, TENANT_ID, CLIENT_SECRET, and admin consent."].filter(Boolean)
+      [body?.error_description ?? "Check CLIENT_ID, TENANT_ID, CLIENT_SECRET, and admin consent."].filter(
+        Boolean
+      )
     );
   }
 
@@ -407,7 +412,11 @@ function buildGraphEventEndpoint(input: CreateTeamsMeetingInput, authMode: Graph
   return `${graphBaseUrl}/users/${encodeURIComponent(organizerEmail)}/calendar/events`;
 }
 
-function buildGraphEventLookupEndpoint(input: CreateTeamsMeetingInput, authMode: GraphAuthMode, eventId: string): string {
+function buildGraphEventLookupEndpoint(
+  input: CreateTeamsMeetingInput,
+  authMode: GraphAuthMode,
+  eventId: string
+): string {
   const selectedFields =
     "$select=id,subject,webLink,start,end,attendees,isOnlineMeeting,onlineMeetingProvider,onlineMeeting";
 
@@ -521,7 +530,11 @@ function buildGraphEventPayload(input: CreateTeamsMeetingInput) {
   };
 }
 
-async function fetchGraphEvent(endpoint: string, accessToken: string, timeZone: string): Promise<GraphEventResponse> {
+async function fetchGraphEvent(
+  endpoint: string,
+  accessToken: string,
+  timeZone: string
+): Promise<GraphEventResponse> {
   const response = await fetch(endpoint, {
     method: "GET",
     headers: {
@@ -564,7 +577,8 @@ export async function createTeamsCalendarEvent(
     ]);
   }
 
-  const accessToken = authMode === "delegated" ? delegatedAccessToken : await getClientCredentialsAccessToken();
+  const accessToken =
+    authMode === "delegated" ? delegatedAccessToken : await getClientCredentialsAccessToken();
   const timeZone = input.timeZone?.trim() || defaultMeetingTimeZone;
   const endpoint = buildGraphEventEndpoint(input, authMode);
   const normalizedAttendees = normalizeAttendees(input.attendees);
@@ -581,7 +595,8 @@ export async function createTeamsCalendarEvent(
     body: JSON.stringify(eventPayload),
     signal: AbortSignal.timeout(20000)
   });
-  const responseBody = (await response.json().catch(() => null)) as GraphEventResponse | GraphErrorBody | null;
+  const responseBody = (await response.json().catch(() => null)) as
+    GraphEventResponse | GraphErrorBody | null;
 
   if (!response.ok) {
     throw new MicrosoftGraphApiError(
@@ -605,15 +620,22 @@ export async function createTeamsCalendarEvent(
 
   const eventWithOnlineMeeting = createdEvent.onlineMeeting?.joinUrl
     ? createdEvent
-    : await fetchGraphEvent(buildGraphEventLookupEndpoint(input, authMode, createdEvent.id), accessToken, timeZone);
-  const joinUrl = eventWithOnlineMeeting.onlineMeeting?.joinUrl ?? eventWithOnlineMeeting.onlineMeetingUrl ?? "";
+    : await fetchGraphEvent(
+        buildGraphEventLookupEndpoint(input, authMode, createdEvent.id),
+        accessToken,
+        timeZone
+      );
+  const joinUrl =
+    eventWithOnlineMeeting.onlineMeeting?.joinUrl ?? eventWithOnlineMeeting.onlineMeetingUrl ?? "";
 
   if (!joinUrl) {
     throw new MicrosoftGraphApiError(
       502,
       "graph_event_missing_join_url",
       "Microsoft Graph created the calendar event but did not return a Teams join URL.",
-      ["Verify the organizer mailbox supports Teams meetings and the tenant allows teamsForBusiness online meetings."]
+      [
+        "Verify the organizer mailbox supports Teams meetings and the tenant allows teamsForBusiness online meetings."
+      ]
     );
   }
 
@@ -642,7 +664,9 @@ export async function createTeamsCalendarEvent(
     ),
     isOnlineMeeting: Boolean(eventWithOnlineMeeting.isOnlineMeeting ?? createdEvent.isOnlineMeeting),
     onlineMeetingProvider:
-      eventWithOnlineMeeting.onlineMeetingProvider ?? createdEvent.onlineMeetingProvider ?? "teamsForBusiness",
+      eventWithOnlineMeeting.onlineMeetingProvider ??
+      createdEvent.onlineMeetingProvider ??
+      "teamsForBusiness",
     endpoint,
     authMode
   };

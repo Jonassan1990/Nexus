@@ -20,7 +20,12 @@ import {
   smtpConfig,
   statusColorOptions
 } from "./admin-config";
-import type { AdminConfig, GitLabIntegrationConfig, StatusColorConfig, TicketTypeWorkflowConfig } from "./admin-config";
+import type {
+  AdminConfig,
+  GitLabIntegrationConfig,
+  StatusColorConfig,
+  TicketTypeWorkflowConfig
+} from "./admin-config";
 import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actions";
 import { buildDemoTickets } from "./demo-tickets";
 import { workflowTemplates } from "./nexus-data";
@@ -150,7 +155,9 @@ function mergeDefaultStatusColors(statusColors: StatusColorConfig[]): StatusColo
   const currentByStatus = new Map(
     currentStatusColors.map((statusColor) => [normalizeStatusLabel(statusColor.status), statusColor])
   );
-  const defaultStatusKeys = new Set(statusColorOptions.map((statusColor) => normalizeStatusLabel(statusColor.status)));
+  const defaultStatusKeys = new Set(
+    statusColorOptions.map((statusColor) => normalizeStatusLabel(statusColor.status))
+  );
   const mergedDefaults = statusColorOptions.map(
     (statusColor) => currentByStatus.get(normalizeStatusLabel(statusColor.status)) ?? statusColor
   );
@@ -165,7 +172,9 @@ function getJiraProjectUrl(apiBaseUrl: string, projectKey: string): string {
   const normalizedBaseUrl = normalizeJiraBaseUrl(apiBaseUrl);
   const normalizedProjectKey = extractJiraProjectKey(projectKey);
 
-  return normalizedBaseUrl && normalizedProjectKey ? `${normalizedBaseUrl}/projects/${normalizedProjectKey}` : "";
+  return normalizedBaseUrl && normalizedProjectKey
+    ? `${normalizedBaseUrl}/projects/${normalizedProjectKey}`
+    : "";
 }
 
 function normalizeStoredJiraIntegration(
@@ -185,7 +194,8 @@ function normalizeStoredJiraIntegration(
     ...mergedConfig,
     apiBaseUrl,
     defaultProjectKey,
-    projectUrl: getJiraProjectUrl(mergedConfig.projectUrl || apiBaseUrl, defaultProjectKey) || mergedConfig.projectUrl
+    projectUrl:
+      getJiraProjectUrl(mergedConfig.projectUrl || apiBaseUrl, defaultProjectKey) || mergedConfig.projectUrl
   };
 }
 
@@ -205,7 +215,10 @@ function normalizeStoredGitLabIntegration(
   return {
     ...gitlabIntegration,
     ...(config ?? {}),
-    apiBaseUrl: !apiBaseUrl || isUnsavedLegacyDefault ? gitlabIntegration.apiBaseUrl : apiBaseUrl ?? gitlabIntegration.apiBaseUrl,
+    apiBaseUrl:
+      !apiBaseUrl || isUnsavedLegacyDefault
+        ? gitlabIntegration.apiBaseUrl
+        : (apiBaseUrl ?? gitlabIntegration.apiBaseUrl),
     productRepositoryMappings
   };
 }
@@ -239,7 +252,9 @@ function normalizeStoredTicketTypeWorkflow(workflow: TicketTypeWorkflowConfig): 
   };
 }
 
-function normalizeStoredFunctionMappingReviews(ticket: Ticket): NonNullable<Ticket["functionMappingReviews"]> {
+function normalizeStoredFunctionMappingReviews(
+  ticket: Ticket
+): NonNullable<Ticket["functionMappingReviews"]> {
   if (!Array.isArray(ticket.functionMappingReviews)) {
     return [];
   }
@@ -253,7 +268,10 @@ function normalizeStoredFunctionMappingReviews(ticket: Ticket): NonNullable<Tick
             ...step,
             label: "Solution architecture mapping",
             ownerRole: "solution_architect",
-            ownerName: step.ownerRole === "solution_architect" && step.ownerName ? step.ownerName : "Solution Architect",
+            ownerName:
+              step.ownerRole === "solution_architect" && step.ownerName
+                ? step.ownerName
+                : "Solution Architect",
             discussion: Array.isArray(step.discussion) ? step.discussion : []
           }
         : {
@@ -311,7 +329,7 @@ function parseJson<T>(value: string, label: string): T {
 }
 
 function quoteIdentifier(identifier: string): string {
-  return `"${identifier.replace(/"/g, "\"\"")}"`;
+  return `"${identifier.replace(/"/g, '""')}"`;
 }
 
 function normalizeDatabaseValue(value: unknown): unknown {
@@ -331,9 +349,7 @@ function normalizeDatabaseRow(row: unknown): Record<string, unknown> {
     return {};
   }
 
-  return Object.fromEntries(
-    Object.entries(row).map(([key, value]) => [key, normalizeDatabaseValue(value)])
-  );
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, normalizeDatabaseValue(value)]));
 }
 
 function assertReadOnlySql(sql: string): string {
@@ -361,7 +377,9 @@ function assertReadOnlySql(sql: string): string {
     /\b(insert|update|delete|replace|drop|alter|create|attach|detach|vacuum|reindex|analyze|truncate)\b|load_extension|writable_schema/i;
 
   if (forbiddenPattern.test(normalizedSql)) {
-    throw new Error("Write, schema, attachment, and extension operations are not allowed from the admin query console.");
+    throw new Error(
+      "Write, schema, attachment, and extension operations are not allowed from the admin query console."
+    );
   }
 
   if (/^pragma\b/i.test(normalizedSql)) {
@@ -369,7 +387,9 @@ function assertReadOnlySql(sql: string): string {
       /^pragma\s+(table_info|table_xinfo|index_list|foreign_key_list)\s*\(\s*["'`]?[\w-]+["'`]?\s*\)$|^pragma\s+(table_list|database_list)\s*$/i;
 
     if (!safePragmaPattern.test(normalizedSql)) {
-      throw new Error("Only table_info, table_xinfo, index_list, foreign_key_list, table_list, and database_list PRAGMA queries are allowed.");
+      throw new Error(
+        "Only table_info, table_xinfo, index_list, foreign_key_list, table_list, and database_list PRAGMA queries are allowed."
+      );
     }
   }
 
@@ -424,21 +444,29 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
   return {
     ...emptyAdminConfig,
     ...sourceConfig,
-    users: Array.isArray(sourceConfig.users) ? sourceConfig.users.map((user) => normalizeAdminUser(user)) : [],
+    users: Array.isArray(sourceConfig.users)
+      ? sourceConfig.users.map((user) => normalizeAdminUser(user))
+      : [],
     customRoles: Array.isArray(sourceConfig.customRoles) ? sourceConfig.customRoles : [],
     roleDomains,
     deletedRoleKeys: Array.isArray(sourceConfig.deletedRoleKeys) ? sourceConfig.deletedRoleKeys : [],
     regionSites: Array.isArray(sourceConfig.regionSites) ? sourceConfig.regionSites : [],
     departments: Array.isArray(sourceConfig.departments) ? sourceConfig.departments : adminConfig.departments,
-    productDomains: Array.isArray(sourceConfig.productDomains) ? sourceConfig.productDomains : adminConfig.productDomains,
+    productDomains: Array.isArray(sourceConfig.productDomains)
+      ? sourceConfig.productDomains
+      : adminConfig.productDomains,
     products: Array.isArray(sourceConfig.products)
       ? sourceConfig.products.map((product) => normalizeProductConfig(product))
       : [],
-    responsibilityMappings: Array.isArray(sourceConfig.responsibilityMappings) ? sourceConfig.responsibilityMappings : [],
+    responsibilityMappings: Array.isArray(sourceConfig.responsibilityMappings)
+      ? sourceConfig.responsibilityMappings
+      : [],
     requestTypes: Array.isArray(sourceConfig.requestTypes) ? sourceConfig.requestTypes : [],
     priorities,
     riskOptions: Array.isArray(sourceConfig.riskOptions) ? sourceConfig.riskOptions : [],
-    statusColors: mergeDefaultStatusColors(Array.isArray(sourceConfig.statusColors) ? sourceConfig.statusColors : []),
+    statusColors: mergeDefaultStatusColors(
+      Array.isArray(sourceConfig.statusColors) ? sourceConfig.statusColors : []
+    ),
     requestCategories: Array.isArray(sourceConfig.requestCategories) ? sourceConfig.requestCategories : [],
     slaRules: shouldMigrateLegacyPriorities
       ? migrateLegacyPriorityReferences(Array.isArray(sourceConfig.slaRules) ? sourceConfig.slaRules : [])
@@ -454,7 +482,9 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
         : [],
     leadTimeStatusRules: normalizeLeadTimeStatusRules(sourceConfig.leadTimeStatusRules),
     leadTimeTransitionRules: normalizeLeadTimeTransitionRules(sourceConfig.leadTimeTransitionRules),
-    notificationTemplates: Array.isArray(sourceConfig.notificationTemplates) ? sourceConfig.notificationTemplates : [],
+    notificationTemplates: Array.isArray(sourceConfig.notificationTemplates)
+      ? sourceConfig.notificationTemplates
+      : [],
     formTemplates: Array.isArray(sourceConfig.formTemplates) ? sourceConfig.formTemplates : [],
     ticketTypeWorkflows: Array.isArray(sourceConfig.ticketTypeWorkflows)
       ? sourceConfig.ticketTypeWorkflows.map((workflow) => normalizeStoredTicketTypeWorkflow(workflow))
@@ -580,9 +610,8 @@ function insertDemoTickets(db: DatabaseSync, tickets: Ticket[]) {
 }
 
 function seedDefaults(db: DatabaseSync) {
-  const existingConfig = db
-    .prepare("SELECT payload FROM app_config WHERE key = ?")
-    .get(adminConfigKey) as ConfigRow | undefined;
+  const existingConfig = db.prepare("SELECT payload FROM app_config WHERE key = ?").get(adminConfigKey) as
+    ConfigRow | undefined;
 
   if (!existingConfig) {
     db.prepare("INSERT INTO app_config (key, payload, updated_at) VALUES (?, ?, ?)").run(
@@ -611,16 +640,13 @@ function seedDefaults(db: DatabaseSync) {
   }
 
   // Re-align seeded demo tickets when product catalog changed (e.g. Calibration Hub → IIoT).
-  const configRow = db
-    .prepare("SELECT payload FROM app_config WHERE key = ?")
-    .get(adminConfigKey) as ConfigRow | undefined;
+  const configRow = db.prepare("SELECT payload FROM app_config WHERE key = ?").get(adminConfigKey) as
+    ConfigRow | undefined;
   const liveConfig = configRow
     ? parseJson<AdminConfig>(configRow.payload, "admin-config-ticket-align")
     : adminConfig;
   const knownProducts = new Set(
-    (liveConfig.products ?? [])
-      .map((product) => product.productName.trim().toLowerCase())
-      .filter(Boolean)
+    (liveConfig.products ?? []).map((product) => product.productName.trim().toLowerCase()).filter(Boolean)
   );
 
   if (knownProducts.size === 0) {
@@ -632,11 +658,15 @@ function seedDefaults(db: DatabaseSync) {
     normalizeStoredTicket(parseJson<Ticket>(row.payload, "ticket-align"))
   );
   const hasUnknownProduct = tickets.some(
-    (ticket) => !knownProducts.has(String(ticket.product ?? "").trim().toLowerCase())
+    (ticket) =>
+      !knownProducts.has(
+        String(ticket.product ?? "")
+          .trim()
+          .toLowerCase()
+      )
   );
   const looksLikeDemoSeed =
-    tickets.length > 0 &&
-    tickets.every((ticket) => String(ticket.id ?? "").startsWith("ticket-demo-"));
+    tickets.length > 0 && tickets.every((ticket) => String(ticket.id ?? "").startsWith("ticket-demo-"));
 
   if (hasUnknownProduct && looksLikeDemoSeed) {
     db.prepare("DELETE FROM tickets").run();
@@ -685,14 +715,17 @@ export function listDatabaseTables(): DatabaseTableSummary[] {
     const tableName = table.name;
     const quotedTableName = quoteIdentifier(tableName);
     const rowCount =
-      (db.prepare(`SELECT COUNT(*) AS count FROM ${quotedTableName}`).get() as CountRow | undefined)?.count ?? 0;
-    const columns = (db.prepare(`PRAGMA table_info(${quotedTableName})`).all() as ColumnInfoRow[]).map((column) => ({
-      name: column.name,
-      type: column.type || "ANY",
-      nullable: column.notnull === 0,
-      primaryKey: column.pk > 0,
-      defaultValue: normalizeDatabaseValue(column.dflt_value)
-    }));
+      (db.prepare(`SELECT COUNT(*) AS count FROM ${quotedTableName}`).get() as CountRow | undefined)?.count ??
+      0;
+    const columns = (db.prepare(`PRAGMA table_info(${quotedTableName})`).all() as ColumnInfoRow[]).map(
+      (column) => ({
+        name: column.name,
+        type: column.type || "ANY",
+        nullable: column.notnull === 0,
+        primaryKey: column.pk > 0,
+        defaultValue: normalizeDatabaseValue(column.dflt_value)
+      })
+    );
     const previewRows = db
       .prepare(`SELECT * FROM ${quotedTableName} LIMIT 5`)
       .all()
@@ -724,7 +757,9 @@ export function runReadOnlyDatabaseQuery(sql: string, maxRows = 200): DatabaseQu
   };
 }
 
-export function clearLocalTicketsForDevelopment(options: { allowProduction?: boolean } = {}): DatabaseTableSummary[] {
+export function clearLocalTicketsForDevelopment(
+  options: { allowProduction?: boolean } = {}
+): DatabaseTableSummary[] {
   if (process.env.NODE_ENV === "production" && !options.allowProduction) {
     throw new Error("Local ticket cleanup is disabled in production.");
   }
@@ -745,9 +780,8 @@ export function clearLocalTicketsForDevelopment(options: { allowProduction?: boo
 }
 
 export function readAdminConfig(): AdminConfig {
-  const row = getDatabase()
-    .prepare("SELECT payload FROM app_config WHERE key = ?")
-    .get(adminConfigKey) as ConfigRow | undefined;
+  const row = getDatabase().prepare("SELECT payload FROM app_config WHERE key = ?").get(adminConfigKey) as
+    ConfigRow | undefined;
 
   if (!row) {
     saveAdminConfig(adminConfig);
@@ -784,7 +818,10 @@ function mapDuplicateNotificationDelivery(row: NotificationDeliveryRow): Notific
   };
 }
 
-export function claimNotificationDelivery(idempotencyKey: string, recipientCount: number): NotificationDeliveryClaim {
+export function claimNotificationDelivery(
+  idempotencyKey: string,
+  recipientCount: number
+): NotificationDeliveryClaim {
   const db = getDatabase();
   const timestamp = nowIso();
   const insertResult = db
@@ -912,9 +949,8 @@ export function listTickets(): Ticket[] {
 }
 
 export function getTicketByKeyFromDatabase(ticketKey: string): Ticket | undefined {
-  const row = getDatabase()
-    .prepare("SELECT payload FROM tickets WHERE key = ?")
-    .get(ticketKey) as TicketRow | undefined;
+  const row = getDatabase().prepare("SELECT payload FROM tickets WHERE key = ?").get(ticketKey) as
+    TicketRow | undefined;
 
   return row ? normalizeStoredTicket(parseJson<Ticket>(row.payload, `ticket-${ticketKey}`)) : undefined;
 }
@@ -1168,7 +1204,15 @@ export function failOutboxJob(jobId: string, errorMessage: string, retryDelaySec
           completed_at = CASE WHEN ? = 'dead' THEN ? ELSE completed_at END
       WHERE id = ?
     `
-  ).run(nextStatus, errorMessage.slice(0, 2000), availableAt, now.toISOString(), nextStatus, now.toISOString(), jobId);
+  ).run(
+    nextStatus,
+    errorMessage.slice(0, 2000),
+    availableAt,
+    now.toISOString(),
+    nextStatus,
+    now.toISOString(),
+    jobId
+  );
 }
 
 export function listOutboxJobs(limit = 50): OutboxJob[] {

@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  TdsBanner,
-  TdsButton,
-  TdsMessage,
-  TdsTag,
-  TdsTextField
-} from "@scania/tegel-react";
+import { TdsBanner, TdsButton, TdsMessage, TdsTag, TdsTextField } from "@scania/tegel-react";
 import type { ComponentProps, ReactNode } from "react";
 import { useEffect, useId, useState } from "react";
 import type { TegelTagVariant } from "@/lib/admin-config";
