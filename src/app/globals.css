@@ -16310,7 +16310,17 @@ tds-button:active {
   }
 
   .module-header {
-    padding: 14px 16px 12px;
+    /*
+     * This is intentionally a complete padding declaration: several modules
+     * share this shell and earlier responsive rules use shorthand padding.
+     * Keeping it here ensures both the title and its description keep the
+     * same inset from the accent rail.
+     */
+    padding: 16px 20px 14px !important;
+  }
+
+  .module-header > div:first-child {
+    padding-left: 0;
   }
 
   .dashboard-command-panel {
