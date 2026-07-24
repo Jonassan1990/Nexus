@@ -16309,8 +16309,14 @@ tds-button:active {
     padding: 12px;
   }
 
-  .module-header,
-  .dashboard-command-panel,
+  .module-header {
+    padding: 14px 16px 12px;
+  }
+
+  .dashboard-command-panel {
+    padding: 16px;
+  }
+
   .ticket-hero,
   .admin-editor-form {
     padding-left: 0;
