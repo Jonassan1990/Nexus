@@ -23219,7 +23219,7 @@ function TicketListWorkspace({
             <tbody>
               {sortedRows.length === 0 ? (
                 <tr>
-                  <td colSpan={emptyStateColumnCount}>
+                  <td className="ticket-list-empty-cell" colSpan={emptyStateColumnCount}>
                     <EmptyState title={ticketsEmptyCopy.title} body={ticketsEmptyCopy.body} />
                   </td>
                 </tr>

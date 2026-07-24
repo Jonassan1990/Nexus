@@ -15469,6 +15469,38 @@ tds-button:active {
     min-width: 0;
   }
 
+  /*
+   * An empty table row is a single full-width message, not a data row.
+   * Exclude it from the mobile label/value grid so it cannot be pushed into
+   * the value column by the invisible table-label pseudo element.
+   */
+  .ticket-list-table td.ticket-list-empty-cell {
+    display: block;
+    grid-column: 1 / -1;
+    width: 100%;
+    padding: 0;
+  }
+
+  .ticket-list-table td.ticket-list-empty-cell::before {
+    display: none;
+  }
+
+  .tegel-empty-state {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 172px;
+    text-align: center;
+  }
+
+  .tegel-empty-state-copy {
+    justify-items: center;
+  }
+
+  .tegel-empty-state-copy p {
+    max-width: 32ch;
+  }
+
   .ticket-list-table td:first-child,
   .admin-user-table td:nth-child(2),
   .admin-config-table td:nth-child(2) {
