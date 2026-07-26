@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getLocalDatabasePath, readAdminConfig, saveAdminConfig } from "@/lib/local-database";
+import { requireApiPrincipal, requireAdminPrincipal } from "@/lib/auth/api-auth";
+import { getLocalDatabasePath, readAdminConfig, saveAdminConfig } from "@/lib/database";
 import type { AdminConfig } from "@/lib/admin-config";
 
 export const dynamic = "force-dynamic";
@@ -71,8 +72,14 @@ function validateAdminConfig(value: unknown): string[] {
   return errors;
 }
 
-export function GET() {
-  const config = readAdminConfig();
+export async function GET(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
+  const config = await readAdminConfig();
 
   return NextResponse.json({
     data: config,
@@ -83,6 +90,12 @@ export function GET() {
 }
 
 export async function PUT(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const parsedPayload = configRequestSchema.safeParse(await request.json().catch(() => null));
 
   if (!parsedPayload.success) {
@@ -113,7 +126,7 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  saveAdminConfig(config as AdminConfig);
+  await saveAdminConfig(config as AdminConfig);
 
   return NextResponse.json({
     data: config,

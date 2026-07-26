@@ -246,15 +246,20 @@ export interface AuditEntry {
 
 export interface Attachment {
   id: string;
+  ticketId?: string;
   fileName: string;
   mimeType: string;
   byteSize?: number;
+  checksumSha256?: string;
   sizeLabel: string;
   relation: AttachmentRelation;
   uploadedBy: string;
   uploadedAt: string;
   storageProvider: "local" | "s3";
+  bucketName?: string;
+  s3Key?: string;
   previewAvailable: boolean;
+  downloadUrl?: string;
   contentDataUrl?: string;
 }
 

@@ -20,6 +20,12 @@ import {
   smtpConfig,
   statusColorOptions
 } from "./admin-config";
+import {
+  deleteAttachmentObject,
+  parseAttachmentDataUrl,
+  uploadAttachmentObject,
+  type StoredAttachmentRecord
+} from "./attachment-storage";
 import type {
   AdminConfig,
   GitLabIntegrationConfig,
@@ -30,7 +36,7 @@ import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actio
 import { buildDemoTickets } from "./demo-tickets";
 import { workflowTemplates } from "./nexus-data";
 import { createOutboxJobId, type OutboxEnqueueInput, type OutboxJob, type OutboxJobStatus } from "./outbox";
-import type { Ticket } from "./types";
+import type { Attachment, Ticket } from "./types";
 
 type ConfigRow = {
   payload: string;
@@ -38,6 +44,26 @@ type ConfigRow = {
 
 type TicketRow = {
   payload: string;
+};
+
+type AttachmentRow = {
+  id: string;
+  ticket_id: string;
+  original_filename?: string;
+  file_name?: string;
+  mime_type: string;
+  size_bytes?: number;
+  byte_size?: number;
+  checksum_sha256: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  storage_provider?: "s3" | "local";
+  bucket_name?: string | null;
+  s3_key?: string | null;
+  object_key?: string | null;
+  relation_type?: string;
+  relation_id: string | null;
+  preview_available: number | boolean;
 };
 
 type SqliteTableRow = {
@@ -127,7 +153,7 @@ const emptyAdminConfig: AdminConfig = {
   products: [],
   responsibilityMappings: [],
   requestTypes: [],
-  priorities: [],
+  priorities: getJiraPriorityOptions(),
   riskOptions: [],
   statusColors: [],
   requestCategories: [],
@@ -302,6 +328,308 @@ function normalizeStoredTicket(ticket: Ticket): Ticket {
   };
 }
 
+function getAttachmentRecordFileName(row: AttachmentRow): string {
+  return (row.original_filename || row.file_name || "attachment").trim() || "attachment";
+}
+
+function getAttachmentRecordSizeBytes(row: AttachmentRow): number {
+  const sizeBytes = row.size_bytes ?? row.byte_size ?? 0;
+
+  return Number.isFinite(sizeBytes) && sizeBytes > 0 ? Number(sizeBytes) : 0;
+}
+
+function getAttachmentRecordS3Key(row: AttachmentRow): string {
+  return (row.s3_key || row.object_key || "").trim();
+}
+
+function getAttachmentRecordBucketName(row: AttachmentRow): string {
+  return (row.bucket_name || "").trim();
+}
+
+function getAttachmentRecordStorageProvider(row: AttachmentRow): "local" | "s3" {
+  return row.storage_provider === "s3" ? "s3" : "local";
+}
+
+function mapAttachmentRow(row: AttachmentRow): Attachment {
+  const fileName = getAttachmentRecordFileName(row);
+  const sizeBytes = getAttachmentRecordSizeBytes(row);
+  const storageProvider = getAttachmentRecordStorageProvider(row);
+  const bucketName = getAttachmentRecordBucketName(row);
+  const s3Key = getAttachmentRecordS3Key(row);
+
+  return {
+    id: row.id,
+    ticketId: row.ticket_id,
+    fileName,
+    mimeType: row.mime_type,
+    byteSize: sizeBytes,
+    sizeLabel: sizeBytes > 1024 * 1024 ? `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(Math.round(sizeBytes / 1024), 1)} KB`,
+    relation: (row.relation_type as Attachment["relation"]) || "ticket_information",
+    uploadedBy: row.uploaded_by,
+    uploadedAt: row.uploaded_at,
+    storageProvider,
+    bucketName: bucketName || undefined,
+    s3Key: s3Key || undefined,
+    previewAvailable: Boolean(row.preview_available),
+    downloadUrl: undefined
+  };
+}
+
+function stripAttachmentBinaryData(attachment: Attachment): Attachment {
+  return {
+    ...attachment,
+    contentDataUrl: undefined,
+    downloadUrl: undefined
+  };
+}
+
+function stripTicketAttachmentBinaryData(ticket: Ticket): Ticket {
+  return {
+    ...ticket,
+    attachments: ticket.attachments.map((attachment) => stripAttachmentBinaryData(attachment))
+  };
+}
+
+function buildAttachmentInsertSql(): string {
+  return `
+    INSERT INTO attachment_objects (
+      id,
+      ticket_id,
+      original_filename,
+      mime_type,
+      size_bytes,
+      checksum_sha256,
+      uploaded_by,
+      uploaded_at,
+      storage_provider,
+      bucket_name,
+      s3_key,
+      relation_type,
+      relation_id,
+      preview_available
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      ticket_id = excluded.ticket_id,
+      original_filename = excluded.original_filename,
+      mime_type = excluded.mime_type,
+      size_bytes = excluded.size_bytes,
+      checksum_sha256 = excluded.checksum_sha256,
+      uploaded_by = excluded.uploaded_by,
+      uploaded_at = excluded.uploaded_at,
+      storage_provider = excluded.storage_provider,
+      bucket_name = excluded.bucket_name,
+      s3_key = excluded.s3_key,
+      relation_type = excluded.relation_type,
+      relation_id = excluded.relation_id,
+      preview_available = excluded.preview_available
+  `;
+}
+
+async function getAttachmentRowsForTicket(ticketId: string): Promise<AttachmentRow[]> {
+  return getDatabase()
+    .prepare("SELECT * FROM attachment_objects WHERE ticket_id = ? ORDER BY uploaded_at ASC, id ASC")
+    .all(ticketId) as AttachmentRow[];
+}
+
+async function getAttachmentRowById(attachmentId: string): Promise<AttachmentRow | undefined> {
+  return getDatabase().prepare("SELECT * FROM attachment_objects WHERE id = ?").get(attachmentId) as
+    | AttachmentRow
+    | undefined;
+}
+
+function ensureAttachmentRowsTableColumns(db: DatabaseSync): void {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(attachment_objects)").all() as ColumnInfoRow[]).map((column) => column.name)
+  );
+
+  if (columns.size === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS attachment_objects (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        checksum_sha256 TEXT NOT NULL,
+        uploaded_by TEXT NOT NULL,
+        uploaded_at TEXT NOT NULL,
+        storage_provider TEXT NOT NULL DEFAULT 's3',
+        bucket_name TEXT NOT NULL,
+        s3_key TEXT NOT NULL,
+        relation_type TEXT NOT NULL DEFAULT 'ticket_information',
+        relation_id TEXT,
+        preview_available INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    return;
+  }
+
+  const alterStatements = [
+    !columns.has("original_filename") ? "ALTER TABLE attachment_objects ADD COLUMN original_filename TEXT" : "",
+    !columns.has("size_bytes") ? "ALTER TABLE attachment_objects ADD COLUMN size_bytes INTEGER" : "",
+    !columns.has("s3_key") ? "ALTER TABLE attachment_objects ADD COLUMN s3_key TEXT" : "",
+    !columns.has("storage_provider") ? "ALTER TABLE attachment_objects ADD COLUMN storage_provider TEXT" : "",
+    !columns.has("bucket_name") ? "ALTER TABLE attachment_objects ADD COLUMN bucket_name TEXT" : "",
+    !columns.has("relation_type") ? "ALTER TABLE attachment_objects ADD COLUMN relation_type TEXT" : "",
+    !columns.has("preview_available") ? "ALTER TABLE attachment_objects ADD COLUMN preview_available INTEGER" : ""
+  ].filter(Boolean);
+
+  for (const statement of alterStatements) {
+    db.exec(statement);
+  }
+
+  if (columns.has("file_name")) {
+    db.exec(
+      "UPDATE attachment_objects SET original_filename = COALESCE(original_filename, file_name) WHERE original_filename IS NULL"
+    );
+  }
+
+  if (columns.has("object_key")) {
+    db.exec("UPDATE attachment_objects SET s3_key = COALESCE(s3_key, object_key) WHERE s3_key IS NULL");
+  }
+
+  if (columns.has("byte_size")) {
+    db.exec("UPDATE attachment_objects SET size_bytes = COALESCE(size_bytes, byte_size) WHERE size_bytes IS NULL");
+  }
+
+  db.exec(
+    "UPDATE attachment_objects SET storage_provider = COALESCE(storage_provider, 's3'), relation_type = COALESCE(relation_type, 'ticket_information'), preview_available = COALESCE(preview_available, 0)"
+  );
+}
+
+async function syncAttachmentRowsForTicket(ticket: Ticket, db: DatabaseSync): Promise<void> {
+  ensureAttachmentRowsTableColumns(db);
+
+  const existingRows = (db
+    .prepare("SELECT * FROM attachment_objects WHERE ticket_id = ?")
+    .all(ticket.id) as AttachmentRow[]).map((row) => ({
+    ...row,
+    s3_key: getAttachmentRecordS3Key(row),
+    bucket_name: getAttachmentRecordBucketName(row),
+    original_filename: getAttachmentRecordFileName(row),
+    size_bytes: getAttachmentRecordSizeBytes(row)
+  }));
+  const existingById = new Map(existingRows.map((row) => [row.id, row]));
+  const nextIds = new Set<string>();
+  const insert = db.prepare(buildAttachmentInsertSql());
+
+  for (const attachment of ticket.attachments) {
+    const relationType = attachment.relation || "ticket_information";
+    const existing = existingById.get(attachment.id);
+    let storedRecord: StoredAttachmentRecord | null = null;
+    let contentDataUrl = attachment.contentDataUrl?.trim() ?? "";
+
+    if (contentDataUrl) {
+      const decoded = parseAttachmentDataUrl(contentDataUrl);
+
+      if (!decoded) {
+        throw new Error(`Attachment ${attachment.fileName} has invalid content data.`);
+      }
+
+      storedRecord = await uploadAttachmentObject({
+        ticketId: ticket.id,
+        attachmentId: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType || decoded.mimeType,
+        content: decoded.content,
+        uploadedBy: attachment.uploadedBy,
+        uploadedAt: attachment.uploadedAt
+      });
+    } else if (attachment.storageProvider === "s3" && attachment.s3Key) {
+      storedRecord = {
+        id: attachment.id,
+        ticketId: ticket.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.byteSize ?? existing?.size_bytes ?? 0,
+        checksumSha256: attachment.checksumSha256 || existing?.checksum_sha256 || "",
+        uploadedBy: attachment.uploadedBy || existing?.uploaded_by || "",
+        uploadedAt: attachment.uploadedAt || existing?.uploaded_at || nowIso(),
+        storageProvider: "s3",
+        bucketName: attachment.bucketName || existing?.bucket_name || "",
+        s3Key: attachment.s3Key,
+        previewAvailable: attachment.previewAvailable
+      };
+    } else if (existing) {
+      storedRecord = {
+        id: existing.id,
+        ticketId: existing.ticket_id,
+        fileName: getAttachmentRecordFileName(existing),
+        mimeType: existing.mime_type,
+        sizeBytes: getAttachmentRecordSizeBytes(existing),
+        checksumSha256: existing.checksum_sha256,
+        uploadedBy: existing.uploaded_by,
+        uploadedAt: existing.uploaded_at,
+        storageProvider: "s3",
+        bucketName: getAttachmentRecordBucketName(existing),
+        s3Key: getAttachmentRecordS3Key(existing),
+        previewAvailable: Boolean(existing.preview_available)
+      };
+    } else {
+      throw new Error(`Attachment ${attachment.fileName} is missing stored content.`);
+    }
+
+    nextIds.add(storedRecord.id);
+
+    insert.run(
+      storedRecord.id,
+      ticket.id,
+      storedRecord.fileName,
+      storedRecord.mimeType,
+      storedRecord.sizeBytes,
+      storedRecord.checksumSha256,
+      storedRecord.uploadedBy,
+      storedRecord.uploadedAt,
+      storedRecord.storageProvider,
+      storedRecord.bucketName,
+      storedRecord.s3Key,
+      relationType,
+      null,
+      storedRecord.previewAvailable ? 1 : 0
+    );
+  }
+
+  for (const row of existingRows) {
+    if (nextIds.has(row.id)) {
+      continue;
+    }
+
+    const s3Key = getAttachmentRecordS3Key(row);
+
+    if (s3Key) {
+      await deleteAttachmentObject(s3Key);
+    }
+
+    db.prepare("DELETE FROM attachment_objects WHERE id = ?").run(row.id);
+  }
+}
+
+async function hydrateTicketAttachmentDownloads(ticket: Ticket): Promise<Ticket> {
+  const attachments = await Promise.all(
+    ticket.attachments.map(async (attachment) => {
+      if (attachment.contentDataUrl?.trim()) {
+        return attachment;
+      }
+
+      if (!attachment.s3Key || attachment.storageProvider !== "s3") {
+        return attachment;
+      }
+
+      return {
+        ...attachment,
+        downloadUrl: `/api/attachments/${attachment.id}`,
+        contentDataUrl: undefined
+      };
+    })
+  );
+
+  return {
+    ...ticket,
+    attachments
+  };
+}
+
 function getDatabasePath(): string {
   const configuredPath = process.env.NEXUS_LOCAL_DB_PATH?.trim();
 
@@ -439,7 +767,8 @@ function normalizeStoredAdminConfig(config: AdminConfig): AdminConfig {
     : [];
   const rawPriorities = Array.isArray(sourceConfig.priorities) ? sourceConfig.priorities : [];
   const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
-  const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
+  const priorities =
+    rawPriorities.length === 0 || shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
 
   return {
     ...emptyAdminConfig,
@@ -530,6 +859,23 @@ function migrate(db: DatabaseSync) {
       payload TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS attachment_objects (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL,
+      original_filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      checksum_sha256 TEXT NOT NULL,
+      uploaded_by TEXT NOT NULL,
+      uploaded_at TEXT NOT NULL,
+      storage_provider TEXT NOT NULL DEFAULT 's3',
+      bucket_name TEXT NOT NULL,
+      s3_key TEXT NOT NULL,
+      relation_type TEXT NOT NULL DEFAULT 'ticket_information',
+      relation_id TEXT,
+      preview_available INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS notification_deliveries (
       idempotency_key TEXT PRIMARY KEY,
       status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed')),
@@ -547,6 +893,9 @@ function migrate(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_local_tickets_priority ON tickets(priority);
     CREATE INDEX IF NOT EXISTS idx_local_tickets_product ON tickets(product);
     CREATE INDEX IF NOT EXISTS idx_local_tickets_updated_at ON tickets(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_attachment_objects_ticket ON attachment_objects(ticket_id);
+    CREATE INDEX IF NOT EXISTS idx_attachment_objects_relation ON attachment_objects(relation_type, relation_id);
+    CREATE INDEX IF NOT EXISTS idx_attachment_objects_storage ON attachment_objects(storage_provider, bucket_name);
     CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status ON notification_deliveries(status);
     CREATE INDEX IF NOT EXISTS idx_notification_deliveries_updated_at ON notification_deliveries(updated_at);
 
@@ -568,6 +917,8 @@ function migrate(db: DatabaseSync) {
       ON outbox_jobs(status, available_at);
     CREATE INDEX IF NOT EXISTS idx_outbox_jobs_type ON outbox_jobs(type);
   `);
+
+  ensureAttachmentRowsTableColumns(db);
 }
 
 function insertDemoTickets(db: DatabaseSync, tickets: Ticket[]) {
@@ -940,73 +1291,36 @@ export function markNotificationDeliveryFailed(idempotencyKey: string, errorMess
     .run(errorMessage, nowIso(), idempotencyKey);
 }
 
-export function listTickets(): Ticket[] {
+export async function listTickets(): Promise<Ticket[]> {
   const rows = getDatabase()
     .prepare("SELECT payload FROM tickets ORDER BY updated_at DESC, key DESC")
     .all() as TicketRow[];
 
-  return rows.map((row) => normalizeStoredTicket(parseJson<Ticket>(row.payload, "ticket")));
+  const tickets = rows.map((row) => normalizeStoredTicket(parseJson<Ticket>(row.payload, "ticket")));
+
+  return Promise.all(tickets.map((ticket) => hydrateTicketAttachmentDownloads(ticket)));
 }
 
-export function getTicketByKeyFromDatabase(ticketKey: string): Ticket | undefined {
+export async function getTicketByKeyFromDatabase(ticketKey: string): Promise<Ticket | undefined> {
   const row = getDatabase().prepare("SELECT payload FROM tickets WHERE key = ?").get(ticketKey) as
     TicketRow | undefined;
 
-  return row ? normalizeStoredTicket(parseJson<Ticket>(row.payload, `ticket-${ticketKey}`)) : undefined;
+  if (!row) {
+    return undefined;
+  }
+
+  return hydrateTicketAttachmentDownloads(
+    normalizeStoredTicket(parseJson<Ticket>(row.payload, `ticket-${ticketKey}`))
+  );
 }
 
-export function saveTicket(ticket: Ticket): void {
-  getDatabase()
-    .prepare(
-      `
-        INSERT INTO tickets (
-          key,
-          id,
-          title,
-          type_id,
-          state,
-          product,
-          module_name,
-          site,
-          priority,
-          risk,
-          updated_at,
-          payload
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          id = excluded.id,
-          title = excluded.title,
-          type_id = excluded.type_id,
-          state = excluded.state,
-          product = excluded.product,
-          module_name = excluded.module_name,
-          site = excluded.site,
-          priority = excluded.priority,
-          risk = excluded.risk,
-          updated_at = excluded.updated_at,
-          payload = excluded.payload
-      `
-    )
-    .run(
-      ticket.key,
-      ticket.id,
-      ticket.title,
-      ticket.typeId,
-      ticket.state,
-      ticket.product,
-      ticket.module,
-      ticket.site,
-      ticket.priority,
-      ticket.risk,
-      ticket.updatedAt,
-      serializeJson(ticket)
-    );
-}
-
-export function replaceTickets(tickets: Ticket[]): void {
+export async function saveTicket(ticket: Ticket): Promise<void> {
   const db = getDatabase();
-  const insert = db.prepare(
+  const storedTicket = stripTicketAttachmentBinaryData(ticket);
+
+  await syncAttachmentRowsForTicket(storedTicket, db);
+
+  db.prepare(
     `
       INSERT INTO tickets (
         key,
@@ -1023,29 +1337,56 @@ export function replaceTickets(tickets: Ticket[]): void {
         payload
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        id = excluded.id,
+        title = excluded.title,
+        type_id = excluded.type_id,
+        state = excluded.state,
+        product = excluded.product,
+        module_name = excluded.module_name,
+        site = excluded.site,
+        priority = excluded.priority,
+        risk = excluded.risk,
+        updated_at = excluded.updated_at,
+        payload = excluded.payload
     `
+  ).run(
+    storedTicket.key,
+    storedTicket.id,
+    storedTicket.title,
+    storedTicket.typeId,
+    storedTicket.state,
+    storedTicket.product,
+    storedTicket.module,
+    storedTicket.site,
+    storedTicket.priority,
+    storedTicket.risk,
+    storedTicket.updatedAt,
+    serializeJson(storedTicket)
   );
+}
+
+export async function replaceTickets(tickets: Ticket[]): Promise<void> {
+  const db = getDatabase();
+  const attachmentRows = (db.prepare("SELECT * FROM attachment_objects").all() as AttachmentRow[]).map((row) => ({
+    ...row,
+    s3_key: getAttachmentRecordS3Key(row)
+  }));
 
   db.exec("BEGIN IMMEDIATE");
 
   try {
+    for (const row of attachmentRows) {
+      if (row.s3_key) {
+        await deleteAttachmentObject(row.s3_key);
+      }
+    }
+
     db.prepare("DELETE FROM tickets").run();
+    db.prepare("DELETE FROM attachment_objects").run();
 
     for (const ticket of tickets) {
-      insert.run(
-        ticket.key,
-        ticket.id,
-        ticket.title,
-        ticket.typeId,
-        ticket.state,
-        ticket.product,
-        ticket.module,
-        ticket.site,
-        ticket.priority,
-        ticket.risk,
-        ticket.updatedAt,
-        serializeJson(ticket)
-      );
+      await saveTicket(ticket);
     }
 
     db.exec("COMMIT");

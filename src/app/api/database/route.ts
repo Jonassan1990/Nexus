@@ -1,24 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAdminPrincipal } from "@/lib/auth/api-auth";
 import {
   clearLocalTicketsForDevelopment,
   getLocalDatabasePath,
   listDatabaseTables,
   runReadOnlyDatabaseQuery
-} from "@/lib/local-database";
+} from "@/lib/database";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function isAdminRole(value: string | null | undefined): boolean {
-  return value === "admin";
-}
-
-function forbiddenResponse() {
+function forbiddenResponse(message = "Database inspection is available only to the Admin role.") {
   return NextResponse.json(
     {
       error: {
         code: "forbidden",
-        message: "Database inspection is available only to the Admin role."
+        message
       }
     },
     { status: 403 }
@@ -29,38 +26,68 @@ function isLocalTestingHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
 }
 
-function isLocalTicketCleanupEnabled(request: NextRequest): boolean {
+/**
+ * PoC safety: do not trust client-supplied role alone.
+ * Database inspector / wipe tools are limited to loopback or an explicit opt-in flag.
+ */
+function isDatabaseToolsEnabled(request: NextRequest): boolean {
   return (
-    process.env.NODE_ENV !== "production" ||
     process.env.NEXUS_ENABLE_LOCAL_TEST_TOOLS === "true" ||
     isLocalTestingHost(request.nextUrl.hostname)
   );
 }
 
-export function GET(request: NextRequest) {
-  if (!isAdminRole(request.nextUrl.searchParams.get("role"))) {
-    return forbiddenResponse();
+function ensureDatabaseToolsAllowed(request: NextRequest): NextResponse | null {
+  if (isDatabaseToolsEnabled(request)) {
+    return null;
   }
+
+  return forbiddenResponse(
+    "Database inspector tools are disabled for this host. Use localhost or set NEXUS_ENABLE_LOCAL_TEST_TOOLS=true for PoC admin tooling."
+  );
+}
+
+export async function GET(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
+  const toolsGate = ensureDatabaseToolsAllowed(request);
+  if (toolsGate) {
+    return toolsGate;
+  }
+
+  const databasePath = getLocalDatabasePath();
 
   return NextResponse.json({
     data: {
-      tables: listDatabaseTables()
+      tables: await listDatabaseTables()
     },
     meta: {
-      databasePath: getLocalDatabasePath()
+      databasePath,
+      databaseKind: databasePath.startsWith("aurora://") ? "aurora" : "sqlite"
     }
   });
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
+  const toolsGate = ensureDatabaseToolsAllowed(request);
+  if (toolsGate) {
+    return toolsGate;
+  }
+
   const payload = (await request.json().catch(() => null)) as {
     role?: string;
     sql?: unknown;
   } | null;
-
-  if (!isAdminRole(payload?.role)) {
-    return forbiddenResponse();
-  }
 
   if (typeof payload?.sql !== "string") {
     return NextResponse.json(
@@ -75,10 +102,13 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const databasePath = getLocalDatabasePath();
+
     return NextResponse.json({
-      data: runReadOnlyDatabaseQuery(payload.sql),
+      data: await runReadOnlyDatabaseQuery(payload.sql),
       meta: {
-        databasePath: getLocalDatabasePath()
+        databasePath,
+        databaseKind: databasePath.startsWith("aurora://") ? "aurora" : "sqlite"
       }
     });
   } catch (error) {
@@ -95,29 +125,21 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
+  const toolsGate = ensureDatabaseToolsAllowed(request);
+  if (toolsGate) {
+    return toolsGate;
+  }
+
   const payload = (await request.json().catch(() => null)) as {
     confirmation?: string;
     role?: string;
   } | null;
-
-  if (!isAdminRole(payload?.role)) {
-    return forbiddenResponse();
-  }
-
-  const canCleanLocalTickets = isLocalTicketCleanupEnabled(request);
-
-  if (!canCleanLocalTickets) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "production_blocked",
-          message:
-            "Local ticket cleanup is available only on localhost or when local test tools are explicitly enabled."
-        }
-      },
-      { status: 403 }
-    );
-  }
 
   if (payload?.confirmation !== "clean-local-tickets") {
     return NextResponse.json(
@@ -132,12 +154,15 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
+    const databasePath = getLocalDatabasePath();
+
     return NextResponse.json({
       data: {
-        tables: clearLocalTicketsForDevelopment({ allowProduction: canCleanLocalTickets })
+        tables: await clearLocalTicketsForDevelopment({ allowProduction: true })
       },
       meta: {
-        databasePath: getLocalDatabasePath()
+        databasePath,
+        databaseKind: databasePath.startsWith("aurora://") ? "aurora" : "sqlite"
       }
     });
   } catch (error) {

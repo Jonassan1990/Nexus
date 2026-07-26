@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 import { isValidEmail, type SmtpActionConfig } from "@/lib/integration-actions";
+import { getSmtpPlatformCredentials } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
@@ -63,15 +64,6 @@ function validatePayload(payload: SendTestEmailPayload): string[] {
     errors.push("Test email body is required.");
   }
 
-  const hasUsername = Boolean(config.username?.trim());
-  const hasPassword = Boolean(config.password?.trim());
-
-  if (hasUsername !== hasPassword) {
-    errors.push(
-      "SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP."
-    );
-  }
-
   return errors;
 }
 
@@ -90,11 +82,12 @@ export async function POST(request: NextRequest) {
 
   const config = payload.config as SmtpActionConfig;
   const message = payload.message as Required<NonNullable<SendTestEmailPayload["message"]>>;
+  const platformCredentials = getSmtpPlatformCredentials();
   const auth =
-    config.username?.trim() && config.password?.trim()
+    platformCredentials.username && platformCredentials.password
       ? {
-          user: config.username.trim(),
-          pass: config.password
+          user: platformCredentials.username,
+          pass: platformCredentials.password
         }
       : undefined;
 

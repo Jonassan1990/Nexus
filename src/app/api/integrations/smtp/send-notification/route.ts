@@ -6,7 +6,8 @@ import {
   enqueueOutboxJob,
   markNotificationDeliveryFailed,
   markNotificationDeliverySent
-} from "@/lib/local-database";
+} from "@/lib/database";
+import { getSmtpPlatformCredentials } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
@@ -84,15 +85,6 @@ function validatePayload(payload: SendNotificationEmailPayload): string[] {
     errors.push("Notification email body is required.");
   }
 
-  const hasUsername = Boolean(config.username?.trim());
-  const hasPassword = Boolean(config.password?.trim());
-
-  if (hasUsername !== hasPassword) {
-    errors.push(
-      "SMTP username and password must be provided together, or both left empty for relay/no-auth SMTP."
-    );
-  }
-
   if (payload.idempotencyKey !== undefined) {
     const idempotencyKey = payload.idempotencyKey.trim();
 
@@ -133,7 +125,7 @@ export async function POST(request: NextRequest) {
 
   // When enabled, persist to outbox for AWS/local workers instead of sending inline.
   if (process.env.NEXUS_OUTBOX_EMAIL === "1") {
-    const job = enqueueOutboxJob({
+    const job = await enqueueOutboxJob({
       type: "email_notification",
       payload: {
         idempotencyKey: idempotencyKey || undefined,
@@ -166,10 +158,10 @@ export async function POST(request: NextRequest) {
   }
 
   if (idempotencyKey) {
-    let deliveryClaim: ReturnType<typeof claimNotificationDelivery>;
+    let deliveryClaim: Awaited<ReturnType<typeof claimNotificationDelivery>>;
 
     try {
-      deliveryClaim = claimNotificationDelivery(idempotencyKey, recipients.length);
+      deliveryClaim = await claimNotificationDelivery(idempotencyKey, recipients.length);
     } catch (error) {
       const messageText =
         error instanceof Error ? error.message : "Unknown notification delivery claim failure.";
@@ -217,11 +209,12 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const platformCredentials = getSmtpPlatformCredentials();
   const auth =
-    config.username?.trim() && config.password?.trim()
+    platformCredentials.username && platformCredentials.password
       ? {
-          user: config.username.trim(),
-          pass: config.password
+          user: platformCredentials.username,
+          pass: platformCredentials.password
         }
       : undefined;
 
@@ -264,7 +257,7 @@ export async function POST(request: NextRequest) {
 
     if (idempotencyKey) {
       try {
-        markNotificationDeliverySent(idempotencyKey, {
+        await markNotificationDeliverySent(idempotencyKey, {
           messageId: result.messageId,
           acceptedCount: result.accepted.length,
           rejectedCount: result.rejected.length,
@@ -304,7 +297,7 @@ export async function POST(request: NextRequest) {
 
     if (idempotencyKey) {
       try {
-        markNotificationDeliveryFailed(idempotencyKey, messageText);
+        await markNotificationDeliveryFailed(idempotencyKey, messageText);
       } catch (markError) {
         console.error(
           JSON.stringify({

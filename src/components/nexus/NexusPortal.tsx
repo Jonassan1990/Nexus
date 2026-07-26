@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import type {
   ClipboardEvent,
@@ -476,8 +476,7 @@ const navItems = [
   { key: "attachments", label: "Attachments", iconName: "paperclip", visibleTo: allRoles },
   { key: "integrations", label: "Integrations", iconName: "link", visibleTo: ["admin"] as const },
   { key: "admin", label: "Admin", iconName: "configurator", visibleTo: ["admin"] as const },
-  { key: "reports", label: "Reports", iconName: "report", visibleTo: governanceRoles },
-  { key: "sla", label: "SLA", iconName: "timer", visibleTo: ["admin"] as const }
+  { key: "reports", label: "Reports", iconName: "report", visibleTo: governanceRoles }
 ] as const satisfies readonly {
   key: string;
   label: string;
@@ -1157,10 +1156,10 @@ function buildHeaderAttentionItems({
     });
   }
 
-  if (slaBreaches > 0 && canShow("sla")) {
+  if (slaBreaches > 0 && canShow("notifications")) {
     items.push({
       id: "sla",
-      module: "sla",
+      module: "notifications",
       title: "SLA breaches",
       meta: "Operational targets are breached",
       count: slaBreaches,
@@ -1665,11 +1664,7 @@ type JiraSyncMetadataPayload = {
 
 type AdminConfigUpdater = Dispatch<SetStateAction<AdminConfig>>;
 
-const adminConfigStorageKey = "nexus-admin-config-v1";
-const localIntegrationSecretsStorageKey = "nexus-integration-secrets-v1";
 const notificationReadStorageKey = "nexus-notification-read-state-v1";
-const jiraCheckedStorageKey = "nexus-jira-checked-state-v1";
-const sentEmailNotificationStorageKey = "nexus-email-notification-sent-v1";
 const persistenceDebounceMs = 400;
 
 function getNotificationReadKeys(notification: NotificationItem): string[] {
@@ -2357,7 +2352,7 @@ function createEmptyAdminConfig(): AdminConfig {
     products: [],
     responsibilityMappings: [],
     requestTypes: [],
-    priorities: [],
+    priorities: getJiraPriorityOptions(),
     riskOptions: [],
     statusColors: [],
     requestCategories: [],
@@ -2650,7 +2645,7 @@ function normalizeAdminConfig(config: AdminConfig): AdminConfig {
     productDomains.find((domain) => domain.active)?.id ?? productDomains[0]?.id ?? "";
   const rawPriorities = Array.isArray(config.priorities) ? config.priorities : [];
   const shouldMigrateLegacyPriorities = isLegacyDefaultPriorityConfig(rawPriorities);
-  const priorities = shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
+  const priorities = rawPriorities.length === 0 || shouldMigrateLegacyPriorities ? getJiraPriorityOptions() : rawPriorities;
   const roleDomains = Array.isArray(config.roleDomains)
     ? config.roleDomains.map((roleDomain) => normalizeRoleDomainConfig(roleDomain))
     : [];
@@ -3155,9 +3150,9 @@ function formatEscalationMeetingSchedule(value: {
 
   const rangeLabel = endLabel ? `${startLabel} - ${endLabel}` : startLabel;
 
-  return `${rangeLabel} · ${getEscalationMeetingDurationFromRange(value)} min · ${
+  return `${rangeLabel} Â· ${getEscalationMeetingDurationFromRange(value)} min Â· ${
     value.meetingTimeZone || defaultEscalationMeetingTimeZone
-  } · ${formatEscalationMeetingRecurrenceLabel(value)}`;
+  } Â· ${formatEscalationMeetingRecurrenceLabel(value)}`;
 }
 
 function buildEscalationMeetingAvailabilityDraft(
@@ -5540,7 +5535,7 @@ function getClarificationReplyTargetLabel(thread: ClarificationThreadRecord, ind
   const requesterRole = getClarificationRequesterRole(thread);
   const latestRole = latestMessage?.role ?? requesterRole;
 
-  return `${index + 1}. ${thread.status} · asked by ${requesterRole} · latest ${latestRole} · ${question || thread.level} · ${timestamp}`;
+  return `${index + 1}. ${thread.status} Â· asked by ${requesterRole} Â· latest ${latestRole} Â· ${question || thread.level} Â· ${timestamp}`;
 }
 
 function getClarificationAssigneeLabels(assignedTo: string): string[] {
@@ -5784,6 +5779,51 @@ function buildJiraReadyToCreateNotifications(
     .sort((left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt));
 }
 
+function buildJiraAttentionNotifications(
+  tickets: Ticket[],
+  config: AdminConfig
+): NotificationItem[] {
+  return tickets
+    .filter((ticket) => ticketUsesJira(config, ticket))
+    .filter((ticket) => {
+      const followUpStatus = getTicketJiraFollowUpStatus(ticket);
+
+      return (
+        ticket.jiraDraft.status !== "synced" ||
+        (followUpStatus !== "not_created" && followUpStatus !== "done" && followUpStatus !== "rejected")
+      );
+    })
+    .map((ticket) => {
+      const followUpStatus = getTicketJiraFollowUpStatus(ticket);
+      const hasLinkedJiraIssue = Boolean(ticket.relatedJiraKey);
+      const isReadyToCreate = !hasLinkedJiraIssue && canCreateJiraForTicket(ticket, config);
+      const title = hasLinkedJiraIssue
+        ? "Jira follow-up"
+        : isReadyToCreate
+          ? "Jira creation ready"
+          : "Jira sync in progress";
+      const body = hasLinkedJiraIssue
+        ? `${ticket.key} is linked to Jira and currently ${getJiraFollowUpStatusLabel(followUpStatus).toLowerCase()}.`
+        : isReadyToCreate
+          ? `${ticket.key} is approved and ready for Jira creation.`
+          : `${ticket.key} is still in process and not ready for Jira creation yet.`;
+      const actionLabel = hasLinkedJiraIssue ? "Open Jira Sync" : isReadyToCreate ? "Create Jira" : "Open Jira Sync";
+
+      return {
+        id: `notification-${ticket.key}-jira-attention-${ticket.jiraDraft.status}-${followUpStatus}`,
+        readKey: `notification-${ticket.key}-jira-attention-${ticket.jiraDraft.status}-${followUpStatus}`,
+        title,
+        body,
+        ticketKey: ticket.key,
+        actionLabel,
+        visibility: "public" as VisibilityLevel,
+        createdAt: ticket.jiraDraft.followUpUpdatedAt ?? ticket.updatedAt,
+        unread: true
+      };
+    })
+    .sort((left, right) => parseTicketTimestamp(right.createdAt) - parseTicketTimestamp(left.createdAt));
+}
+
 function notificationDeliveryModeSendsEmail(deliveryMode: NotificationDeliveryMode): boolean {
   return deliveryMode === "emailOnly" || deliveryMode === "inAppAndEmail";
 }
@@ -5862,7 +5902,7 @@ function renderNotificationEmailHtmlBody(body: string, context: Record<string, s
   const portalHomeUrl = getSafeNotificationLinkUrl(context.portalHomeUrl);
   const links = [
     { text: context.ticketKey, url: ticketUrl },
-    { text: "Support Portal", url: portalHomeUrl },
+    { text: "Nexus Support", url: portalHomeUrl },
     { text: context.ticketUrl, url: ticketUrl },
     { text: context.portalUrl, url: ticketUrl },
     { text: context.portalHomeUrl, url: portalHomeUrl }
@@ -7205,7 +7245,7 @@ function getTicketCurrentLocationLabel(ticket: Ticket): string {
     return getWorkflowActionSummary(ticket).label;
   }
 
-  return `${currentStep.label} · ${getLifecycleStepStatusLabel(currentStep.state)}`;
+  return `${currentStep.label} Â· ${getLifecycleStepStatusLabel(currentStep.state)}`;
 }
 
 function getLifecycleStepStatusLabel(state: TicketLifecycleStepState): string {
@@ -7266,8 +7306,8 @@ function getWorkflowCurrentPositionSummary(
     return {
       label: `Current gate: ${activeSteps.map((step) => step.label).join(" + ")}`,
       detail: activeSteps
-        .map((step) => `${step.ownerName} · ${getWorkflowStepProgressLabel(step.status)}`)
-        .join(" · "),
+        .map((step) => `${step.ownerName} Â· ${getWorkflowStepProgressLabel(step.status)}`)
+        .join(" Â· "),
       tone: "active"
     };
   }
@@ -7401,7 +7441,7 @@ function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
         ? "Work complete"
         : getJiraFollowUpStatusLabel(followUpStatus);
   const sprintDetail = ticket.jiraDraft.sprint?.trim() ? `Sprint ${ticket.jiraDraft.sprint.trim()}` : "";
-  const withSprintDetail = (detail: string) => (sprintDetail ? `${detail} · ${sprintDetail}` : detail);
+  const withSprintDetail = (detail: string) => (sprintDetail ? `${detail} Â· ${sprintDetail}` : detail);
   const itTestDetail =
     followUpStatus === "it_test"
       ? "IT validation active"
@@ -7412,7 +7452,7 @@ function getTicketLifecycleSteps(ticket: Ticket): TicketLifecycleStep[] {
   return [
     {
       label: "New request",
-      detail: `${getTicketTypeLabel(ticket.typeId)} · ${getTicketSubmitter(ticket)}`,
+      detail: `${getTicketTypeLabel(ticket.typeId)} Â· ${getTicketSubmitter(ticket)}`,
       status: getLifecycleStepStatusLabel(ticket.state === "intake" && !isClosed ? "active" : "complete"),
       state: ticket.state === "intake" && !isClosed ? "active" : "complete"
     },
@@ -8008,7 +8048,7 @@ function getWorkflowActionSummary(ticket: Ticket): {
       label: actionSteps.map((step) => step.label).join(" + "),
       detail: actionSteps
         .map((step) => `${step.ownerName} due ${formatDateTimeDisplay(step.dueAt)}`)
-        .join(" · "),
+        .join(" Â· "),
       tone: blockedSteps.length > 0 || ticket.slaState === "breach" ? "critical" : "active"
     };
   }
@@ -8117,7 +8157,7 @@ function getApprovalClarificationTargetOptions(
     options.set(step.ownerRole, {
       key: step.ownerRole,
       label: roleLabel,
-      detail: step.id === item.step.id ? `${ownerDetail} · current approval` : ownerDetail
+      detail: step.id === item.step.id ? `${ownerDetail} Â· current approval` : ownerDetail
     });
   }
 
@@ -9887,7 +9927,7 @@ function getReleasePlanDetail(ticket: Ticket, plannedReleaseState: TicketLifecyc
   const sprint = ticket.jiraDraft.sprint?.trim() ?? "";
 
   if (fixVersion && releaseDate) {
-    return `${fixVersion} · ${releaseDate}`;
+    return `${fixVersion} Â· ${releaseDate}`;
   }
 
   if (fixVersion) {
@@ -10165,8 +10205,7 @@ function getTicketJiraProjectDisplayLabel(ticket: Ticket, config: AdminConfig): 
 function buildTicketJiraActionConfig(
   ticket: Ticket,
   draft: Ticket["jiraDraft"],
-  config: AdminConfig,
-  token: string
+  config: AdminConfig
 ): JiraActionConfig {
   const integration = config.integrations.jira;
   const productProjectKey = getConfigProduct(config, ticket.product)?.jiraProjectKey;
@@ -10180,31 +10219,29 @@ function buildTicketJiraActionConfig(
     apiBaseUrl: getJiraApiBaseUrl(integration),
     apiVersion: integration.apiVersion ?? "rest/api/2",
     authMode: integration.authMode ?? "personalAccessToken",
-    username: integration.username,
-    token,
+    username: "",
+    token: "",
     defaultProjectKey: projectKey,
     defaultIssueType: integration.defaultIssueType.trim()
   };
 }
 
-function buildAiActionConfigFromAdmin(config: AdminConfig, apiKey: string) {
+function buildAiActionConfigFromAdmin(config: AdminConfig) {
   const integration = config.integrations.ai;
 
   return {
     enabled: integration.enabled,
     provider: "openai" as const,
-    model: integration.model,
-    apiKey
+    model: integration.model
   };
 }
 
-function buildGitLabActionConfigFromAdmin(config: AdminConfig, token: string): GitLabActionConfig {
+function buildGitLabActionConfigFromAdmin(config: AdminConfig): GitLabActionConfig {
   const integration = config.integrations.gitlab;
 
   return {
     enabled: integration.enabled,
-    apiBaseUrl: integration.apiBaseUrl,
-    token
+    apiBaseUrl: integration.apiBaseUrl
   };
 }
 
@@ -10528,7 +10565,8 @@ function buildTicketJiraAttachmentPayloads(ticket: Ticket): JiraIssueAttachmentI
     fileName: attachment.fileName,
     mimeType: attachment.mimeType,
     byteSize: attachment.byteSize,
-    contentDataUrl: attachment.contentDataUrl
+    contentDataUrl: attachment.contentDataUrl,
+    downloadUrl: attachment.downloadUrl
   }));
 }
 
@@ -10699,9 +10737,12 @@ function formatByteSize(byteSize: number): string {
   return `${byteSize} B`;
 }
 
-const attachmentMaxLocalContentBytes = 50 * 1024 * 1024;
+const attachmentMaxLocalContentBytes = 100 * 1024 * 1024;
 
-type AttachmentLike = Pick<Ticket["attachments"][number], "fileName" | "mimeType" | "contentDataUrl">;
+type AttachmentLike = Pick<
+  Ticket["attachments"][number],
+  "fileName" | "mimeType" | "contentDataUrl" | "downloadUrl"
+>;
 type AttachmentPreviewKind =
   "image" | "pdf" | "video" | "audio" | "text" | "office" | "unsupported" | "metadata";
 
@@ -10785,8 +10826,16 @@ function inferAttachmentMimeType(fileName: string, mimeType: string): string {
   return attachmentMimeTypeByExtension[getFileExtension(fileName)] ?? "application/octet-stream";
 }
 
+function getAttachmentSourceUrl(attachment: AttachmentLike): string {
+  return (attachment.contentDataUrl ?? attachment.downloadUrl ?? "").trim();
+}
+
+function attachmentHasStoredContent(attachment: AttachmentLike): boolean {
+  return Boolean(getAttachmentSourceUrl(attachment));
+}
+
 function getAttachmentPreviewKind(attachment: AttachmentLike): AttachmentPreviewKind {
-  if (!attachment.contentDataUrl) {
+  if (!attachmentHasStoredContent(attachment)) {
     return "metadata";
   }
 
@@ -11669,6 +11718,7 @@ export function NexusPortal() {
   const [jiraBulkSyncError, setJiraBulkSyncError] = useState("");
   const emailNotificationsInFlightRef = useRef<Set<string>>(new Set());
   const initialTicketLinkHandledRef = useRef(false);
+  const lastPersistedTicketPayloadsRef = useRef<Map<string, string>>(new Map());
   const startupJiraSyncHandledRef = useRef(false);
 
   const roleOptions = useMemo(() => getRoleOptions(config), [config]);
@@ -11794,7 +11844,7 @@ export function NexusPortal() {
 
     return [
       ...filterVisible(initialNotifications, role),
-      ...buildJiraReadyToCreateNotifications(ticketList, selectedPersona, config),
+      ...buildJiraAttentionNotifications(ticketList, config),
       ...buildClarificationNotifications(ticketList, selectedPersona, config)
     ]
       .filter((item) => personaScopedTicketKeys.has(item.ticketKey))
@@ -11881,10 +11931,6 @@ export function NexusPortal() {
       setReadNotificationIdsByPersona(
         parseStringListRecord(window.localStorage.getItem(notificationReadStorageKey))
       );
-      setCheckedJiraIdsByPersona(parseStringListRecord(window.localStorage.getItem(jiraCheckedStorageKey)));
-      setSentEmailNotificationIds(
-        parseStringList(window.localStorage.getItem(sentEmailNotificationStorageKey))
-      );
     } catch (error) {
       console.error("Failed to load local read-state records.", {
         error: getErrorMessage(error)
@@ -11909,34 +11955,6 @@ export function NexusPortal() {
   }, [hasLoadedLocalReadState, readNotificationIdsByPersona]);
 
   useEffect(() => {
-    if (!hasLoadedLocalReadState) {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(jiraCheckedStorageKey, JSON.stringify(checkedJiraIdsByPersona));
-    } catch (error) {
-      console.error("Failed to persist Jira checked-state.", {
-        error: getErrorMessage(error)
-      });
-    }
-  }, [checkedJiraIdsByPersona, hasLoadedLocalReadState]);
-
-  useEffect(() => {
-    if (!hasLoadedLocalReadState) {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(sentEmailNotificationStorageKey, JSON.stringify(sentEmailNotificationIds));
-    } catch (error) {
-      console.error("Failed to persist sent email notification state.", {
-        error: getErrorMessage(error)
-      });
-    }
-  }, [hasLoadedLocalReadState, sentEmailNotificationIds]);
-
-  useEffect(() => {
     if (!hasLoadedConfig || !hasLoadedLocalReadState || !hasLoadedTickets) {
       return;
     }
@@ -11947,7 +11965,6 @@ export function NexusPortal() {
       return;
     }
 
-    const localSecrets = readLocalIntegrationSecrets();
     const portalOrigin = typeof window === "undefined" ? "" : window.location.origin;
     const pendingEmails = [
       ...buildApprovalRequestedEmailEnvelopes(config, ticketList, portalOrigin),
@@ -11982,8 +11999,8 @@ export function NexusPortal() {
             security: smtp.security,
             fromName: smtp.fromName,
             fromEmail: smtp.fromEmail,
-            username: localSecrets.smtpUsername?.trim() || "",
-            password: localSecrets.smtpPassword || ""
+            username: "",
+            password: ""
           },
           idempotencyKey: email.id,
           message: {
@@ -12152,28 +12169,13 @@ export function NexusPortal() {
           setCanPersistConfig(true);
         }
       } catch (error) {
-        console.error("Failed to load local config database; falling back to browser config.", {
+        console.error("Failed to load config from Aurora.", {
           error: getErrorMessage(error)
         });
 
-        try {
-          const savedConfig = window.localStorage.getItem(adminConfigStorageKey);
-
-          if (savedConfig && !isCancelled) {
-            setConfig(normalizeAdminConfig(JSON.parse(savedConfig) as AdminConfig));
-          }
-        } catch (storageError) {
-          console.error("Failed to load fallback config from localStorage.", {
-            error: getErrorMessage(storageError)
-          });
-
-          if (!isCancelled) {
-            setConfig(createEmptyAdminConfig());
-          }
-        } finally {
-          if (!isCancelled) {
-            setCanPersistConfig(true);
-          }
+        if (!isCancelled) {
+          setConfig(createEmptyAdminConfig());
+          setCanPersistConfig(false);
         }
       } finally {
         if (!isCancelled) {
@@ -12194,14 +12196,6 @@ export function NexusPortal() {
       return;
     }
 
-    try {
-      window.localStorage.setItem(adminConfigStorageKey, JSON.stringify(config));
-    } catch (error) {
-      console.error("Failed to persist fallback config to localStorage.", {
-        error: getErrorMessage(error)
-      });
-    }
-
     const controller = new AbortController();
 
     fetch("/api/config", {
@@ -12218,6 +12212,16 @@ export function NexusPortal() {
         }
 
         const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+
+        if (response.status === 401 || response.status === 403) {
+          setCanPersistConfig(false);
+          console.warn("Config persistence disabled for this session.", {
+            status: response.status,
+            message: payload?.error?.message ?? "Administrator access is required."
+          });
+          return;
+        }
+
         throw new Error(payload?.error?.message ?? `Local config database returned ${response.status}.`);
       })
       .catch((error) => {
@@ -12239,7 +12243,14 @@ export function NexusPortal() {
     async function loadTickets() {
       try {
         const response = await fetch("/api/tickets?role=admin", { cache: "no-store" });
-        const payload = (await response.json().catch(() => null)) as { data?: Ticket[] } | null;
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              data?: Ticket[];
+              meta?: {
+                isAdmin?: boolean;
+              };
+            }
+          | null;
 
         if (!response.ok || !Array.isArray(payload?.data)) {
           throw new Error("Local ticket database returned an invalid response.");
@@ -12247,12 +12258,19 @@ export function NexusPortal() {
 
         if (!isCancelled) {
           setTicketList(payload.data);
+          lastPersistedTicketPayloadsRef.current = new Map(
+            payload.data.map((ticket) => [ticket.key, JSON.stringify(ticket)])
+          );
           setCanPersistTickets(true);
         }
       } catch (error) {
         console.error("Failed to load tickets from local database.", {
           error: getErrorMessage(error)
         });
+
+        if (!isCancelled) {
+          setCanPersistTickets(false);
+        }
       } finally {
         if (!isCancelled) {
           setHasLoadedTickets(true);
@@ -12330,21 +12348,43 @@ export function NexusPortal() {
       return;
     }
 
+    const changedTickets = ticketList.filter((ticket) => {
+      const nextPayload = JSON.stringify(ticket);
+      return lastPersistedTicketPayloadsRef.current.get(ticket.key) !== nextPayload;
+    });
+
+    if (changedTickets.length === 0) {
+      return;
+    }
+
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
-      fetch("/api/tickets", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ tickets: ticketList }),
-        signal: controller.signal
-      }).catch((error) => {
-        if (!controller.signal.aborted) {
-          console.error("Failed to persist tickets to local database.", {
-            error: getErrorMessage(error)
+      Promise.all(
+        changedTickets.map(async (ticket) => {
+          const response = await fetch("/api/tickets", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ ticket }),
+            signal: controller.signal
           });
+
+          if (!response.ok) {
+            const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+            throw new Error(payload?.error?.message ?? `Ticket save returned ${response.status}.`);
+          }
+
+          lastPersistedTicketPayloadsRef.current.set(ticket.key, JSON.stringify(ticket));
+        })
+      ).catch((error) => {
+        if (controller.signal.aborted) {
+          return;
         }
+
+        console.error("Failed to persist tickets to Aurora.", {
+          error: getErrorMessage(error)
+        });
       });
     }, persistenceDebounceMs);
 
@@ -14079,7 +14119,6 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       "",
       ticketUrl ? `Open ticket: ${ticketUrl}` : "Open the ticket in Nexus-support portal."
     ].join("\n");
-    const localSecrets = readLocalIntegrationSecrets();
     const idempotencyKey = [
       "email",
       "escalationManagerInvite",
@@ -14104,8 +14143,8 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
             security: smtp.security,
             fromName: smtp.fromName,
             fromEmail: smtp.fromEmail,
-            username: localSecrets.smtpUsername?.trim() || "",
-            password: localSecrets.smtpPassword || ""
+            username: "",
+            password: ""
           },
           idempotencyKey,
           message: {
@@ -14688,7 +14727,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildTicketJiraActionConfig(ticketForCreation, updatedDraft, config, localJiraToken),
+          config: buildTicketJiraActionConfig(ticketForCreation, updatedDraft, config),
           issue: buildTicketJiraIssuePayload(ticketForCreation)
         })
       });
@@ -14846,7 +14885,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildTicketJiraActionConfig(ticketForUpdate, updatedDraft, config, localJiraToken),
+          config: buildTicketJiraActionConfig(ticketForUpdate, updatedDraft, config),
           issueKey: jiraIssueKey,
           issue: buildTicketJiraIssuePayload(ticketForUpdate)
         })
@@ -14989,7 +15028,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildTicketJiraActionConfig(ticket, ticket.jiraDraft, config, localJiraToken),
+          config: buildTicketJiraActionConfig(ticket, ticket.jiraDraft, config),
           issueKey: jiraIssueKey,
           comment: jiraCommentBody
         })
@@ -15429,7 +15468,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
-              config: buildTicketJiraActionConfig(ticket, ticket.jiraDraft, config, localJiraToken),
+              config: buildTicketJiraActionConfig(ticket, ticket.jiraDraft, config),
               issueKey: jiraIssueKey
             })
           });
@@ -15483,7 +15522,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         } catch (error) {
           failedCount += 1;
 
-          // Avoid console.error here — Next.js overlays it as a runtime error for expected sync failures
+          // Avoid console.error here â€” Next.js overlays it as a runtime error for expected sync failures
           // (missing token, demo Jira keys, network, etc.), especially on silent startup sync.
           if (!silent) {
             console.warn(
@@ -16047,6 +16086,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               filteredTickets,
               ticketListTickets,
               selectedTicket,
+              headerAttentionItems,
               visibleAudit,
               visibleComments,
               visibleNotifications,
@@ -16089,6 +16129,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               onTicketDetailOpenChange: setIsTicketDetailOpen,
               onOpenTicketModule: openTicketModule,
               onOpenNotification: openNotificationItem,
+              onOpenModule: openModule,
               setActiveTab,
               focusTicketOnJira,
               selectTicket
@@ -16297,8 +16338,19 @@ function TopBar({
           <span className="mobile-menu-lines" aria-hidden="true" />
         </button>
         <div className="mobile-header-title">
-          <strong>{t.shell.portalTitle}</strong>
-          <span>{selectedPersona.displayName}</span>
+          <span className="tegel-header-brand">
+            <img
+              className="mobile-header-brand-logo"
+              src="/branding/nexus-header-icon.png"
+              alt=""
+              width={28}
+              height={28}
+            />
+            <span className="tegel-header-brand-text">NEXUS PORTAL</span>
+          </span>
+          <div className="mobile-header-copy">
+            <span>{selectedPersona.displayName}</span>
+          </div>
         </div>
         <div className="mobile-header-actions">
           <button
@@ -16330,7 +16382,18 @@ function TopBar({
       </div>
       <TdsHeader aria-label="Nexus-support portal header">
         <TdsHeaderHamburger slot="hamburger" tdsAriaLabel="Open navigation" onClick={onToggleMenu} />
-        <TdsHeaderTitle slot="title">{t.shell.portalTitle}</TdsHeaderTitle>
+        <TdsHeaderTitle slot="title">
+          <span className="tegel-header-brand">
+            <img
+              className="tegel-header-brand-logo"
+              src="/branding/nexus-header-icon.png"
+              alt=""
+              width={32}
+              height={32}
+            />
+            <span className="tegel-header-brand-text">NEXUS PORTAL</span>
+          </span>
+        </TdsHeaderTitle>
         <TdsHeaderItem className="tegel-header-search-item" slot="end">
           <form
             className={`tegel-header-ticket-search ${shouldShowTicketSearchList ? "is-open" : ""}`}
@@ -16515,6 +16578,16 @@ function TopBar({
           >
             {selectedPersona.initials}
           </button>
+        </TdsHeaderItem>
+        <TdsHeaderItem className="tegel-header-brandmark" slot="end">
+          <img
+            className="tegel-header-scania-logo"
+            src="/branding/scania-logo.png"
+            alt=""
+            width={42}
+            height={42}
+            aria-hidden="true"
+          />
         </TdsHeaderItem>
       </TdsHeader>
       {isAttentionOpen ? (
@@ -18186,7 +18259,7 @@ function NewTicketModal({
             <div className="ticket-attachment-summary form-field-wide" aria-label="Selected attachments">
               {form.attachments.map((attachment) => (
                 <span key={`${attachment.fileName}-${attachment.byteSize}`}>
-                  {attachment.fileName} · {getAttachmentKindLabel(attachment)} ·{" "}
+                  {attachment.fileName} Â· {getAttachmentKindLabel(attachment)} Â·{" "}
                   {formatByteSize(attachment.byteSize)}
                 </span>
               ))}
@@ -18241,6 +18314,7 @@ function renderModule({
   filteredTickets,
   ticketListTickets,
   selectedTicket,
+  headerAttentionItems,
   visibleAudit,
   visibleComments,
   visibleNotifications,
@@ -18283,6 +18357,7 @@ function renderModule({
   onTicketDetailOpenChange,
   onOpenTicketModule,
   onOpenNotification,
+  onOpenModule,
   setActiveTab,
   focusTicketOnJira,
   selectTicket
@@ -18293,6 +18368,7 @@ function renderModule({
   filteredTickets: Ticket[];
   ticketListTickets: Ticket[];
   selectedTicket?: Ticket;
+  headerAttentionItems: HeaderAttentionItem[];
   visibleAudit: Ticket["audit"];
   visibleComments: Ticket["comments"];
   visibleNotifications: NotificationItem[];
@@ -18350,6 +18426,7 @@ function renderModule({
   onTicketDetailOpenChange: (isOpen: boolean) => void;
   onOpenTicketModule: (ticketKey: string, module: ModuleKey, tab?: DetailTab) => void;
   onOpenNotification: (notification: NotificationItem) => void;
+  onOpenModule: (module: ModuleKey) => void;
   setActiveTab: (tab: DetailTab) => void;
   focusTicketOnJira: (ticketKey: string) => void;
   selectTicket: (ticketKey: string) => void;
@@ -18490,7 +18567,14 @@ function renderModule({
     }
 
     if (activeModule === "notifications") {
-      return <NotificationCenter items={visibleNotifications} onOpenNotification={onOpenNotification} />;
+      return (
+        <NotificationCenter
+          attentionItems={headerAttentionItems}
+          items={visibleNotifications}
+          onOpenAttentionItem={(item) => onOpenModule(item.module)}
+          onOpenNotification={onOpenNotification}
+        />
+      );
     }
 
     if (activeModule === "integrations") {
@@ -18507,10 +18591,6 @@ function renderModule({
           <AnalyticsPanel tickets={allTickets} expanded config={config} selectedPersona={selectedPersona} />
         </div>
       );
-    }
-
-    if (activeModule === "sla") {
-      return <SlaRulesManager config={config} onConfigChange={onConfigChange} />;
     }
 
     if (activeModule === "attachments" && roleUsesStructuredAttachmentLibrary(config, role)) {
@@ -18573,7 +18653,14 @@ function renderModule({
   }
 
   if (activeModule === "notifications") {
-    return <NotificationCenter items={visibleNotifications} onOpenNotification={onOpenNotification} />;
+    return (
+      <NotificationCenter
+        attentionItems={headerAttentionItems}
+        items={visibleNotifications}
+        onOpenAttentionItem={(item) => onOpenModule(item.module)}
+        onOpenNotification={onOpenNotification}
+      />
+    );
   }
 
   if (activeModule === "audit") {
@@ -18616,10 +18703,6 @@ function renderModule({
         <AnalyticsPanel tickets={allTickets} expanded config={config} selectedPersona={selectedPersona} />
       </div>
     );
-  }
-
-  if (activeModule === "sla") {
-    return <SlaRulesManager config={config} onConfigChange={onConfigChange} />;
   }
 
   return <SlaBoard tickets={allTickets} expanded />;
@@ -18883,6 +18966,7 @@ function ApprovalCenter({
     Record<string, GlobalLpoApprovalOutcome>
   >({});
   const [globalLpoCloseNoteDrafts, setGlobalLpoCloseNoteDrafts] = useState<Record<string, string>>({});
+  const [selectedGlobalLpoApprovalItemId, setSelectedGlobalLpoApprovalItemId] = useState<string | null>(null);
   const [functionMappingDecisionDrafts, setFunctionMappingDecisionDrafts] = useState<Record<string, string>>(
     {}
   );
@@ -18903,6 +18987,11 @@ function ApprovalCenter({
   );
   const selectedFunctionMappingItem =
     selectedFunctionMappingIndex >= 0 ? functionMappingItems[selectedFunctionMappingIndex] : undefined;
+  const selectedGlobalLpoApprovalItemIndex = globalLpoApprovalItems.findIndex(
+    (item) => item.id === selectedGlobalLpoApprovalItemId
+  );
+  const selectedGlobalLpoApprovalItem =
+    selectedGlobalLpoApprovalItemIndex >= 0 ? globalLpoApprovalItems[selectedGlobalLpoApprovalItemIndex] : undefined;
 
   useEffect(() => {
     if (!selectedFunctionMappingItemId) {
@@ -18916,6 +19005,22 @@ function ApprovalCenter({
       setSelectedFunctionMappingItemId(null);
     }
   }, [functionMappingItems, selectedFunctionMappingItemId, showGlobalizationSections]);
+
+  useEffect(() => {
+    if (!globalLpoApprovalItems.length) {
+      if (selectedGlobalLpoApprovalItemId !== null) {
+        setSelectedGlobalLpoApprovalItemId(null);
+      }
+      return;
+    }
+
+    if (
+      selectedGlobalLpoApprovalItemId &&
+      !globalLpoApprovalItems.some((item) => item.id === selectedGlobalLpoApprovalItemId)
+    ) {
+      setSelectedGlobalLpoApprovalItemId(null);
+    }
+  }, [globalLpoApprovalItems, selectedGlobalLpoApprovalItemId]);
 
   function submitDecision(item: ApprovalQueueItem, action: ApprovalDecisionAction) {
     if (!item.actionable || item.step.status === "blocked") {
@@ -19280,10 +19385,12 @@ function ApprovalCenter({
               const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, request);
               const requestItemId = `${item.ticket.key}-${request.id}`;
               const currentResponse = getGlobalLpoApprovalResponse(request, selectedPersona);
+              const isRequester = personaTextMatchesCandidate(selectedPersona, request.requestedBy);
               const needsResponse =
                 request.status === "open" &&
                 isGlobalLpoApprovalTarget(request, selectedPersona) &&
                 !currentResponse;
+              const canRespond = needsResponse && !isRequester;
               const canClose =
                 request.status === "open" &&
                 canManageGlobalLpoApprovalRequest(item.ticket, request, selectedPersona, config);
@@ -19292,7 +19399,7 @@ function ApprovalCenter({
                 ticket: item.ticket,
                 request,
                 currentResponse,
-                needsResponse,
+                needsResponse: canRespond,
                 canClose
               };
               const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(request);
@@ -19345,7 +19452,16 @@ function ApprovalCenter({
                     </div>
                   </div>
                   <div className="function-mapping-answer-list">
-                    {needsResponse ? (
+                    {isRequester ? (
+                      <div className="global-lpo-requester-view">
+                        <strong>Design view</strong>
+                        <span>
+                          You created this request. Review the responses below; answering stays with the
+                          product owners.
+                        </span>
+                      </div>
+                    ) : null}
+                    {canRespond ? (
                       <div className="global-lpo-response-box">
                         <RichTextEditor
                           label="Response note"
@@ -19357,7 +19473,7 @@ function ApprovalCenter({
                             }))
                           }
                           placeholder="Add area, site, or rollout context if needed."
-                          rows={2}
+                          rows={1}
                         />
                         <div className="global-lpo-response-actions">
                           <button
@@ -19421,7 +19537,7 @@ function ApprovalCenter({
                           <RichTextContent value={request.finalDecisionNote} fallback="" compact />
                         ) : null}
                       </div>
-                    ) : canClose ? (
+                    ) : canClose && !isRequester ? (
                       <div className="global-lpo-finalize-box">
                         <div className="global-lpo-finalize-heading">
                           <strong>GPO final decision</strong>
@@ -19458,7 +19574,7 @@ function ApprovalCenter({
                             }))
                           }
                           placeholder="Add scope, PRU, rollout, or follow-up context."
-                          rows={2}
+                          rows={1}
                         />
                         <div className="global-lpo-finalize-actions">
                           <button
@@ -20139,206 +20255,315 @@ function ApprovalCenter({
               <h2 id="global-lpo-inbox-title">Product-owner globalization questions</h2>
               <p>
                 {formatCount(globalLpoApprovalItems.filter((item) => item.needsResponse).length)} waiting for
-                your answer · {formatCount(globalLpoApprovalItems.length)} visible request
+                your answer Â· {formatCount(globalLpoApprovalItems.length)} visible request
                 {globalLpoApprovalItems.length === 1 ? "" : "s"}
               </p>
             </div>
           </header>
-          <div className="global-lpo-inbox-list" role="list">
-            {globalLpoApprovalItems.map((item) => {
-              const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, item.request);
-              const responseSummary = getGlobalLpoApprovalSummary(item.request);
-              const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(item.request);
-              const closeOutcomeDraft = getGlobalLpoCloseOutcomeDraft(item);
+          {selectedGlobalLpoApprovalItem ? (
+            <div className="ticket-list-workspace ticket-list-detail-mode global-lpo-detail-view">
+              <div className="ticket-detail-toolbar">
+                <button className="secondary-button" type="button" onClick={() => setSelectedGlobalLpoApprovalItemId(null)}>
+                  <TegelIcon name="arrow_left" size="16px" />
+                  Back to globalization list
+                </button>
+                <span>
+                  {selectedGlobalLpoApprovalItem.ticket.key} Â· {selectedGlobalLpoApprovalItem.ticket.title}
+                </span>
+              </div>
+              {(() => {
+                const item = selectedGlobalLpoApprovalItem;
+                const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, item.request);
+                const responseSummary = getGlobalLpoApprovalSummary(item.request);
+                const recommendedCloseOutcome = getRecommendedGlobalLpoApprovalOutcome(item.request);
+                const closeOutcomeDraft = getGlobalLpoCloseOutcomeDraft(item);
+                const isRequester = personaTextMatchesCandidate(selectedPersona, item.request.requestedBy);
+                const canRespond = item.needsResponse && !isRequester;
 
-              return (
-                <article
-                  className={`global-lpo-request-card is-${item.request.status}${item.needsResponse ? " is-actionable" : ""}`}
-                  key={item.id}
-                  role="listitem"
-                >
-                  <div className="global-lpo-request-main">
-                    <div className="function-mapping-request-title">
-                      <strong>{globalTicketKey}</strong>
-                      <span className={`thread-state thread-${item.request.status}`}>
-                        {item.request.status}
-                      </span>
-                    </div>
-                    <button
-                      className="approval-ticket-link"
-                      type="button"
-                      title="Open source ticket"
-                      onClick={() => onOpenTicket(item.ticket.key)}
-                    >
-                      <strong>{item.ticket.key}</strong>
-                      <span>{item.ticket.title}</span>
-                    </button>
-                    <small>
-                      {[item.ticket.product, item.ticket.pru, item.ticket.module]
-                        .filter(Boolean)
-                        .join(" - ") || "No product scope"}{" "}
-                      · due {formatDateTimeDisplay(item.request.dueAt)}
-                    </small>
-                    <small>
-                      Requested by {item.request.requestedBy} ·{" "}
-                      {formatDateTimeDisplay(item.request.createdAt)}
-                    </small>
-                  </div>
-                  <div className="global-lpo-request-context">
-                    <RichTextContent
-                      value={item.request.question}
-                      fallback="No request text provided."
-                      compact
-                    />
-                    <p>{responseSummary}</p>
-                    <div
-                      className="global-lpo-response-chip-list"
-                      aria-label="Product owner response summary"
-                    >
-                      {item.request.responses.length === 0 ? (
-                        <span className="global-lpo-response-chip">No responses yet</span>
-                      ) : null}
-                      {item.request.responses.map((response) => (
-                        <span
-                          className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
-                          key={`${item.request.id}-${response.userId}`}
-                          title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
+                return (
+                  <section className="panel ticket-detail global-lpo-detail-card" aria-labelledby="global-lpo-detail-title">
+                    <div className="ticket-hero">
+                      <div>
+                        <span className="ticket-key">{globalTicketKey}</span>
+                        <h2 id="global-lpo-detail-title">{item.ticket.title}</h2>
+                        <RichTextContent value={item.request.question} fallback="No request text provided." compact />
+                      </div>
+                      <div className="ticket-hero-actions">
+                        <div className="ticket-badges" aria-label="Globalization request status">
+                          <span className={`thread-state thread-${item.request.status}`}>{item.request.status}</span>
+                          <span className="ticket-status-chip">Requested by {item.request.requestedBy}</span>
+                        </div>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => onOpenTicket(item.ticket.key)}
                         >
-                          {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
-                        </span>
-                      ))}
+                          Open source ticket
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="function-mapping-answer-list">
-                    {item.needsResponse ? (
-                      <div className="global-lpo-response-box">
-                        <RichTextEditor
-                          label="Response note"
-                          value={globalLpoResponseDrafts[item.id] ?? ""}
-                          onChange={(value) =>
-                            setGlobalLpoResponseDrafts((current) => ({
-                              ...current,
-                              [item.id]: value
-                            }))
-                          }
-                          placeholder="Add area, site, or rollout context if needed."
-                          rows={2}
-                        />
-                        <div className="global-lpo-response-actions">
-                          <button
-                            className="primary-button"
-                            type="button"
-                            onClick={() => submitGlobalLpoResponse(item, "needs_global")}
-                          >
-                            Needed in my area
-                          </button>
-                          <button
-                            className="secondary-button"
-                            type="button"
-                            onClick={() => submitGlobalLpoResponse(item, "local_only")}
-                          >
-                            Not needed
-                          </button>
-                          <button
-                            className="secondary-button"
-                            type="button"
-                            onClick={() => submitGlobalLpoResponse(item, "needs_discussion")}
-                          >
-                            Discuss
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                    {item.currentResponse ? (
-                      <article
-                        className={`global-lpo-response-summary tone-${getGlobalLpoApprovalDecisionTone(item.currentResponse.decision)}`}
-                      >
-                        <strong>Your answer</strong>
-                        <span>
-                          {getGlobalLpoApprovalDecisionLabel(item.currentResponse.decision)} ·{" "}
-                          {formatDateTimeDisplay(item.currentResponse.respondedAt)}
-                        </span>
-                        {item.currentResponse.note ? (
-                          <RichTextContent value={item.currentResponse.note} fallback="" compact />
+                    <div className="global-lpo-request-context global-lpo-detail-context">
+                      <p>{responseSummary}</p>
+                      <div className="global-lpo-response-chip-list" aria-label="Product owner response summary">
+                        {item.request.responses.length === 0 ? (
+                          <span className="global-lpo-response-chip">No responses yet</span>
                         ) : null}
-                      </article>
-                    ) : null}
-                    {item.request.status === "closed" ? (
-                      <div
-                        className={`global-lpo-final-decision tone-${getGlobalLpoApprovalOutcomeTone(item.request.finalOutcome)}`}
-                      >
-                        <strong>{getGlobalLpoApprovalOutcomeLabel(item.request.finalOutcome)}</strong>
-                        <span>
-                          {[
-                            item.request.closedBy ? `Closed by ${item.request.closedBy}` : "",
-                            item.request.closedAt ? formatDateTimeDisplay(item.request.closedAt) : ""
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </span>
-                        <p>{getGlobalLpoApprovalOutcomeNextStep(item.request.finalOutcome)}</p>
+                        {item.request.responses.map((response) => (
+                          <span
+                            className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
+                            key={`${item.request.id}-${response.userId}`}
+                            title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
+                          >
+                            {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
+                          </span>
+                        ))}
                       </div>
-                    ) : item.canClose ? (
-                      <div className="global-lpo-finalize-box">
-                        <div className="global-lpo-finalize-heading">
-                          <strong>GPO final decision</strong>
-                          <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                    </div>
+                    <div className="function-mapping-answer-list">
+                      {isRequester ? (
+                        <div className="global-lpo-requester-view">
+                          <strong>Design view</strong>
+                          <span>
+                            You created this request. Review the responses below; answering stays with the
+                            product owners.
+                          </span>
                         </div>
-                        <label className="form-field">
-                          <span>Outcome</span>
-                          <select
-                            value={closeOutcomeDraft}
-                            onChange={(event) =>
-                              setGlobalLpoCloseOutcomeDrafts((current) => ({
+                      ) : null}
+                      {canRespond ? (
+                        <div className="global-lpo-response-box">
+                          <RichTextEditor
+                            label="Response note"
+                            value={globalLpoResponseDrafts[item.id] ?? ""}
+                            onChange={(value) =>
+                              setGlobalLpoResponseDrafts((current) => ({
                                 ...current,
-                                [item.id]: event.target.value as GlobalLpoApprovalOutcome
+                                [item.id]: value
                               }))
                             }
-                          >
-                            {globalLpoApprovalOutcomeOptions.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <p className="global-lpo-next-step">
-                          {getGlobalLpoApprovalOutcomeNextStep(closeOutcomeDraft)}
-                        </p>
-                        <RichTextEditor
-                          label="Decision note"
-                          value={globalLpoCloseNoteDrafts[item.id] ?? ""}
-                          onChange={(value) =>
-                            setGlobalLpoCloseNoteDrafts((current) => ({
-                              ...current,
-                              [item.id]: value
-                            }))
-                          }
-                          placeholder="Add scope, PRU, rollout, or follow-up context."
-                          rows={2}
-                        />
-                        <div className="global-lpo-finalize-actions">
-                          <button
-                            className="secondary-button"
-                            type="button"
-                            onClick={() => submitGlobalLpoClose(item)}
-                          >
-                            Close with decision
-                          </button>
+                            placeholder="Add area, site, or rollout context if needed."
+                            rows={1}
+                          />
+                          <div className="global-lpo-response-actions">
+                            <button
+                              className="primary-button"
+                              type="button"
+                              onClick={() => submitGlobalLpoResponse(item, "needs_global")}
+                            >
+                              Needed in my area
+                            </button>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => submitGlobalLpoResponse(item, "local_only")}
+                            >
+                              Not needed
+                            </button>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => submitGlobalLpoResponse(item, "needs_discussion")}
+                            >
+                              Discuss
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ) : !item.needsResponse ? (
-                      <div className="global-lpo-final-decision">
-                        <strong>Waiting for remaining answers</strong>
-                        <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
-                        <p>{getGlobalLpoApprovalOutcomeNextStep()}</p>
-                      </div>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+                      ) : null}
+                      {item.currentResponse ? (
+                        <article
+                          className={`global-lpo-response-summary tone-${getGlobalLpoApprovalDecisionTone(item.currentResponse.decision)}`}
+                        >
+                          <strong>Your answer</strong>
+                          <span>
+                            {getGlobalLpoApprovalDecisionLabel(item.currentResponse.decision)} Â·{" "}
+                            {formatDateTimeDisplay(item.currentResponse.respondedAt)}
+                          </span>
+                          {item.currentResponse.note ? (
+                            <RichTextContent value={item.currentResponse.note} fallback="" compact />
+                          ) : null}
+                        </article>
+                      ) : null}
+                      {item.request.status === "closed" ? (
+                        <div
+                          className={`global-lpo-final-decision tone-${getGlobalLpoApprovalOutcomeTone(item.request.finalOutcome)}`}
+                        >
+                          <strong>{getGlobalLpoApprovalOutcomeLabel(item.request.finalOutcome)}</strong>
+                          <span>
+                            {[
+                              item.request.closedBy ? `Closed by ${item.request.closedBy}` : "",
+                              item.request.closedAt ? formatDateTimeDisplay(item.request.closedAt) : ""
+                            ]
+                              .filter(Boolean)
+                              .join(" Â· ")}
+                          </span>
+                          <p>{getGlobalLpoApprovalOutcomeNextStep(item.request.finalOutcome)}</p>
+                        </div>
+                      ) : item.canClose && !isRequester ? (
+                        <div className="global-lpo-finalize-box">
+                          <div className="global-lpo-finalize-heading">
+                            <strong>GPO final decision</strong>
+                            <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                          </div>
+                          <label className="form-field">
+                            <span>Outcome</span>
+                            <select
+                              value={closeOutcomeDraft}
+                              onChange={(event) =>
+                                setGlobalLpoCloseOutcomeDrafts((current) => ({
+                                  ...current,
+                                  [item.id]: event.target.value as GlobalLpoApprovalOutcome
+                                }))
+                              }
+                            >
+                              {globalLpoApprovalOutcomeOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <p className="global-lpo-next-step">
+                            {getGlobalLpoApprovalOutcomeNextStep(closeOutcomeDraft)}
+                          </p>
+                          <RichTextEditor
+                            label="Decision note"
+                            value={globalLpoCloseNoteDrafts[item.id] ?? ""}
+                            onChange={(value) =>
+                              setGlobalLpoCloseNoteDrafts((current) => ({
+                                ...current,
+                                [item.id]: value
+                              }))
+                            }
+                            placeholder="Add scope, PRU, rollout, or follow-up context."
+                            rows={1}
+                          />
+                          <div className="global-lpo-finalize-actions">
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => submitGlobalLpoClose(item)}
+                            >
+                              Close with decision
+                            </button>
+                          </div>
+                        </div>
+                      ) : !isRequester && !item.needsResponse ? (
+                        <div className="global-lpo-final-decision">
+                          <strong>Waiting for remaining answers</strong>
+                          <span>Suggested: {getGlobalLpoApprovalOutcomeLabel(recommendedCloseOutcome)}</span>
+                          <p>{getGlobalLpoApprovalOutcomeNextStep()}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </section>
+                );
+              })()}
+            </div>
+          ) : (
+            <div className="approval-table-scroll global-lpo-table-scroll">
+              <table className="approval-table global-lpo-table">
+                <thead>
+                  <tr>
+                    <th>Request</th>
+                    <th>Question</th>
+                    <th>Status</th>
+                    <th>Responses</th>
+                    <th>Requested by</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {globalLpoApprovalItems.map((item) => {
+                    const globalTicketKey = getGlobalLpoRequestTicketKey(item.ticket, item.request);
+                    const questionPreview = htmlToPlainTextFallback(item.request.question).trim();
+                    const isRequester = personaTextMatchesCandidate(selectedPersona, item.request.requestedBy);
+                    const selected = item.id === selectedGlobalLpoApprovalItemId;
+
+                    return (
+                      <tr
+                        className={selected ? "is-selected global-lpo-table-row" : "global-lpo-table-row"}
+                        key={item.id}
+                        onClick={() => setSelectedGlobalLpoApprovalItemId(item.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedGlobalLpoApprovalItemId(item.id);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <td>
+                          <button
+                            className="approval-ticket-link"
+                            type="button"
+                            title="Open source ticket"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onOpenTicket(item.ticket.key);
+                            }}
+                          >
+                            <strong>{globalTicketKey}</strong>
+                            <span>
+                              {item.ticket.key} - {item.ticket.title}
+                            </span>
+                          </button>
+                        </td>
+                        <td>
+                          <div className="global-lpo-table-question">
+                            <strong>{questionPreview || "No request text provided."}</strong>
+                            <span>
+                              {[item.ticket.product, item.ticket.pru, item.ticket.module]
+                                .filter(Boolean)
+                                .join(" - ") || "No product scope"}{" "}
+                              Â· due {formatDateTimeDisplay(item.request.dueAt)}
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`thread-state thread-${item.request.status}`}>{item.request.status}</span>
+                        </td>
+                        <td>
+                          <div className="global-lpo-response-chip-list">
+                            {item.request.responses.length === 0 ? (
+                              <span className="global-lpo-response-chip">No responses yet</span>
+                            ) : null}
+                            {item.request.responses.map((response) => (
+                              <span
+                                className={`global-lpo-response-chip tone-${getGlobalLpoApprovalDecisionTone(response.decision)}`}
+                                key={`${item.request.id}-${response.userId}`}
+                                title={response.note ? htmlToPlainTextFallback(response.note) : undefined}
+                              >
+                                {response.displayName}: {getGlobalLpoApprovalDecisionLabel(response.decision)}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="global-lpo-table-meta">
+                            <strong>{item.request.requestedBy}</strong>
+                            <span>{formatDateTimeDisplay(item.request.createdAt)}</span>
+                            {isRequester ? <span className="global-lpo-table-self">You</span> : null}
+                          </div>
+                        </td>
+                        <td>
+                          <button
+                            className="secondary-button global-lpo-open-button"
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedGlobalLpoApprovalItemId(item.id);
+                            }}
+                          >
+                            Open
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       ) : null}
       {showGlobalizationSections && functionMappingItems.length > 0 ? (
@@ -20451,7 +20676,7 @@ function ApprovalCenter({
             <div>
               <h2 id="pending-approvals-title">Pending approvals</h2>
               <p>
-                {role === "admin" ? "All approval roles" : personaLabel} ·{" "}
+                {role === "admin" ? "All approval roles" : personaLabel} Â·{" "}
                 {formatCount(pendingApprovals.length)} approval{pendingApprovals.length === 1 ? "" : "s"}{" "}
                 ready for decision
               </p>
@@ -20865,7 +21090,7 @@ function ApprovalCenter({
                         <span>{item.ticket.title}</span>
                       </button>
                       <small>
-                        {item.step.label} · Owner {item.step.ownerName} · {item.ticket.product} /{" "}
+                        {item.step.label} Â· Owner {item.step.ownerName} Â· {item.ticket.product} /{" "}
                         {item.ticket.pru} / {item.ticket.module}
                       </small>
                     </div>
@@ -20909,7 +21134,7 @@ function ApprovalCenter({
                         <span>{item.ticket.title}</span>
                       </button>
                       <small>
-                        {item.step.label} · Owner {item.step.ownerName} · {item.ticket.product} /{" "}
+                        {item.step.label} Â· Owner {item.step.ownerName} Â· {item.ticket.product} /{" "}
                         {item.ticket.pru} / {item.ticket.module}
                       </small>
                     </div>
@@ -21358,7 +21583,7 @@ function DashboardOverview({
     {
       label: role === "requester" ? "My tickets" : "Visible tickets",
       value: formatCount(totalTickets),
-      detail: `${formatCount(openTickets)} open · ${formatCount(doneTickets)} done`,
+      detail: `${formatCount(openTickets)} open Â· ${formatCount(doneTickets)} done`,
       state: "healthy" as SlaState,
       iconName: "folder" as TegelIconName
     },
@@ -21366,7 +21591,7 @@ function DashboardOverview({
       label: "SLA health",
       value: formatCount(slaCounts.breach),
       detail:
-        slaCounts.breach > 0 ? "Breaches need action" : `${formatCount(slaCounts.watch)} watched · no breach`,
+        slaCounts.breach > 0 ? "Breaches need action" : `${formatCount(slaCounts.watch)} watched Â· no breach`,
       state:
         slaCounts.breach > 0
           ? ("breach" as SlaState)
@@ -21521,7 +21746,7 @@ function DashboardOverview({
                     <div>
                       <strong>{row.label}</strong>
                       <span>
-                        {formatCount(row.count)} tickets · {formatCount(row.blocked)} blocked
+                        {formatCount(row.count)} tickets Â· {formatCount(row.blocked)} blocked
                       </span>
                     </div>
                     <div className="dashboard-product-track">
@@ -21594,10 +21819,10 @@ function DashboardOverview({
                   <tbody>
                     {attentionRows.map((item) => (
                       <tr className={`tone-${item.tone}`} key={item.id}>
-                        <td>
+                        <td data-label="Type">
                           <span className="dashboard-attention-type">{item.title}</span>
                         </td>
-                        <td>
+                        <td data-label="Ticket">
                           <button
                             className="dashboard-attention-ticket"
                             type="button"
@@ -21607,7 +21832,7 @@ function DashboardOverview({
                             <span>{item.summary}</span>
                           </button>
                         </td>
-                        <td>
+                        <td data-label="Owner / status">
                           <span className="dashboard-attention-meta">{item.meta || "-"}</span>
                         </td>
                       </tr>
@@ -23045,7 +23270,37 @@ function TicketListWorkspace({
     });
   }, [filteredRows, sortBy]);
   const showJiraSourceColumn = sortedRows.some((row) => ticketUsesJira(config, row.ticket));
-  const emptyStateColumnCount = showJiraSourceColumn ? 10 : 9;
+  const emptyStateColumnCount = showJiraSourceColumn ? 9 : 8;
+  const ticketListStats = useMemo(() => {
+    let blocked = 0;
+    let overdue = 0;
+    let linked = 0;
+
+    for (let index = 0; index < sortedRows.length; index += 1) {
+      const row = sortedRows[index];
+      const slaRemaining = getTicketListSlaRemaining(row.ticket);
+
+      if (row.statusBucket === "blocked") {
+        blocked += 1;
+      }
+
+      if (slaRemaining.tone === "breach") {
+        overdue += 1;
+      }
+
+      if (ticketUsesJira(config, row.ticket) && row.ticket.relatedJiraKey) {
+        linked += 1;
+      }
+    }
+
+    return {
+      blocked,
+      overdue,
+      linked,
+      open: sortedRows.length - blocked,
+      visible: sortedRows.length
+    };
+  }, [config, sortedRows]);
 
   function resetFilters() {
     setSearch("");
@@ -23067,7 +23322,7 @@ function TicketListWorkspace({
             Back to ticket list
           </button>
           <span>
-            {selectedTicket.key} · {selectedTicket.title}
+            {selectedTicket.key} Â· {selectedTicket.title}
           </span>
         </div>
         <TicketDetail
@@ -23194,14 +23449,50 @@ function TicketListWorkspace({
       </section>
 
       <section className="ticket-list-table-card" aria-labelledby="ticket-list-table-title">
-        <header>
-          <h2 id="ticket-list-table-title">Tickets</h2>
+        <header className="ticket-list-table-header">
+          <div>
+            <h2 id="ticket-list-table-title">Tickets</h2>
+            <p>Operational register for the current scope, with live status and SLA context.</p>
+          </div>
           <span>
             {formatCount(sortedRows.length)} of {formatCount(tickets.length)}
           </span>
         </header>
-        <div className="ticket-list-table-scroll">
+        <div className="ticket-list-table-overview" aria-label="Ticket summary">
+          <article className="ticket-list-table-stat">
+            <span>Visible</span>
+            <strong>{formatCount(ticketListStats.visible)}</strong>
+            <small>In current filters</small>
+          </article>
+          <article className="ticket-list-table-stat">
+            <span>Blocked</span>
+            <strong>{formatCount(ticketListStats.blocked)}</strong>
+            <small>Action required</small>
+          </article>
+          <article className="ticket-list-table-stat">
+            <span>Overdue</span>
+            <strong>{formatCount(ticketListStats.overdue)}</strong>
+            <small>SLA breach state</small>
+          </article>
+          <article className="ticket-list-table-stat">
+            <span>Jira linked</span>
+            <strong>{formatCount(ticketListStats.linked)}</strong>
+            <small>External work items</small>
+          </article>
+        </div>
+        <div className="ticket-list-table-scroll ticket-list-desktop-table">
           <table className="ticket-list-table">
+            <colgroup>
+              <col style={{ width: showJiraSourceColumn ? "21%" : "23%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: showJiraSourceColumn ? "18%" : "22%" }} />
+              {showJiraSourceColumn ? <col style={{ width: "9%" }} /> : null}
+              <col style={{ width: showJiraSourceColumn ? "12%" : "11%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: showJiraSourceColumn ? "11%" : "10%" }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>Ticket</th>
@@ -23211,9 +23502,8 @@ function TicketListWorkspace({
                 <th>Product / PRU / Module</th>
                 {showJiraSourceColumn ? <th>Jira issue</th> : null}
                 <th>Submitted by</th>
-                <th>Created</th>
                 <th>Remaining SLA</th>
-                <th>Updated</th>
+                <th>Timeline</th>
               </tr>
             </thead>
             <tbody>
@@ -23229,10 +23519,10 @@ function TicketListWorkspace({
 
                 return (
                   <tr
-                    className={selectedTicketKey === row.ticket.key ? "is-selected" : ""}
+                    className={`ticket-list-row ticket-list-row-${row.statusBucket} ${selectedTicketKey === row.ticket.key ? "is-selected" : ""}`.trim()}
                     key={row.ticket.key}
                   >
-                    <td data-label="Ticket">
+                    <td className="ticket-list-ticket-cell" data-label="Ticket">
                       <button
                         className="ticket-list-link"
                         type="button"
@@ -23245,24 +23535,24 @@ function TicketListWorkspace({
                         <span>{row.ticket.title}</span>
                       </button>
                     </td>
-                    <td data-label="Status">
+                    <td className="ticket-list-status-cell" data-label="Status">
                       <span
                         className={`ticket-list-status status-${row.statusBucket} tag-variant-${getStatusColorVariant(config, row.statusLabel)}`}
                       >
                         {row.statusLabel}
                       </span>
                     </td>
-                    <td data-label="Type">
+                    <td className="ticket-list-type-cell" data-label="Type">
                       <span className={`ticket-list-type ticket-list-type-${toClassName(row.typeLabel)}`}>
                         {row.typeLabel}
                       </span>
                     </td>
-                    <td data-label="Priority">
+                    <td className="ticket-list-priority-cell" data-label="Priority">
                       <span className={`priority priority-${getPriorityToneClassName(row.ticket.priority)}`}>
                         {row.ticket.priority}
                       </span>
                     </td>
-                    <td data-label="Product">
+                    <td className="ticket-list-product-cell" data-label="Product">
                       <span className="ticket-list-product">
                         <strong>{row.ticket.product || "No product"}</strong>
                         <small>
@@ -23272,7 +23562,7 @@ function TicketListWorkspace({
                       </span>
                     </td>
                     {showJiraSourceColumn ? (
-                      <td data-label="Jira issue">
+                      <td className="ticket-list-jira-cell" data-label="Jira issue">
                         {ticketUsesJira(config, row.ticket) && row.ticket.relatedJiraKey ? (
                           <JiraIssueLink config={config} jiraKey={row.ticket.relatedJiraKey} />
                         ) : ticketUsesJira(config, row.ticket) ? (
@@ -23282,21 +23572,141 @@ function TicketListWorkspace({
                         )}
                       </td>
                     ) : null}
-                    <td data-label="Submitted by">{row.submitter}</td>
-                    <td data-label="Created">{formatTicketListCreatedDate(row.ticket)}</td>
-                    <td data-label="Remaining SLA">
+                    <td className="ticket-list-person-cell" data-label="Submitted by">
+                      <span className="ticket-list-person">{row.submitter}</span>
+                    </td>
+                    <td className="ticket-list-sla-cell" data-label="Remaining SLA">
                       <span className={`ticket-list-sla state-${slaRemaining.tone}`}>
                         <strong>{slaRemaining.label}</strong>
                         <small>{slaRemaining.meta}</small>
                       </span>
                     </td>
-                    <td data-label="Updated">{formatTicketListDate(row.ticket.updatedAt)}</td>
+                    <td className="ticket-list-timeline-cell" data-label="Timeline">
+                      <div className="ticket-list-timeline">
+                        <div>
+                          <span>Created</span>
+                          <strong>{formatTicketListCreatedDate(row.ticket)}</strong>
+                        </div>
+                        <div>
+                          <span>Updated</span>
+                          <strong>{formatTicketListDate(row.ticket.updatedAt)}</strong>
+                        </div>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="ticket-list-mobile-list" aria-labelledby="ticket-list-mobile-title">
+        <header className="ticket-list-mobile-header">
+          <h2 id="ticket-list-mobile-title">Tickets</h2>
+          <span>
+            {formatCount(sortedRows.length)} of {formatCount(tickets.length)}
+          </span>
+        </header>
+        {sortedRows.length === 0 ? (
+          <EmptyState title={ticketsEmptyCopy.title} body={ticketsEmptyCopy.body} />
+        ) : (
+          <div className="ticket-list-mobile-cards" role="list" aria-label="Tickets">
+            {sortedRows.map((row) => {
+              const slaRemaining = getTicketListSlaRemaining(row.ticket);
+              const jiraSourceLabel = ticketUsesJira(config, row.ticket)
+                ? row.ticket.relatedJiraKey
+                  ? "Linked to Jira"
+                  : "Jira not linked"
+                : "Platform";
+
+              return (
+                <article
+                  className={`ticket-list-mobile-card ${selectedTicketKey === row.ticket.key ? "is-selected" : ""}`}
+                  key={row.ticket.key}
+                  role="listitem"
+                >
+                  <div className="ticket-list-mobile-card-top">
+                    <button
+                      className="ticket-list-mobile-link"
+                      type="button"
+                      onClick={() => {
+                        onOpenTicket(row.ticket.key);
+                        onDetailOpenChange(true);
+                      }}
+                    >
+                      <strong>{row.ticket.key}</strong>
+                      <span>{row.ticket.title}</span>
+                    </button>
+                    <span
+                      className={`ticket-list-status status-${row.statusBucket} tag-variant-${getStatusColorVariant(config, row.statusLabel)}`}
+                    >
+                      {row.statusLabel}
+                    </span>
+                  </div>
+
+                  <div className="ticket-list-mobile-badges">
+                    <span className={`ticket-list-type ticket-list-type-${toClassName(row.typeLabel)}`}>
+                      {row.typeLabel}
+                    </span>
+                    <span className={`priority priority-${getPriorityToneClassName(row.ticket.priority)}`}>
+                      {row.ticket.priority}
+                    </span>
+                    {showJiraSourceColumn ? (
+                      ticketUsesJira(config, row.ticket) && row.ticket.relatedJiraKey ? (
+                        <JiraIssueLink config={config} jiraKey={row.ticket.relatedJiraKey} />
+                      ) : (
+                        <span className="ticket-list-mobile-source">{jiraSourceLabel}</span>
+                      )
+                    ) : null}
+                  </div>
+
+                  <dl className="ticket-list-mobile-meta">
+                    <div>
+                      <dt>Product / PRU / Module</dt>
+                      <dd>
+                        <strong>{row.ticket.product || "No product"}</strong>
+                        <span>{[row.ticket.pru, row.ticket.module].filter(Boolean).join(" - ") || "No PRU / module"}</span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Submitted by</dt>
+                      <dd>{row.submitter}</dd>
+                    </div>
+                    <div>
+                      <dt>Created</dt>
+                      <dd>{formatTicketListCreatedDate(row.ticket)}</dd>
+                    </div>
+                    <div>
+                      <dt>Remaining SLA</dt>
+                      <dd className={`ticket-list-sla state-${slaRemaining.tone}`}>
+                        <strong>{slaRemaining.label}</strong>
+                        <small>{slaRemaining.meta}</small>
+                      </dd>
+                    </div>
+                    <div className="ticket-list-mobile-full">
+                      <dt>Updated</dt>
+                      <dd>{formatTicketListDate(row.ticket.updatedAt)}</dd>
+                    </div>
+                  </dl>
+
+                  <div className="ticket-list-mobile-actions">
+                    <button
+                      className="secondary-button ticket-list-mobile-open"
+                      type="button"
+                      onClick={() => {
+                        onOpenTicket(row.ticket.key);
+                        onDetailOpenChange(true);
+                      }}
+                    >
+                      Open ticket
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -23397,7 +23807,7 @@ function GovernanceQueue({
                   <span>{ticket.title}</span>
                 </span>
                 <span className="queue-meta">
-                  {getTicketTypeLabel(ticket.typeId)} · {ticket.product} · {ticket.site}
+                  {getTicketTypeLabel(ticket.typeId)} Â· {ticket.product} Â· {ticket.site}
                 </span>
                 <span className="queue-progress">
                   <span style={{ width: `${Math.round((health.completed / health.total) * 100)}%` }} />
@@ -24110,7 +24520,7 @@ function WorkflowPanel({
     <section className={embedded ? "embedded-section" : "panel workflow-panel"}>
       <PanelHeader
         title="Workflow gates"
-        description={`${workflowName} for ${ticket.key} · ${health.completed}/${health.total} complete · ${health.active} active`}
+        description={`${workflowName} for ${ticket.key} Â· ${health.completed}/${health.total} complete Â· ${health.active} active`}
         iconName="route"
       />
       <TicketLifecycleStrip ticket={ticket} config={config} />
@@ -24387,7 +24797,7 @@ function ClarificationPanel({
     <section className={embedded ? "embedded-section" : "panel clarification-panel"}>
       <PanelHeader
         title="Clarification threads"
-        description={`${clarificationGroups.length} section${clarificationGroups.length === 1 ? "" : "s"} · ${clarifications.length} request${clarifications.length === 1 ? "" : "s"}`}
+        description={`${clarificationGroups.length} section${clarificationGroups.length === 1 ? "" : "s"} Â· ${clarifications.length} request${clarifications.length === 1 ? "" : "s"}`}
         iconName="message"
       />
       <div className={`thread-list ${expanded ? "is-expanded" : ""}`}>
@@ -24449,7 +24859,7 @@ function ClarificationPanel({
                   />
                 </div>
                 <p>
-                  {group.threads.length} request{group.threads.length === 1 ? "" : "s"} · due{" "}
+                  {group.threads.length} request{group.threads.length === 1 ? "" : "s"} Â· due{" "}
                   {formatDateTimeDisplay(group.dueAt)}
                 </p>
                 {requesterRoles.length > 0 ? (
@@ -24539,7 +24949,7 @@ function ClarificationPanel({
                           </span>
                           <strong>{selectedThread.status}</strong>
                           <span>
-                            Latest {selectedThreadLatestMessage?.role ?? selectedThreadRequesterRole} ·{" "}
+                            Latest {selectedThreadLatestMessage?.role ?? selectedThreadRequesterRole} Â·{" "}
                             {selectedThreadLatestMessage
                               ? formatClarificationTimestamp(selectedThreadLatestMessage.createdAt)
                               : selectedThread.dueAt}
@@ -25377,7 +25787,7 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildAiActionConfigFromAdmin(config, localOpenAiKey),
+          config: buildAiActionConfigFromAdmin(config),
           mode: "release_note",
           context: buildTicketAiReleaseNoteContext(
             ticket,
@@ -25437,7 +25847,7 @@ function JiraSyncPanel({
   function getGitLabActionConfigForReview(): GitLabActionConfig {
     const localGitLabToken = readLocalIntegrationSecrets().gitlabToken?.trim() ?? "";
 
-    return buildGitLabActionConfigFromAdmin(config, localGitLabToken);
+    return buildGitLabActionConfigFromAdmin(config);
   }
 
   async function searchGitLabProjectsForReview() {
@@ -25654,7 +26064,7 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildAiActionConfigFromAdmin(config, localOpenAiKey),
+          config: buildAiActionConfigFromAdmin(config),
           mode: "requirement_review",
           context: buildTicketRequirementReviewContext(ticket, gitLabSourceEvidence)
         })
@@ -25834,7 +26244,7 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildTicketJiraActionConfig(ticket, draft, config, localJiraToken),
+          config: buildTicketJiraActionConfig(ticket, draft, config),
           issueKey: jiraIssueKey
         })
       });
@@ -26213,7 +26623,7 @@ function JiraSyncPanel({
                 >
                   <strong>{project.pathWithNamespace || project.name}</strong>
                   <span>
-                    {project.defaultBranch || "main"} · {project.visibility || "unknown visibility"}
+                    {project.defaultBranch || "main"} Â· {project.visibility || "unknown visibility"}
                   </span>
                 </button>
               ))}
@@ -26312,8 +26722,8 @@ function JiraSyncPanel({
                   <div>
                     <strong>{source.filePath}</strong>
                     <span>
-                      {source.projectPath} · {source.ref}
-                      {source.truncated ? " · truncated" : ""}
+                      {source.projectPath} Â· {source.ref}
+                      {source.truncated ? " Â· truncated" : ""}
                     </span>
                   </div>
                   <button
@@ -26529,10 +26939,10 @@ function JiraSyncPanel({
                 <small>
                   {selectedFixVersionMetadata.released ? "Released" : "Unreleased"}
                   {selectedFixVersionStartDateDisplay
-                    ? ` · starts ${selectedFixVersionStartDateDisplay}`
+                    ? ` Â· starts ${selectedFixVersionStartDateDisplay}`
                     : ""}
-                  {selectedFixVersionReleaseDateDisplay ? ` · ${selectedFixVersionReleaseDateDisplay}` : ""}
-                  {selectedFixVersionMetadata.archived ? " · Archived" : ""}
+                  {selectedFixVersionReleaseDateDisplay ? ` Â· ${selectedFixVersionReleaseDateDisplay}` : ""}
+                  {selectedFixVersionMetadata.archived ? " Â· Archived" : ""}
                 </small>
               ) : jiraFieldMetadata.status === "ready" && fixVersionOptions.length === 0 ? (
                 <small>No upcoming Jira fix versions with current or future release dates were loaded.</small>
@@ -27631,6 +28041,10 @@ function EscalationPanel({
     }
   }, [activeDecisionFormId, selectedEscalationId, visibleEscalations]);
 
+  const selectedEscalation = selectedEscalationId
+    ? visibleEscalations.find((candidate) => candidate.id === selectedEscalationId)
+    : undefined;
+
   if (!canViewEscalations) {
     return (
       <section className={embedded ? "embedded-section" : "panel escalation-panel"}>
@@ -27830,7 +28244,7 @@ function EscalationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildAiActionConfigFromAdmin(config, localOpenAiKey),
+          config: buildAiActionConfigFromAdmin(config),
           mode: "escalation_meeting_series",
           context: buildTicketEscalationMeetingSeriesContext(ticket, escalation)
         })
@@ -28758,7 +29172,7 @@ function EscalationPanel({
     const managerContact = [escalation.managerName, escalation.managerEmail]
       .map((value) => value?.trim() ?? "")
       .filter(Boolean)
-      .join(" · ");
+      .join(" Â· ");
     const meetingSchedule = formatEscalationMeetingSchedule(escalation);
     const latestUpdate = escalation.statusNote?.trim() || statusUpdates[0]?.note || "";
 
@@ -28767,7 +29181,7 @@ function EscalationPanel({
         <div className="escalation-row-detail-header">
           <div>
             <span>
-              {ticket.key} · {escalation.type} escalation
+              {ticket.key} Â· {escalation.type} escalation
             </span>
             <h3>{escalation.reason}</h3>
           </div>
@@ -28911,7 +29325,7 @@ function EscalationPanel({
                           ) : null}
                           {statusUpdate.managerInvite ? (
                             <small>
-                              {getManagerInviteStatusLabel(statusUpdate.managerInvite.status)} ·{" "}
+                              {getManagerInviteStatusLabel(statusUpdate.managerInvite.status)} Â·{" "}
                               {statusUpdate.managerInvite.email}
                             </small>
                           ) : null}
@@ -28955,7 +29369,7 @@ function EscalationPanel({
     <section className={embedded ? "embedded-section" : "panel escalation-panel"}>
       <PanelHeader
         title="Escalation management"
-        description={`${activeEscalationCount} active · ${visibleEscalations.length} total escalation${visibleEscalations.length === 1 ? "" : "s"}.`}
+        description={`${activeEscalationCount} active Â· ${visibleEscalations.length} total escalation${visibleEscalations.length === 1 ? "" : "s"}.`}
         iconName="warning"
       />
       <div className="escalation-summary-strip" aria-label="Escalation status summary">
@@ -29657,12 +30071,55 @@ function EscalationPanel({
           </div>
         </form>
       ) : null}
+      {selectedEscalation ? (
+        <div className="ticket-list-workspace ticket-list-detail-mode escalation-detail-mode">
+          <div className="ticket-detail-toolbar">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                setSelectedEscalationId(null);
+                if (activeDecisionFormId === selectedEscalation.id) {
+                  setActiveDecisionFormId(null);
+                }
+              }}
+            >
+              <TegelIcon name="arrow_left" size="16px" />
+              Back to escalation list
+            </button>
+            <span>
+              {ticket.key} Â· {selectedEscalation.reason}
+            </span>
+          </div>
+          <section className="panel ticket-detail escalation-detail-panel" aria-labelledby="escalation-detail-title">
+            <div className="ticket-hero">
+              <div>
+                <span className="ticket-key">{ticket.key}</span>
+                <h2 id="escalation-detail-title">{selectedEscalation.reason}</h2>
+                <RichTextContent value={selectedEscalation.requestedAction} fallback="No target outcome provided." compact />
+              </div>
+              <div className="ticket-hero-actions">
+                <div className="ticket-badges" aria-label="Escalation status">
+                  <strong className={`escalation-status-pill lane-${getEscalationStatusLane(selectedEscalation.status)}`}>
+                    {getEscalationStatusLabel(selectedEscalation.status)}
+                  </strong>
+                  <span className={`escalation-severity-pill severity-${selectedEscalation.severity}`}>
+                    {selectedEscalation.severity}
+                  </span>
+                </div>
+              </div>
+            </div>
+            {renderEscalationDetails(selectedEscalation)}
+          </section>
+        </div>
+      ) : null}
+      {!selectedEscalation ? (
       <div className="escalation-table-card">
         <header>
           <div>
             <h3>Escalations</h3>
             <span>
-              {escalationRows.length} of {escalationRowsBeforeSearch.length} shown ·{" "}
+              {escalationRows.length} of {escalationRowsBeforeSearch.length} shown Â·{" "}
               {visibleEscalations.length} total
             </span>
           </div>
@@ -29886,7 +30343,7 @@ function EscalationPanel({
                   const managerContact = [escalation.managerName, escalation.managerEmail]
                     .map((value) => value?.trim() ?? "")
                     .filter(Boolean)
-                    .join(" · ");
+                    .join(" Â· ");
                   const meetingSchedule = formatEscalationMeetingSchedule(escalation);
                   const requestedActionText =
                     htmlToPlainTextFallback(escalation.requestedAction).trim() || "No requested action.";
@@ -29979,20 +30436,14 @@ function EscalationPanel({
                       </td>
                     </tr>
                   );
-                  const detailRow =
-                    isSelected || activeDecisionFormId === escalation.id ? (
-                      <tr className="escalation-table-detail-row" key={`${escalation.id}-detail`}>
-                        <td colSpan={9}>{renderEscalationDetails(escalation)}</td>
-                      </tr>
-                    ) : null;
-
-                  return detailRow ? [row, detailRow] : [row];
+                  return [row];
                 })
               )}
             </tbody>
           </table>
         </div>
       </div>
+      ) : null}
       <div className={`escalation-list escalation-board ${expanded ? "is-expanded" : ""}`} hidden>
         {visibleEscalations.length === 0 ? (
           <EmptyState
@@ -30027,7 +30478,7 @@ function EscalationPanel({
                     const managerContact = [escalation.managerName, escalation.managerEmail]
                       .map((value) => value?.trim() ?? "")
                       .filter(Boolean)
-                      .join(" · ");
+                      .join(" Â· ");
                     const managerEmailDraftValue =
                       managerEmailDrafts[escalation.id] ?? escalation.managerEmail ?? "";
                     const normalizedManagerEmailDraftValue =
@@ -30174,7 +30625,7 @@ function EscalationPanel({
                                                 {getManagerInviteStatusLabel(
                                                   statusUpdate.managerInvite.status
                                                 )}{" "}
-                                                · {statusUpdate.managerInvite.email}
+                                                Â· {statusUpdate.managerInvite.email}
                                               </small>
                                             ) : null}
                                           </td>
@@ -30191,6 +30642,15 @@ function EscalationPanel({
                             </div>
                           </div>
                         ) : null}
+                        <div className="escalation-card-actions">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => setSelectedEscalationId(escalation.id)}
+                          >
+                            Open details
+                          </button>
+                        </div>
                         {expanded && canWrite && onUpdateEscalationStatus ? (
                           <div className="escalation-card-actions">
                             <button
@@ -30474,10 +30934,14 @@ function EscalationPanel({
 }
 
 function NotificationCenter({
+  attentionItems,
   items,
+  onOpenAttentionItem,
   onOpenNotification
 }: {
+  attentionItems: HeaderAttentionItem[];
   items: NotificationItem[];
+  onOpenAttentionItem: (item: HeaderAttentionItem) => void;
   onOpenNotification: (notification: NotificationItem) => void;
 }) {
   return (
@@ -30488,7 +30952,31 @@ function NotificationCenter({
         iconName="notification"
       />
       <div className="notification-list">
-        {items.length === 0 ? (
+        {attentionItems.length > 0 ? (
+          <div className="notification-center-attention" role="region" aria-label="Needs attention">
+            <div className="tegel-profile-settings-header">
+              <strong>Needs attention</strong>
+              <small>Visible actions for this role.</small>
+            </div>
+            <div className="tegel-attention-list">
+              {attentionItems.map((item) => (
+                <button
+                  className={`tegel-attention-item tone-${item.tone}`}
+                  key={item.id}
+                  type="button"
+                  onClick={() => onOpenAttentionItem(item)}
+                >
+                  <span>
+                    <strong>{item.title}</strong>
+                    <small>{item.meta}</small>
+                  </span>
+                  <em>{item.count}</em>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {items.length === 0 && attentionItems.length === 0 ? (
           <EmptyState
             title="No notifications"
             body="New answers, approvals, and workflow follow-ups will appear here."
@@ -30500,7 +30988,7 @@ function NotificationCenter({
               <strong>{item.title}</strong>
               <p>{item.body}</p>
               <span>
-                {item.ticketKey} · {formatDateTimeDisplay(item.createdAt)}
+                {item.ticketKey} Â· {formatDateTimeDisplay(item.createdAt)}
               </span>
             </div>
             <button className="secondary-button" type="button" onClick={() => onOpenNotification(item)}>
@@ -30564,25 +31052,41 @@ function AuditTimeline({
   );
 }
 
-function decodeTextAttachmentContent(contentDataUrl: string): string | null {
-  const match = /^data:([^,]*),([\s\S]*)$/.exec(contentDataUrl);
+async function readTextAttachmentContent(attachment: AttachmentLike): Promise<string | null> {
+  const sourceUrl = getAttachmentSourceUrl(attachment);
 
-  if (!match) {
+  if (!sourceUrl) {
     return null;
   }
 
-  const metadata = match[1] ?? "";
-  const encodedPayload = match[2] ?? "";
-
   try {
-    if (metadata.toLowerCase().includes(";base64")) {
-      const binary = window.atob(encodedPayload);
-      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    if (sourceUrl.startsWith("data:")) {
+      const match = /^data:([^,]*),([\s\S]*)$/.exec(sourceUrl);
 
-      return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      if (!match) {
+        return null;
+      }
+
+      const metadata = match[1] ?? "";
+      const encodedPayload = match[2] ?? "";
+
+      if (metadata.toLowerCase().includes(";base64")) {
+        const binary = window.atob(encodedPayload);
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+
+        return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      }
+
+      return decodeURIComponent(encodedPayload.replace(/\+/g, "%20"));
     }
 
-    return decodeURIComponent(encodedPayload.replace(/\+/g, "%20"));
+    const response = await fetch(sourceUrl.startsWith("/api/attachments/") ? `${sourceUrl}?raw=1` : sourceUrl);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.text()).slice(0, 6000);
   } catch (error) {
     console.error("Failed to decode text attachment preview.", {
       error: getErrorMessage(error)
@@ -30610,21 +31114,28 @@ function dataUrlToBlob(contentDataUrl: string): Blob {
 }
 
 function triggerAttachmentDownload(attachment: Ticket["attachments"][number]): void {
-  if (!attachment.contentDataUrl) {
+  const sourceUrl = getAttachmentSourceUrl(attachment);
+
+  if (!sourceUrl) {
     throw new Error("Attachment content is not stored.");
   }
 
-  const blob = dataUrlToBlob(attachment.contentDataUrl);
-  const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
 
-  link.href = objectUrl;
+  if (sourceUrl.startsWith("data:")) {
+    const blob = dataUrlToBlob(sourceUrl);
+    const objectUrl = URL.createObjectURL(blob);
+    link.href = objectUrl;
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } else {
+    link.href = sourceUrl;
+  }
+
   link.download = attachment.fileName;
   link.rel = "noopener";
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 function sortAttachmentLabels(left: string, right: string): number {
@@ -30700,10 +31211,30 @@ function buildAttachmentLibrary(tickets: Ticket[]): AttachmentLibrarySiteNode[] 
 }
 
 function AttachmentTextPreview({ attachment }: { attachment: Ticket["attachments"][number] }) {
-  const textContent = useMemo(
-    () => (attachment.contentDataUrl ? decodeTextAttachmentContent(attachment.contentDataUrl) : null),
-    [attachment.contentDataUrl]
-  );
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+
+    void (async () => {
+      const content = await readTextAttachmentContent(attachment);
+
+      if (isMounted) {
+        setTextContent(content);
+        setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [attachment.contentDataUrl, attachment.downloadUrl, attachment.fileName, attachment.mimeType]);
+
+  if (isLoading) {
+    return <div className="attachment-preview-empty">Loading text preview...</div>;
+  }
 
   if (!textContent) {
     return <div className="attachment-preview-empty">Text preview is not available for this file.</div>;
@@ -30730,7 +31261,7 @@ function AttachmentPreview({
   const titleId = useId();
   const [isMounted, setIsMounted] = useState(false);
   const previewKind = getAttachmentPreviewKind(attachment);
-  const canDownload = Boolean(attachment.contentDataUrl);
+  const canDownload = Boolean(getAttachmentSourceUrl(attachment));
 
   useEffect(() => {
     setIsMounted(true);
@@ -30749,7 +31280,9 @@ function AttachmentPreview({
   }, [onClose]);
 
   function renderPreviewBody() {
-    if (!attachment.contentDataUrl) {
+    const sourceUrl = getAttachmentSourceUrl(attachment);
+
+    if (!sourceUrl) {
       return (
         <div className="attachment-preview-empty">
           <strong>File content is not stored yet.</strong>
@@ -30779,19 +31312,19 @@ function AttachmentPreview({
 
     if (previewKind === "image") {
       // eslint-disable-next-line @next/next/no-img-element
-      return <img alt={attachment.fileName} src={attachment.contentDataUrl} />;
+      return <img alt={attachment.fileName} src={sourceUrl} />;
     }
 
     if (previewKind === "pdf") {
-      return <iframe src={attachment.contentDataUrl} title={`Preview ${attachment.fileName}`} />;
+      return <iframe src={sourceUrl} title={`Preview ${attachment.fileName}`} />;
     }
 
     if (previewKind === "video") {
-      return <video controls src={attachment.contentDataUrl} />;
+      return <video controls src={sourceUrl} />;
     }
 
     if (previewKind === "audio") {
-      return <audio controls src={attachment.contentDataUrl} />;
+      return <audio controls src={sourceUrl} />;
     }
 
     if (previewKind === "text") {
@@ -30827,7 +31360,7 @@ function AttachmentPreview({
           <div>
             <strong id={titleId}>{attachment.fileName}</strong>
             <span>
-              {getAttachmentKindLabel(attachment)} · {attachment.sizeLabel} · uploaded by{" "}
+              {getAttachmentKindLabel(attachment)} Â· {attachment.sizeLabel} Â· uploaded by{" "}
               {attachment.uploadedBy}
             </span>
           </div>
@@ -31016,8 +31549,8 @@ function AttachmentPanel({
                 <div>
                   <strong>{attachment.fileName}</strong>
                   <span>
-                    {attachment.sizeLabel} · {getAttachmentKindLabel(attachment)} ·{" "}
-                    {attachment.relation.replace("_", " ")} · {attachment.storageProvider}
+                    {attachment.sizeLabel} Â· {getAttachmentKindLabel(attachment)} Â·{" "}
+                    {attachment.relation.replace("_", " ")} Â· {attachment.storageProvider}
                   </span>
                 </div>
                 <div className="attachment-row-actions">
@@ -31032,7 +31565,7 @@ function AttachmentPanel({
                   <button
                     className="secondary-button attachment-action-button"
                     type="button"
-                    disabled={!attachment.contentDataUrl}
+                    disabled={!attachmentHasStoredContent(attachment)}
                     onClick={() => void downloadAttachment(attachment)}
                   >
                     <TegelIcon name="document" size="16px" />
@@ -31238,7 +31771,7 @@ function AttachmentLibraryPanel({
                                     <div>
                                       <strong>{attachment.fileName}</strong>
                                       <span>
-                                        {attachment.sizeLabel} · {getAttachmentKindLabel(attachment)} ·
+                                        {attachment.sizeLabel} Â· {getAttachmentKindLabel(attachment)} Â·
                                         uploaded by {attachment.uploadedBy}
                                       </span>
                                     </div>
@@ -31259,7 +31792,7 @@ function AttachmentLibraryPanel({
                                       <button
                                         className="secondary-button attachment-action-button"
                                         type="button"
-                                        disabled={!attachment.contentDataUrl}
+                                        disabled={!attachmentHasStoredContent(attachment)}
                                         onClick={() => void downloadAttachment(attachment)}
                                       >
                                         <TegelIcon name="document" size="16px" />
@@ -31483,8 +32016,13 @@ function LeadTimeConfigManager({
   config: AdminConfig;
   onConfigChange: AdminConfigUpdater;
 }) {
+  const [activeTab, setActiveTab] = useState<LeadTimeConfigTab>("transitionRules");
   const activeStatusRules = config.leadTimeStatusRules.filter((rule) => rule.active).length;
   const activeTransitionRules = config.leadTimeTransitionRules.filter((rule) => rule.active).length;
+  const tabCounts: Record<LeadTimeConfigTab, number> = {
+    transitionRules: config.leadTimeTransitionRules.length,
+    statusRules: config.leadTimeStatusRules.length
+  };
 
   function restoreDefaults() {
     onConfigChange((current) => ({
@@ -31502,6 +32040,24 @@ function LeadTimeConfigManager({
         <AdminSummaryCard label="Status rules" value={config.leadTimeStatusRules.length} />
         <AdminSummaryCard label="Active statuses" value={activeStatusRules} />
       </div>
+      <div className="admin-master-tabs admin-subsection-tabs" role="tablist" aria-label="Lead time sections">
+        {leadTimeConfigTabs.map((tab) => (
+          <button
+            aria-controls={`lead-time-panel-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            className={`admin-master-tab ${activeTab === tab.id ? "is-active" : ""}`}
+            id={`lead-time-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            <TegelIcon name={tab.iconName} size="17px" />
+            <span>{tab.label}</span>
+            <strong>{tabCounts[tab.id]}</strong>
+          </button>
+        ))}
+      </div>
       <div className="lead-time-config-header">
         <div>
           <h3>Lead-time ownership rules</h3>
@@ -31514,8 +32070,14 @@ function LeadTimeConfigManager({
           Restore defaults
         </button>
       </div>
-      <LeadTimeTransitionRuleEditor config={config} onConfigChange={onConfigChange} />
-      <LeadTimeStatusRuleEditor config={config} onConfigChange={onConfigChange} />
+      <div className="lead-time-config-panels" role="tabpanel" aria-labelledby={`lead-time-tab-${activeTab}`}>
+        <div hidden={activeTab !== "transitionRules"} id="lead-time-panel-transitionRules">
+          <LeadTimeTransitionRuleEditor config={config} onConfigChange={onConfigChange} />
+        </div>
+        <div hidden={activeTab !== "statusRules"} id="lead-time-panel-statusRules">
+          <LeadTimeStatusRuleEditor config={config} onConfigChange={onConfigChange} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -31619,7 +32181,7 @@ function LeadTimeTransitionRuleEditor({
   }
 
   return (
-    <section className="request-options-editor lead-time-rule-editor">
+    <section className="admin-editor-layout lead-time-rule-editor lead-time-rule-layout">
       <form className="admin-editor-form admin-form request-option-form" onSubmit={saveRule}>
         <div className="admin-form-heading">
           <h3>{editingRuleId ? "Edit transition rule" : "Create transition rule"}</h3>
@@ -31671,28 +32233,63 @@ function LeadTimeTransitionRuleEditor({
           checked={form.active}
           label="Active"
           onChange={(active) => setForm({ ...form, active })}
-        />
+          />
         <AdminFormActions editing={Boolean(editingRuleId)} onCancel={resetForm} />
       </form>
-      <div className="request-option-record-list">
-        {config.leadTimeTransitionRules.length === 0 ? (
-          <EmptyState
-            title="No transition rules"
-            body="Create transition rules to classify exact status moves."
-          />
-        ) : null}
-        {config.leadTimeTransitionRules.map((rule) => (
-          <LeadTimeRuleRecord
-            key={rule.id}
-            title={`${rule.fromStatus} -> ${rule.toStatus}`}
-            meta="Transition rule"
-            rule={rule}
-            onEdit={() => startEdit(rule)}
-            onToggleActive={() => setRuleActive(rule.id, !rule.active)}
-            onRemove={() => removeRule(rule.id)}
-          />
-        ))}
-      </div>
+      <AdminConfigTable
+        title="Transition rules"
+        summary="Exact status moves"
+        columns={[
+          { key: "transition", label: "Transition", minWidth: 260 },
+          { key: "ownership", label: "Ownership", minWidth: 160 },
+          { key: "status", label: "Status", minWidth: 128 },
+          { key: "updated", label: "Updated", minWidth: 170 },
+          {
+            key: "actions",
+            label: "Actions",
+            className: "admin-config-table-actions-cell",
+            width: 252,
+            resizable: false
+          }
+        ]}
+        emptyMessage="Create transition rules to classify exact status moves."
+        rows={config.leadTimeTransitionRules.map((rule) => ({
+          id: rule.id,
+          active: rule.active,
+          cells: {
+            transition: (
+              <div className="admin-table-cell-stack">
+                <strong>
+                  {rule.fromStatus} â†’ {rule.toStatus}
+                </strong>
+                <span>Transition rule</span>
+              </div>
+            ),
+            ownership: <span className="admin-pill">{getLeadTimeOwnershipLabel(rule.ownership)}</span>,
+            status: <AdminStatusPill active={rule.active} />,
+            updated: <span>{formatDateTimeDisplay(rule.updatedAt)}</span>,
+            actions: (
+              <div className="admin-record-actions">
+                <button className="secondary-button" type="button" onClick={() => startEdit(rule)}>
+                  <TegelIcon name="edit" size="16px" />
+                  Edit
+                </button>
+                <button className="secondary-button" type="button" onClick={() => setRuleActive(rule.id, !rule.active)}>
+                  {rule.active ? "Deactivate" : "Activate"}
+                </button>
+                <button
+                  className="secondary-button danger-button hard-delete-button"
+                  type="button"
+                  onClick={() => removeRule(rule.id)}
+                >
+                  <TegelIcon name="trash" size="16px" />
+                  Delete
+                </button>
+              </div>
+            )
+          }
+        }))}
+      />
     </section>
   );
 }
@@ -31787,7 +32384,7 @@ function LeadTimeStatusRuleEditor({
   }
 
   return (
-    <section className="request-options-editor lead-time-rule-editor">
+    <section className="admin-editor-layout lead-time-rule-editor lead-time-rule-layout">
       <form className="admin-editor-form admin-form request-option-form" onSubmit={saveRule}>
         <div className="admin-form-heading">
           <h3>{editingRuleId ? "Edit status rule" : "Create status rule"}</h3>
@@ -31822,28 +32419,61 @@ function LeadTimeStatusRuleEditor({
           checked={form.active}
           label="Active"
           onChange={(active) => setForm({ ...form, active })}
-        />
+          />
         <AdminFormActions editing={Boolean(editingRuleId)} onCancel={resetForm} />
       </form>
-      <div className="request-option-record-list">
-        {config.leadTimeStatusRules.length === 0 ? (
-          <EmptyState
-            title="No status rules"
-            body="Create fallback status rules for unhandled ticket stages."
-          />
-        ) : null}
-        {config.leadTimeStatusRules.map((rule) => (
-          <LeadTimeRuleRecord
-            key={rule.id}
-            title={rule.status}
-            meta="Status fallback rule"
-            rule={rule}
-            onEdit={() => startEdit(rule)}
-            onToggleActive={() => setRuleActive(rule.id, !rule.active)}
-            onRemove={() => removeRule(rule.id)}
-          />
-        ))}
-      </div>
+      <AdminConfigTable
+        title="Status rules"
+        summary="Fallback ownership by status"
+        columns={[
+          { key: "status", label: "Status", minWidth: 240 },
+          { key: "ownership", label: "Ownership", minWidth: 160 },
+          { key: "state", label: "Status", minWidth: 128 },
+          { key: "updated", label: "Updated", minWidth: 170 },
+          {
+            key: "actions",
+            label: "Actions",
+            className: "admin-config-table-actions-cell",
+            width: 252,
+            resizable: false
+          }
+        ]}
+        emptyMessage="Create fallback status rules for unhandled ticket stages."
+        rows={config.leadTimeStatusRules.map((rule) => ({
+          id: rule.id,
+          active: rule.active,
+          cells: {
+            status: (
+              <div className="admin-table-cell-stack">
+                <strong>{rule.status}</strong>
+                <span>Status fallback rule</span>
+              </div>
+            ),
+            ownership: <span className="admin-pill">{getLeadTimeOwnershipLabel(rule.ownership)}</span>,
+            state: <AdminStatusPill active={rule.active} />,
+            updated: <span>{formatDateTimeDisplay(rule.updatedAt)}</span>,
+            actions: (
+              <div className="admin-record-actions">
+                <button className="secondary-button" type="button" onClick={() => startEdit(rule)}>
+                  <TegelIcon name="edit" size="16px" />
+                  Edit
+                </button>
+                <button className="secondary-button" type="button" onClick={() => setRuleActive(rule.id, !rule.active)}>
+                  {rule.active ? "Deactivate" : "Activate"}
+                </button>
+                <button
+                  className="secondary-button danger-button hard-delete-button"
+                  type="button"
+                  onClick={() => removeRule(rule.id)}
+                >
+                  <TegelIcon name="trash" size="16px" />
+                  Delete
+                </button>
+              </div>
+            )
+          }
+        }))}
+      />
     </section>
   );
 }
@@ -31891,7 +32521,7 @@ function LeadTimeRuleRecord({
           <div>
             <strong>{title}</strong>
             <span>
-              {meta} · updated {formatDateTimeDisplay(rule.updatedAt)}
+              {meta} Â· updated {formatDateTimeDisplay(rule.updatedAt)}
             </span>
           </div>
           <AdminStatusPill active={rule.active} />
@@ -32197,6 +32827,7 @@ function RequestConfigOptionEditor({
   onRemove: (optionId: string) => void;
 }) {
   const [editingOptionId, setEditingOptionId] = useState<string | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [optionForm, setOptionForm] = useState<RequestOptionFormState>(() =>
     buildRequestOptionForm(undefined, options.length + 1)
   );
@@ -32207,12 +32838,21 @@ function RequestConfigOptionEditor({
     setEditingOptionId(null);
     setOptionForm(buildRequestOptionForm(undefined, options.length + 1));
     setError("");
+    setIsEditorOpen(false);
+  }
+
+  function openCreate() {
+    setEditingOptionId(null);
+    setOptionForm(buildRequestOptionForm(undefined, options.length + 1));
+    setError("");
+    setIsEditorOpen(true);
   }
 
   function startEdit(option: ConfigOption) {
     setEditingOptionId(option.id);
     setOptionForm(buildRequestOptionForm(option, options.length + 1));
     setError("");
+    setIsEditorOpen(true);
   }
 
   function saveOption(event: FormEvent<HTMLFormElement>) {
@@ -32253,73 +32893,21 @@ function RequestConfigOptionEditor({
     setEditingOptionId(id);
     setOptionForm((current) => ({ ...current, label }));
     setError("");
+    setIsEditorOpen(false);
   }
 
   return (
     <section className="request-options-editor">
-      <form className="admin-editor-form admin-form request-option-form" onSubmit={saveOption}>
-        <div className="admin-form-heading">
-          <h3>{editingOptionId ? `Edit ${title.toLowerCase()}` : `Create ${title.toLowerCase()}`}</h3>
-          {editingOptionId ? (
-            <button className="secondary-button" type="button" onClick={resetForm}>
-              New
-            </button>
-          ) : null}
+      <div className="admin-form-heading request-option-heading">
+        <div>
+          <h3>{title}</h3>
+          <p className="admin-hint">{description}</p>
         </div>
-        <p className="admin-hint">{description}</p>
-        {error ? (
-          <p className="admin-form-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <label className="form-field">
-          <span>Label</span>
-          <input
-            value={optionForm.label}
-            onChange={(event) => setOptionForm({ ...optionForm, label: event.target.value })}
-            placeholder={
-              title === "Request types" ? "Change Request" : title === "Priorities" ? "2 - Medium" : "Medium"
-            }
-          />
-        </label>
-        <div className="admin-form-grid two-columns">
-          <label className="form-field">
-            <span>Color</span>
-            <select
-              value={optionForm.color}
-              onChange={(event) =>
-                setOptionForm({ ...optionForm, color: event.target.value as TegelTagVariant })
-              }
-            >
-              {tagVariantOptions.map((variant) => (
-                <option key={variant} value={variant}>
-                  {variant}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Sort order</span>
-            <input
-              min="1"
-              type="number"
-              value={optionForm.sortOrder}
-              onChange={(event) => setOptionForm({ ...optionForm, sortOrder: event.target.value })}
-            />
-          </label>
-        </div>
-        <AdminCheckbox
-          checked={optionForm.active}
-          label="Active"
-          onChange={(active) => setOptionForm({ ...optionForm, active })}
-        />
-        <div className="request-option-preview">
-          <span className={`admin-pill tag-variant-${optionForm.color}`}>
-            {optionForm.label || "Preview"}
-          </span>
-        </div>
-        <AdminFormActions editing={Boolean(editingOptionId)} onCancel={resetForm} />
-      </form>
+        <button className="primary-button" type="button" onClick={openCreate}>
+          <TegelIcon name="plus" size="16px" />
+          Add
+        </button>
+      </div>
       <div className="request-option-record-list">
         {sortedOptions.length === 0 ? (
           <EmptyState
@@ -32334,7 +32922,7 @@ function RequestConfigOptionEditor({
                 <div>
                   <strong>{option.label}</strong>
                   <span>
-                    {option.id} · sort {option.sortOrder}
+                    {option.id} Â· sort {option.sortOrder}
                   </span>
                 </div>
                 <AdminStatusPill active={option.active} />
@@ -32365,8 +32953,94 @@ function RequestConfigOptionEditor({
               </button>
             </div>
           </article>
-        ))}
+          ))}
       </div>
+      {isEditorOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div className="modal-backdrop" role="presentation">
+              <section
+                aria-labelledby={`request-option-editor-title-${idPrefix}`}
+                aria-modal="true"
+                className="ticket-modal admin-user-modal admin-master-modal request-option-modal"
+                role="dialog"
+              >
+                <header className="modal-header">
+                  <div>
+                    <h2 id={`request-option-editor-title-${idPrefix}`}>
+                      {editingOptionId ? `Edit ${title.toLowerCase()}` : `Create ${title.toLowerCase()}`}
+                    </h2>
+                    <p>{description}</p>
+                  </div>
+                  <button className="icon-button quiet" type="button" onClick={resetForm} aria-label="Close">
+                    <TegelIcon name="cross" />
+                  </button>
+                </header>
+                <form
+                  className="admin-editor-form admin-form admin-user-editor-form admin-user-modal-form request-option-modal-form"
+                  onSubmit={saveOption}
+                >
+                  {error ? (
+                    <p className="admin-form-error" role="alert">
+                      {error}
+                    </p>
+                  ) : null}
+                  <label className="form-field">
+                    <span>Label</span>
+                    <input
+                      value={optionForm.label}
+                      onChange={(event) => setOptionForm({ ...optionForm, label: event.target.value })}
+                      placeholder={
+                        title === "Request types"
+                          ? "Change Request"
+                          : title === "Priorities"
+                            ? "2 - Medium"
+                            : "Medium"
+                      }
+                    />
+                  </label>
+                  <div className="admin-form-grid two-columns">
+                    <label className="form-field">
+                      <span>Color</span>
+                      <select
+                        value={optionForm.color}
+                        onChange={(event) =>
+                          setOptionForm({ ...optionForm, color: event.target.value as TegelTagVariant })
+                        }
+                      >
+                        {tagVariantOptions.map((variant) => (
+                          <option key={variant} value={variant}>
+                            {variant}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      <span>Sort order</span>
+                      <input
+                        min="1"
+                        type="number"
+                        value={optionForm.sortOrder}
+                        onChange={(event) => setOptionForm({ ...optionForm, sortOrder: event.target.value })}
+                      />
+                    </label>
+                  </div>
+                  <AdminCheckbox
+                    checked={optionForm.active}
+                    label="Active"
+                    onChange={(active) => setOptionForm({ ...optionForm, active })}
+                  />
+                  <div className="request-option-preview">
+                    <span className={`admin-pill tag-variant-${optionForm.color}`}>
+                      {optionForm.label || "Preview"}
+                    </span>
+                  </div>
+                  <AdminFormActions editing={Boolean(editingOptionId)} onCancel={resetForm} />
+                </form>
+              </section>
+            </div>,
+            document.body
+          )
+        : null}
     </section>
   );
 }
@@ -32380,6 +33054,7 @@ function StatusColorEditor({
   onSave: (editingStatus: string | null, statusColor: StatusColorConfig) => void;
   onRemove: (statusLabel: string) => void;
 }) {
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editingStatus, setEditingStatus] = useState<string | null>(null);
   const [statusForm, setStatusForm] = useState<StatusColorFormState>(() => buildStatusColorForm());
   const [error, setError] = useState("");
@@ -32388,12 +33063,21 @@ function StatusColorEditor({
     setEditingStatus(null);
     setStatusForm(buildStatusColorForm());
     setError("");
+    setIsEditorOpen(false);
+  }
+
+  function openCreate() {
+    setEditingStatus(null);
+    setStatusForm(buildStatusColorForm());
+    setError("");
+    setIsEditorOpen(true);
   }
 
   function startEdit(statusColor: StatusColorConfig) {
     setEditingStatus(statusColor.status);
     setStatusForm(buildStatusColorForm(statusColor));
     setError("");
+    setIsEditorOpen(true);
   }
 
   function saveStatus(event: FormEvent<HTMLFormElement>) {
@@ -32420,56 +33104,36 @@ function StatusColorEditor({
     setEditingStatus(status);
     setStatusForm({ status, color: statusForm.color });
     setError("");
+    setIsEditorOpen(false);
+  }
+
+  function deleteStatus(statusLabel: string) {
+    if (isDefaultStatusColor(statusLabel)) {
+      return;
+    }
+
+    onRemove(statusLabel);
+
+    if (editingStatus === statusLabel) {
+      resetForm();
+    }
   }
 
   return (
     <section className="request-options-editor">
-      <form className="admin-editor-form admin-form request-option-form" onSubmit={saveStatus}>
-        <div className="admin-form-heading">
-          <h3>{editingStatus ? "Edit status color" : "Create status color"}</h3>
-          {editingStatus ? (
-            <button className="secondary-button" type="button" onClick={resetForm}>
-              New
-            </button>
-          ) : null}
-        </div>
-        <p className="admin-hint">Controls the color tag used when this status appears in admin surfaces.</p>
-        {error ? (
-          <p className="admin-form-error" role="alert">
-            {error}
+      <div className="admin-form-heading">
+        <div>
+          <h3>Status colors</h3>
+          <p className="admin-hint">
+            Controls the color tag used when this status appears in admin surfaces. System statuses stay in
+            the list, but custom statuses can be added and deleted.
           </p>
-        ) : null}
-        <label className="form-field">
-          <span>Status label</span>
-          <input
-            readOnly={Boolean(editingStatus && isDefaultStatusColor(editingStatus))}
-            value={statusForm.status}
-            onChange={(event) => setStatusForm({ ...statusForm, status: event.target.value })}
-            placeholder="Approval"
-          />
-        </label>
-        <label className="form-field">
-          <span>Color</span>
-          <select
-            value={statusForm.color}
-            onChange={(event) =>
-              setStatusForm({ ...statusForm, color: event.target.value as TegelTagVariant })
-            }
-          >
-            {tagVariantOptions.map((variant) => (
-              <option key={variant} value={variant}>
-                {variant}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="request-option-preview">
-          <span className={`admin-pill tag-variant-${statusForm.color}`}>
-            {statusForm.status || "Preview"}
-          </span>
         </div>
-        <AdminFormActions editing={Boolean(editingStatus)} onCancel={resetForm} />
-      </form>
+        <button className="primary-button" type="button" onClick={openCreate}>
+          <TegelIcon name="plus" size="16px" />
+          Add
+        </button>
+      </div>
       <div className="request-option-record-list">
         {statuses.map((statusColor) => {
           const isStandardStatus = isDefaultStatusColor(statusColor.status);
@@ -32499,7 +33163,7 @@ function StatusColorEditor({
                   <button
                     className="secondary-button danger-button hard-delete-button"
                     type="button"
-                    onClick={() => onRemove(statusColor.status)}
+                    onClick={() => deleteStatus(statusColor.status)}
                   >
                     <TegelIcon name="trash" size="16px" />
                     Delete
@@ -32510,6 +33174,79 @@ function StatusColorEditor({
           );
         })}
       </div>
+      {isEditorOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div className="modal-backdrop" role="presentation">
+              <section
+                aria-labelledby="admin-status-color-editor-title"
+                aria-modal="true"
+                className="ticket-modal admin-user-modal admin-master-modal request-option-modal"
+                role="dialog"
+              >
+                <header className="modal-header">
+                  <div>
+                    <h2 id="admin-status-color-editor-title">
+                      {editingStatus ? "Edit status color" : "Create status color"}
+                    </h2>
+                    <p>
+                      Choose the status label and tag color. System statuses keep their label fixed, but their
+                      color can still change.
+                    </p>
+                  </div>
+                  <button className="icon-button quiet" type="button" onClick={resetForm} aria-label="Close">
+                    <TegelIcon name="cross" />
+                  </button>
+                </header>
+                <form
+                  className="admin-editor-form admin-form admin-user-editor-form admin-user-modal-form request-option-modal-form"
+                  onSubmit={saveStatus}
+                >
+                  {error ? (
+                    <p className="admin-form-error" role="alert">
+                      {error}
+                    </p>
+                  ) : null}
+                  <div className="admin-user-form-grid">
+                    <label className="form-field">
+                      <span>Status label</span>
+                      <input
+                        readOnly={Boolean(editingStatus && isDefaultStatusColor(editingStatus))}
+                        value={statusForm.status}
+                        onChange={(event) => setStatusForm({ ...statusForm, status: event.target.value })}
+                        placeholder="Approval"
+                      />
+                      {editingStatus && isDefaultStatusColor(editingStatus) ? (
+                        <small>Default statuses keep their system label.</small>
+                      ) : null}
+                    </label>
+                    <label className="form-field">
+                      <span>Color</span>
+                      <select
+                        value={statusForm.color}
+                        onChange={(event) =>
+                          setStatusForm({ ...statusForm, color: event.target.value as TegelTagVariant })
+                        }
+                      >
+                        {tagVariantOptions.map((variant) => (
+                          <option key={variant} value={variant}>
+                            {variant}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="request-option-preview">
+                    <span className={`admin-pill tag-variant-${statusForm.color}`}>
+                      {statusForm.status || "Preview"}
+                    </span>
+                  </div>
+                  <AdminFormActions editing={Boolean(editingStatus)} onCancel={resetForm} />
+                </form>
+              </section>
+            </div>,
+            document.body
+          )
+        : null}
     </section>
   );
 }
@@ -32524,6 +33261,7 @@ function RequestCategoryEditor({
   onRemove: (category: string) => void;
 }) {
   const [editingCategory, setEditingCategory] = useState<string | null>(null);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [categoryForm, setCategoryForm] = useState<RequestCategoryFormState>(() =>
     buildRequestCategoryForm()
   );
@@ -32533,12 +33271,21 @@ function RequestCategoryEditor({
     setEditingCategory(null);
     setCategoryForm(buildRequestCategoryForm());
     setError("");
+    setIsEditorOpen(false);
+  }
+
+  function openCreate() {
+    setEditingCategory(null);
+    setCategoryForm(buildRequestCategoryForm());
+    setError("");
+    setIsEditorOpen(true);
   }
 
   function startEdit(category: string) {
     setEditingCategory(category);
     setCategoryForm(buildRequestCategoryForm(category));
     setError("");
+    setIsEditorOpen(true);
   }
 
   function saveCategory(event: FormEvent<HTMLFormElement>) {
@@ -32564,35 +33311,21 @@ function RequestCategoryEditor({
     setEditingCategory(category);
     setCategoryForm(buildRequestCategoryForm(category));
     setError("");
+    setIsEditorOpen(false);
   }
 
   return (
     <section className="request-options-editor request-category-editor">
-      <form className="admin-editor-form admin-form request-option-form" onSubmit={saveCategory}>
-        <div className="admin-form-heading">
-          <h3>{editingCategory ? "Edit category" : "Create category"}</h3>
-          {editingCategory ? (
-            <button className="secondary-button" type="button" onClick={resetForm}>
-              New
-            </button>
-          ) : null}
+      <div className="admin-form-heading request-option-heading">
+        <div>
+          <h3>Categories</h3>
+          <p className="admin-hint">Controls classification values available to ticket intake and reporting.</p>
         </div>
-        <p className="admin-hint">Controls classification values available to ticket intake and reporting.</p>
-        {error ? (
-          <p className="admin-form-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <label className="form-field">
-          <span>Category</span>
-          <input
-            value={categoryForm.category}
-            onChange={(event) => setCategoryForm({ category: event.target.value })}
-            placeholder="Data quality"
-          />
-        </label>
-        <AdminFormActions editing={Boolean(editingCategory)} onCancel={resetForm} />
-      </form>
+        <button className="primary-button" type="button" onClick={openCreate}>
+          <TegelIcon name="plus" size="16px" />
+          Add
+        </button>
+      </div>
       <div className="request-option-record-list">
         {categories.map((category) => (
           <article className="admin-editable-record request-option-record" key={category}>
@@ -32624,6 +33357,50 @@ function RequestCategoryEditor({
           </article>
         ))}
       </div>
+      {isEditorOpen && typeof document !== "undefined"
+        ? createPortal(
+            <div className="modal-backdrop" role="presentation">
+              <section
+                aria-labelledby="admin-request-category-editor-title"
+                aria-modal="true"
+                className="ticket-modal admin-user-modal admin-master-modal request-option-modal"
+                role="dialog"
+              >
+                <header className="modal-header">
+                  <div>
+                    <h2 id="admin-request-category-editor-title">
+                      {editingCategory ? "Edit category" : "Create category"}
+                    </h2>
+                    <p>Controls classification values available to ticket intake and reporting.</p>
+                  </div>
+                  <button className="icon-button quiet" type="button" onClick={resetForm} aria-label="Close">
+                    <TegelIcon name="cross" />
+                  </button>
+                </header>
+                <form
+                  className="admin-editor-form admin-form admin-user-editor-form admin-user-modal-form request-option-modal-form"
+                  onSubmit={saveCategory}
+                >
+                  {error ? (
+                    <p className="admin-form-error" role="alert">
+                      {error}
+                    </p>
+                  ) : null}
+                  <label className="form-field">
+                    <span>Category</span>
+                    <input
+                      value={categoryForm.category}
+                      onChange={(event) => setCategoryForm({ category: event.target.value })}
+                      placeholder="Data quality"
+                    />
+                  </label>
+                  <AdminFormActions editing={Boolean(editingCategory)} onCancel={resetForm} />
+                </form>
+              </section>
+            </div>,
+            document.body
+          )
+        : null}
     </section>
   );
 }
@@ -32652,7 +33429,6 @@ function isLocalTestingHostname(hostname: string): boolean {
 
 function isLocalTicketCleanupVisible(): boolean {
   return (
-    process.env.NODE_ENV !== "production" ||
     process.env.NEXT_PUBLIC_NEXUS_ENABLE_LOCAL_TEST_TOOLS === "true" ||
     (typeof window !== "undefined" && isLocalTestingHostname(window.location.hostname))
   );
@@ -32670,6 +33446,8 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
   const [isRunningQuery, setIsRunningQuery] = useState(false);
   const [isResettingDatabase, setIsResettingDatabase] = useState(false);
   const isDevelopmentDatabaseToolsEnabled = isLocalTicketCleanupVisible();
+  const isAuroraDatabase = databasePath.startsWith("aurora://");
+  const databaseLabel = isAuroraDatabase ? "Aurora database" : "Local SQLite database";
   const selectedTable = tables.find((table) => table.name === selectedTableName) ?? tables[0];
   const totalRows = tables.reduce((count, table) => count + table.rowCount, 0);
 
@@ -32688,7 +33466,7 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
         const response = await fetch("/api/database?role=admin", { cache: "no-store" });
         const payload = (await response.json().catch(() => null)) as {
           data?: { tables?: DatabaseTableSummary[] };
-          meta?: { databasePath?: string };
+          meta?: { databasePath?: string; databaseKind?: "aurora" | "sqlite" };
           error?: { message?: string };
         } | null;
 
@@ -32746,6 +33524,7 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
       });
       const payload = (await response.json().catch(() => null)) as {
         data?: DatabaseQueryResult;
+        meta?: { databasePath?: string; databaseKind?: "aurora" | "sqlite" };
         error?: { message?: string };
       } | null;
 
@@ -32801,7 +33580,7 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
       });
       const payload = (await response.json().catch(() => null)) as {
         data?: { tables?: DatabaseTableSummary[] };
-        meta?: { databasePath?: string };
+        meta?: { databasePath?: string; databaseKind?: "aurora" | "sqlite" };
         error?: { message?: string };
       } | null;
 
@@ -32820,8 +33599,6 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
 
       try {
         window.localStorage.removeItem(notificationReadStorageKey);
-        window.localStorage.removeItem(jiraCheckedStorageKey);
-        window.localStorage.removeItem(sentEmailNotificationStorageKey);
       } catch (storageError) {
         console.error("Failed to clean browser test state after database reset.", {
           error: getErrorMessage(storageError)
@@ -32851,14 +33628,14 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
         />
       </div>
       <section className="database-path-card">
-        <strong>Local database</strong>
+        <strong>{databaseLabel}</strong>
         <span>{databasePath || "Loading database path..."}</span>
       </section>
       {isDevelopmentDatabaseToolsEnabled ? (
         <section className="database-reset-card">
           <div>
             <strong>Development testing</strong>
-            <span>Delete local testing tickets only. Admin configuration stays unchanged.</span>
+            <span>Delete development testing tickets only. Admin configuration stays unchanged.</span>
           </div>
           <button
             className="secondary-button danger-button"
@@ -32876,7 +33653,11 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
       <section className="database-query-panel panel">
         <PanelHeader
           title="SQL query"
-          description="Read-only SQL console for local troubleshooting."
+          description={
+            isAuroraDatabase
+              ? "Read-only SQL console for Aurora troubleshooting."
+              : "Read-only SQL console for local troubleshooting."
+          }
           iconName="filters"
         />
         <form className="database-query-form" onSubmit={runQuery}>
@@ -32912,8 +33693,7 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
             </button>
           </div>
           <p className="admin-hint">
-            Allowed statements: SELECT, WITH, and safe PRAGMA reads. Write and schema-changing statements are
-            blocked.
+            Allowed statements: SELECT, WITH, and safe PRAGMA reads. Write and schema-changing statements are blocked.
           </p>
         </form>
         {queryResult ? (
@@ -32933,7 +33713,11 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
         <section className="database-table-browser panel">
           <PanelHeader
             title="Tables"
-            description="Local SQLite tables, columns, and row counts."
+            description={
+              isAuroraDatabase
+                ? "Aurora tables, columns, and row counts."
+                : "Local SQLite tables, columns, and row counts."
+            }
             iconName="report"
           />
           {isLoadingTables ? <p className="admin-hint">Loading database tables...</p> : null}
@@ -32956,7 +33740,11 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
           {tables.length === 0 && !isLoadingTables ? (
             <EmptyState
               title="No database tables"
-              body="Local SQLite tables will appear after the database initializes."
+              body={
+                isAuroraDatabase
+                  ? "Aurora tables will appear after the database initializes."
+                  : "Local SQLite tables will appear after the database initializes."
+              }
             />
           ) : null}
         </section>
@@ -32964,7 +33752,11 @@ function DatabaseAdminPanel({ role }: { role: RoleKey }) {
         <section className="database-detail-panel panel">
           <PanelHeader
             title={selectedTable?.name ?? "Table detail"}
-            description="Column metadata for the selected local table."
+            description={
+              isAuroraDatabase
+                ? "Column metadata for the selected Aurora table."
+                : "Column metadata for the selected local table."
+            }
             iconName="document"
           />
           {selectedTable ? (
@@ -33042,6 +33834,8 @@ type AdminMasterTab =
 type AdminMasterStatusFilter = "all" | "active" | "inactive";
 type RequestOptionsTab = "requestTypes" | "priorities" | "riskLevels" | "categories" | "statusColors";
 type SlaRulesTab = "slaRules" | "escalationPolicies";
+type LeadTimeConfigTab = "transitionRules" | "statusRules";
+type NotificationTemplateTab = "all" | "inAppOnly" | "emailOnly" | "inAppAndEmail";
 
 type AdminConfigTableColumn = {
   key: string;
@@ -33570,6 +34364,26 @@ const slaRulesTabs = [
   iconName: TegelIconName;
 }[];
 
+const leadTimeConfigTabs = [
+  { id: "transitionRules", label: "Transition rules", iconName: "document" },
+  { id: "statusRules", label: "Status rules", iconName: "timer" }
+] as const satisfies readonly {
+  id: LeadTimeConfigTab;
+  label: string;
+  iconName: TegelIconName;
+}[];
+
+const notificationTemplateTabs = [
+  { id: "all", label: "All templates", iconName: "notification" },
+  { id: "inAppOnly", label: "In-app only", iconName: "notification" },
+  { id: "emailOnly", label: "Email only", iconName: "document" },
+  { id: "inAppAndEmail", label: "Email + in-app", iconName: "document" }
+] as const satisfies readonly {
+  id: NotificationTemplateTab;
+  label: string;
+  iconName: TegelIconName;
+}[];
+
 function getUniqueConfigId(existingIds: string[], preferredId: string): string {
   return existingIds.includes(preferredId) ? `${preferredId}-${Date.now()}` : preferredId;
 }
@@ -33709,6 +34523,20 @@ function getAllConfigModules(
 function getUniquePruNames(config: AdminConfig): string[] {
   return Array.from(new Set(getAllConfigPrus(config).map((pru) => pru.name))).sort((a, b) =>
     a.localeCompare(b)
+  );
+}
+
+function getPruNamesForProducts(config: AdminConfig, productIds: string[]): string[] {
+  const selectedProductIds =
+    productIds.includes(ALL_SCOPE_VALUE) || productIds.length === 0
+      ? config.products.map((product) => product.id)
+      : productIds;
+
+  return uniqueSortedValues(
+    selectedProductIds
+      .map((productId) => getConfigProductById(config, productId))
+      .filter((product): product is ProductConfig => Boolean(product))
+      .flatMap((product) => (product.prus ?? []).map((pru) => pru.name))
   );
 }
 
@@ -34000,23 +34828,18 @@ function getIntegrationActionErrorCode(error: unknown): string {
 }
 
 function readLocalIntegrationSecrets(): LocalIntegrationSecrets {
-  try {
-    const savedSecrets = window.localStorage.getItem(localIntegrationSecretsStorageKey);
-
-    return savedSecrets ? (JSON.parse(savedSecrets) as LocalIntegrationSecrets) : {};
-  } catch {
-    return {};
-  }
+  return {
+    jiraToken: "platform-managed",
+    openAiApiKey: "platform-managed",
+    gitlabToken: "platform-managed",
+    smtpUsername: "platform-managed",
+    smtpPassword: "platform-managed",
+    aiTestPrompt: defaultAiTestPrompt
+  };
 }
 
 function writeLocalIntegrationSecrets(secrets: LocalIntegrationSecrets): void {
-  window.localStorage.setItem(
-    localIntegrationSecretsStorageKey,
-    JSON.stringify({
-      ...secrets,
-      updatedAt: new Date().toISOString()
-    })
-  );
+  void secrets;
 }
 
 function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
@@ -34096,6 +34919,24 @@ function buildProductForm(config: AdminConfig, product?: ProductConfig): Product
     jiraProjectKey: product?.jiraProjectKey ?? "",
     active: product?.active ?? true
   };
+}
+
+function getProductOwnerNameFromAssignment(config: AdminConfig, product?: ProductConfig): string {
+  const assignment = product?.roleAssignments.find((item) => item.active && item.role === "global_product_owner");
+
+  if (!assignment) {
+    return "";
+  }
+
+  for (const userId of assignment.userIds) {
+    const user = config.users.find((item) => item.id === userId);
+
+    if (user && user.displayName.trim()) {
+      return user.displayName.trim();
+    }
+  }
+
+  return assignment.userIds.find((userId) => userId.trim())?.trim() ?? "";
 }
 
 function buildPruForm(config: AdminConfig, product?: ProductConfig, pru?: ProductPruConfig): PruFormState {
@@ -34627,7 +35468,7 @@ function buildGitLabConfigForm(config: GitLabIntegrationConfig): GitLabConfigFor
   };
 }
 
-function buildEntraConfigForm(secrets: LocalIntegrationSecrets = {}): EntraConfigFormState {
+function buildEntraConfigForm(): EntraConfigFormState {
   const envClientId = (
     process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_CLIENT_ID ??
     process.env.NEXT_PUBLIC_MICROSOFT_CLIENT_ID ??
@@ -34641,12 +35482,9 @@ function buildEntraConfigForm(secrets: LocalIntegrationSecrets = {}): EntraConfi
   const envRedirectUri = (process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_REDIRECT_URI ?? "").trim();
 
   return {
-    clientId: secrets.entraClientId?.trim() || envClientId,
-    tenantId: secrets.entraTenantId?.trim() || envTenantId,
-    redirectUri:
-      secrets.entraRedirectUri?.trim() ||
-      envRedirectUri ||
-      (typeof window !== "undefined" ? window.location.origin : "")
+    clientId: envClientId,
+    tenantId: envTenantId,
+    redirectUri: envRedirectUri || (typeof window !== "undefined" ? window.location.origin : "")
   };
 }
 
@@ -35679,7 +36517,7 @@ function PreviewField({
           ))}
         </select>
         {field.helperText || optionSourceLabel ? (
-          <small>{[field.helperText, optionSourceLabel].filter(Boolean).join(" · ")}</small>
+          <small>{[field.helperText, optionSourceLabel].filter(Boolean).join(" Â· ")}</small>
         ) : null}
       </label>
     );
@@ -35697,7 +36535,7 @@ function PreviewField({
         ))}
         {!options.length ? <p>No options available.</p> : null}
         {field.helperText || optionSourceLabel ? (
-          <small>{[field.helperText, optionSourceLabel].filter(Boolean).join(" · ")}</small>
+          <small>{[field.helperText, optionSourceLabel].filter(Boolean).join(" Â· ")}</small>
         ) : null}
       </fieldset>
     );
@@ -37166,7 +38004,7 @@ function AdminMasterDataManager({
     const product: ProductConfig = {
       id,
       productName,
-      productOwnerName: productForm.productOwnerName.trim(),
+      productOwnerName: productForm.productOwnerName.trim() || getProductOwnerNameFromAssignment(config, previousProduct),
       departmentId: productForm.departmentId,
       productDomainId: productForm.productDomainId,
       ticketSource,
@@ -37538,6 +38376,7 @@ function AdminMasterDataManager({
     }
 
     const title = editingUserId ? "Edit user" : "Create user";
+    const userPruOptions = getPruNamesForProducts(config, userForm.productIds);
 
     const modal = (
       <div className="modal-backdrop" role="presentation">
@@ -37660,23 +38499,37 @@ function AdminMasterDataManager({
                 ]}
                 placeholder="Select products"
                 values={userForm.productIds}
-                onChange={(productIds) =>
-                  setUserForm({ ...userForm, productIds: normalizeAllSelection(productIds) })
-                }
+                onChange={(productIds) => {
+                  const nextProductIds = normalizeAllSelection(productIds);
+                  const nextPruOptions = getPruNamesForProducts(config, nextProductIds);
+                  const nextPruNames = userForm.pruNames.includes(ALL_SCOPE_VALUE)
+                    ? [ALL_SCOPE_VALUE]
+                    : expandAllSelection(userForm.pruNames, userPruOptions).filter((pruName) =>
+                        nextPruOptions.includes(pruName)
+                      );
+
+                  setUserForm({
+                    ...userForm,
+                    productIds: nextProductIds,
+                    pruNames: nextPruNames
+                  });
+                }}
               />
               <AdminMultiSelectDropdown
                 exclusiveValue={ALL_SCOPE_VALUE}
                 label="PRU visibility"
+                disabled={userPruOptions.length === 0}
                 options={[
-                  { value: ALL_SCOPE_VALUE, label: "All PRUs" },
-                  ...getUniquePruNames(config).map((pruName) => ({ value: pruName, label: pruName }))
+                  ...(userPruOptions.length > 0 ? [{ value: ALL_SCOPE_VALUE, label: "All PRUs" }] : []),
+                  ...userPruOptions.map((pruName) => ({ value: pruName, label: pruName }))
                 ]}
-                placeholder="Select PRUs"
+                placeholder={userPruOptions.length === 0 ? "Select products first" : "Select PRUs"}
                 values={userForm.pruNames}
                 onChange={(pruNames) =>
                   setUserForm({ ...userForm, pruNames: normalizeAllSelection(pruNames) })
                 }
               />
+              <small>All PRUs means every PRU within the selected product visibility scope.</small>
             </div>
             <AdminCheckbox
               checked={userForm.active}
@@ -38045,10 +38898,17 @@ function AdminMasterDataManager({
             <label className="form-field">
               <span>Product owner</span>
               <input
-                value={productForm.productOwnerName}
+                value={
+                  productForm.productOwnerName ||
+                  getProductOwnerNameFromAssignment(
+                    config,
+                    editingProductId ? getConfigProductById(config, editingProductId) : undefined
+                  )
+                }
                 onChange={(event) => setProductForm({ ...productForm, productOwnerName: event.target.value })}
                 placeholder="Owner name"
               />
+              <small>Uses the active global product-owner assignment when available.</small>
             </label>
             <label className="form-field">
               <span>Department</span>
@@ -39224,7 +40084,7 @@ function AdminMasterDataManager({
                       <span>{product.id}</span>
                     </div>
                   ),
-                  owner: product.productOwnerName || "No owner",
+                  owner: product.productOwnerName || getProductOwnerNameFromAssignment(config, product) || "No owner",
                   department: getConfigDepartmentName(config, product.departmentId),
                   domain: getConfigProductDomainName(config, product.productDomainId),
                   source: getProductTicketSourceLabel(product),
@@ -40947,6 +41807,7 @@ function ResponsibilityMappingManager({
   onConfigChange: AdminConfigUpdater;
 }) {
   const [editingMappingId, setEditingMappingId] = useState<string | null>(null);
+  const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false);
   const [mappingForm, setMappingForm] = useState<ResponsibilityMappingFormState>(() =>
     buildMappingForm(config)
   );
@@ -40957,6 +41818,18 @@ function ResponsibilityMappingManager({
     () => dedupeResponsibilityMappings(config.responsibilityMappings),
     [config.responsibilityMappings]
   );
+
+  useEffect(() => {
+    if (!isMappingEditorOpen) {
+      return;
+    }
+
+    if (editingMappingId) {
+      return;
+    }
+
+    setMappingForm(buildMappingForm(config));
+  }, [config, editingMappingId, isMappingEditorOpen]);
 
   useEffect(() => {
     const hasNormalizedChanges =
@@ -40977,6 +41850,23 @@ function ResponsibilityMappingManager({
     setEditingMappingId(null);
     setMappingError("");
     setMappingForm(buildMappingForm(config));
+  }
+
+  function closeMappingEditor() {
+    setIsMappingEditorOpen(false);
+    resetMappingForm();
+  }
+
+  function openCreateMappingEditor() {
+    resetMappingForm();
+    setIsMappingEditorOpen(true);
+  }
+
+  function startEditMapping(mapping: ResponsibilityMappingConfig) {
+    setEditingMappingId(mapping.id);
+    setMappingError("");
+    setMappingForm(buildMappingForm(config, mapping));
+    setIsMappingEditorOpen(true);
   }
 
   function saveMapping(event: FormEvent<HTMLFormElement>) {
@@ -41032,7 +41922,107 @@ function ResponsibilityMappingManager({
           : [...current.responsibilityMappings, mapping]
       )
     }));
-    resetMappingForm();
+    closeMappingEditor();
+  }
+
+  function renderMappingEditorModal() {
+    if (!isMappingEditorOpen) {
+      return null;
+    }
+
+    const title = editingMappingId ? "Edit responsibility mapping" : "Add responsibility mapping";
+    const modal = (
+      <div className="modal-backdrop" role="presentation">
+        <section
+          aria-labelledby="admin-responsibility-mapping-editor-title"
+          aria-modal="true"
+          className="ticket-modal admin-user-modal admin-master-modal"
+          role="dialog"
+        >
+          <header className="modal-header">
+            <div>
+              <h2 id="admin-responsibility-mapping-editor-title">{title}</h2>
+              <p>Choose the role, product, PRU, site, and user scope before saving the mapping.</p>
+            </div>
+            <button className="icon-button quiet" type="button" onClick={closeMappingEditor} aria-label="Close">
+              <TegelIcon name="cross" />
+            </button>
+          </header>
+          <form className="admin-editor-form admin-form admin-user-editor-form admin-user-modal-form" onSubmit={saveMapping}>
+            {mappingError ? <p className="admin-form-error">{mappingError}</p> : null}
+            <AdminMultiSelectDropdown
+              helperText="One user can hold several responsibility roles for the same product, PRU, or site scope."
+              label="Roles"
+              options={roleOptions.map((role) => ({ value: role.key, label: role.label }))}
+              placeholder="Select roles"
+              values={mappingForm.roleIds}
+              onChange={(roleIds) => setMappingForm({ ...mappingForm, roleIds: roleIds as RoleKey[] })}
+            />
+            <AdminMultiSelectDropdown
+              exclusiveValue={ALL_SCOPE_VALUE}
+              label="Products"
+              options={[
+                { value: ALL_SCOPE_VALUE, label: "All products" },
+                ...config.products.map((product) => ({ value: product.id, label: product.productName }))
+              ]}
+              placeholder="Select products"
+              values={mappingForm.productIds}
+              onChange={(productIds) =>
+                setMappingForm({ ...mappingForm, productIds: normalizeAllSelection(productIds) })
+              }
+            />
+            <AdminMultiSelectDropdown
+              exclusiveValue={ALL_SCOPE_VALUE}
+              label="Regions / sites"
+              options={[
+                { value: ALL_SCOPE_VALUE, label: "All regions / sites" },
+                ...config.regionSites.map((site) => ({ value: site.id, label: site.label }))
+              ]}
+              placeholder="Select regions / sites"
+              values={mappingForm.regionSiteIds}
+              onChange={(regionSiteIds) =>
+                setMappingForm({ ...mappingForm, regionSiteIds: normalizeAllSelection(regionSiteIds) })
+              }
+            />
+            <AdminMultiSelectDropdown
+              exclusiveValue={ALL_SCOPE_VALUE}
+              label="PRUs"
+              options={[
+                { value: ALL_SCOPE_VALUE, label: "All PRUs" },
+                ...uniquePrus.map((pruName) => ({ value: pruName, label: pruName }))
+              ]}
+              placeholder="Select PRUs"
+              values={mappingForm.pruNames}
+              onChange={(pruNames) =>
+                setMappingForm({ ...mappingForm, pruNames: normalizeAllSelection(pruNames) })
+              }
+            />
+            <AdminMultiSelectDropdown
+              label="Users"
+              options={config.users.map((user) => ({ value: user.id, label: user.displayName }))}
+              placeholder="Select users"
+              values={mappingForm.userIds}
+              onChange={(userIds) => setMappingForm({ ...mappingForm, userIds })}
+            />
+            <div className="admin-user-form-grid responsibility-mapping-flag-grid">
+              <AdminCheckbox
+                checked={mappingForm.actingRole}
+                label="Acting role assignment"
+                onChange={(actingRole) => setMappingForm({ ...mappingForm, actingRole })}
+              />
+              <AdminCheckbox
+                checked={mappingForm.active}
+                label="Active mapping"
+                onChange={(active) => setMappingForm({ ...mappingForm, active })}
+              />
+            </div>
+            <AdminFormActions editing={Boolean(editingMappingId)} onCancel={closeMappingEditor} />
+          </form>
+        </section>
+      </div>
+    );
+
+    return typeof document === "undefined" ? null : createPortal(modal, document.body);
   }
 
   return (
@@ -41054,76 +42044,17 @@ function ResponsibilityMappingManager({
           value={new Set(normalizedMappings.flatMap((mapping) => mapping.userIds)).size}
         />
       </div>
-      <div className="admin-editor-layout">
-        <form className="admin-editor-form admin-form" onSubmit={saveMapping}>
-          <h3>{editingMappingId ? "Edit responsibility mapping" : "Create responsibility mapping"}</h3>
-          {mappingError ? <p className="admin-form-error">{mappingError}</p> : null}
-          <AdminMultiSelectDropdown
-            helperText="One user can hold several responsibility roles for the same product, PRU, or site scope."
-            label="Roles"
-            options={roleOptions.map((role) => ({ value: role.key, label: role.label }))}
-            placeholder="Select roles"
-            values={mappingForm.roleIds}
-            onChange={(roleIds) => setMappingForm({ ...mappingForm, roleIds: roleIds as RoleKey[] })}
-          />
-          <AdminMultiSelectDropdown
-            exclusiveValue={ALL_SCOPE_VALUE}
-            label="Products"
-            options={[
-              { value: ALL_SCOPE_VALUE, label: "All products" },
-              ...config.products.map((product) => ({ value: product.id, label: product.productName }))
-            ]}
-            placeholder="Select products"
-            values={mappingForm.productIds}
-            onChange={(productIds) =>
-              setMappingForm({ ...mappingForm, productIds: normalizeAllSelection(productIds) })
-            }
-          />
-          <AdminMultiSelectDropdown
-            exclusiveValue={ALL_SCOPE_VALUE}
-            label="Regions / sites"
-            options={[
-              { value: ALL_SCOPE_VALUE, label: "All regions / sites" },
-              ...config.regionSites.map((site) => ({ value: site.id, label: site.label }))
-            ]}
-            placeholder="Select regions / sites"
-            values={mappingForm.regionSiteIds}
-            onChange={(regionSiteIds) =>
-              setMappingForm({ ...mappingForm, regionSiteIds: normalizeAllSelection(regionSiteIds) })
-            }
-          />
-          <AdminMultiSelectDropdown
-            exclusiveValue={ALL_SCOPE_VALUE}
-            label="PRUs"
-            options={[
-              { value: ALL_SCOPE_VALUE, label: "All PRUs" },
-              ...uniquePrus.map((pruName) => ({ value: pruName, label: pruName }))
-            ]}
-            placeholder="Select PRUs"
-            values={mappingForm.pruNames}
-            onChange={(pruNames) =>
-              setMappingForm({ ...mappingForm, pruNames: normalizeAllSelection(pruNames) })
-            }
-          />
-          <AdminMultiSelectDropdown
-            label="Users"
-            options={config.users.map((user) => ({ value: user.id, label: user.displayName }))}
-            placeholder="Select users"
-            values={mappingForm.userIds}
-            onChange={(userIds) => setMappingForm({ ...mappingForm, userIds })}
-          />
-          <AdminCheckbox
-            checked={mappingForm.actingRole}
-            label="Acting role assignment"
-            onChange={(actingRole) => setMappingForm({ ...mappingForm, actingRole })}
-          />
-          <AdminCheckbox
-            checked={mappingForm.active}
-            label="Active mapping"
-            onChange={(active) => setMappingForm({ ...mappingForm, active })}
-          />
-          <AdminFormActions editing={Boolean(editingMappingId)} onCancel={resetMappingForm} />
-        </form>
+      <div className="admin-master-section responsibility-mapping-section">
+        <div className="admin-master-table-toolbar responsibility-mapping-toolbar">
+          <div>
+            <h3>Responsibility mappings</h3>
+            <p>Map users to product, PRU, and site scope through a modal add flow.</p>
+          </div>
+          <button className="primary-button" type="button" onClick={openCreateMappingEditor}>
+            <TegelIcon name="plus" size="16px" />
+            Add
+          </button>
+        </div>
         <div className="admin-editable-list">
           {normalizedMappings.map((mapping) => (
             <AdminEditableRecord
@@ -41138,11 +42069,7 @@ function ResponsibilityMappingManager({
                 ...mapping.regionSiteIds.map((id) => getConfigRegionSiteLabel(config, id)),
                 ...mapping.pruNames.map((pruName) => (pruName === ALL_SCOPE_VALUE ? "All PRUs" : pruName))
               ]}
-              onEdit={() => {
-                setEditingMappingId(mapping.id);
-                setMappingError("");
-                setMappingForm(buildMappingForm(config, mapping));
-              }}
+              onEdit={() => startEditMapping(mapping)}
               onDelete={
                 mapping.active
                   ? () => {
@@ -41150,7 +42077,7 @@ function ResponsibilityMappingManager({
                         deactivateResponsibilityMappingInConfig(current, mapping.id)
                       );
                       if (editingMappingId === mapping.id) {
-                        resetMappingForm();
+                        closeMappingEditor();
                       }
                     }
                   : undefined
@@ -41165,7 +42092,7 @@ function ResponsibilityMappingManager({
                         )
                       }));
                       if (editingMappingId === mapping.id) {
-                        resetMappingForm();
+                        closeMappingEditor();
                       }
                     }
                   : undefined
@@ -41174,6 +42101,7 @@ function ResponsibilityMappingManager({
           ))}
         </div>
       </div>
+      {renderMappingEditorModal()}
     </div>
   );
 }
@@ -41186,6 +42114,8 @@ function NotificationTemplateManager({
   onConfigChange: AdminConfigUpdater;
 }) {
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [isTemplateEditorOpen, setIsTemplateEditorOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<NotificationTemplateTab>("all");
   const [templateForm, setTemplateForm] = useState<NotificationTemplateFormState>(() =>
     buildNotificationTemplateForm()
   );
@@ -41195,10 +42125,19 @@ function NotificationTemplateManager({
   const visibleNotificationTemplates = config.notificationTemplates.filter(
     (template) => configUsesJira(config) || !isJiraNotificationEventType(template.eventType)
   );
-  const previewTemplate = buildNotificationTemplateFromForm(
-    templateForm,
-    editingTemplateId ?? "notification-preview"
-  );
+  const filteredNotificationTemplates = visibleNotificationTemplates.filter((template) => {
+    if (activeTab === "all") {
+      return true;
+    }
+
+    return template.deliveryMode === activeTab;
+  });
+  const templateTabCounts: Record<NotificationTemplateTab, number> = {
+    all: visibleNotificationTemplates.length,
+    inAppOnly: visibleNotificationTemplates.filter((template) => template.deliveryMode === "inAppOnly").length,
+    emailOnly: visibleNotificationTemplates.filter((template) => template.deliveryMode === "emailOnly").length,
+    inAppAndEmail: visibleNotificationTemplates.filter((template) => template.deliveryMode === "inAppAndEmail").length
+  };
 
   useEffect(() => {
     if (notificationEventSelectOptions.some((option) => option.value === templateForm.eventType)) {
@@ -41219,10 +42158,25 @@ function NotificationTemplateManager({
     setTemplateForm(buildNotificationTemplateForm());
   }
 
+  function openTemplateEditor() {
+    resetTemplateForm();
+    setIsTemplateEditorOpen(true);
+  }
+
   function startEditTemplate(template: NotificationTemplate) {
     setEditingTemplateId(template.id);
     setError("");
     setTemplateForm(buildNotificationTemplateForm(template));
+    setIsTemplateEditorOpen(true);
+  }
+
+  function closeTemplateEditor() {
+    setIsTemplateEditorOpen(false);
+    resetTemplateForm();
+  }
+
+  function setNotificationTab(tab: NotificationTemplateTab) {
+    setActiveTab(tab);
   }
 
   function saveTemplate(event: FormEvent<HTMLFormElement>) {
@@ -41257,13 +42211,11 @@ function NotificationTemplateManager({
         ? current.notificationTemplates.map((item) => (item.id === editingTemplateId ? template : item))
         : [...current.notificationTemplates, template]
     }));
-    setEditingTemplateId(id);
-    setTemplateForm(buildNotificationTemplateForm(template));
-    setError("");
+    closeTemplateEditor();
   }
 
   return (
-    <div className="notification-template-manager">
+    <div className="notification-template-manager admin-master-manager">
       <div className="admin-metric-grid">
         <AdminSummaryCard label="Templates" value={visibleNotificationTemplates.length} />
         <AdminSummaryCard
@@ -41281,185 +42233,253 @@ function NotificationTemplateManager({
           value={new Set(visibleNotificationTemplates.flatMap((template) => template.enabledRoles)).size}
         />
       </div>
-      <div className="admin-editor-layout notification-template-layout">
-        <form className="admin-editor-form admin-form" onSubmit={saveTemplate}>
-          <div className="admin-form-heading">
-            <h3>{editingTemplateId ? "Edit notification template" : "Create notification template"}</h3>
-            <button className="secondary-button" type="button" onClick={resetTemplateForm}>
-              New template
-            </button>
+      <div className="admin-master-tabs admin-subsection-tabs" role="tablist" aria-label="Notification sections">
+        {notificationTemplateTabs.map((tab) => (
+          <button
+            aria-controls={`notification-template-panel-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            className={`admin-master-tab ${activeTab === tab.id ? "is-active" : ""}`}
+            id={`notification-template-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => setNotificationTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            <TegelIcon name={tab.iconName} size="17px" />
+            <span>{tab.label}</span>
+            <strong>{templateTabCounts[tab.id]}</strong>
+          </button>
+        ))}
+      </div>
+      <div className="notification-template-section">
+        <div className="admin-master-table-toolbar notification-template-toolbar">
+          <div>
+            <h3>Notification templates</h3>
+            <p>Route events by role and delivery mode through a table-first admin workflow.</p>
           </div>
-          {error ? <p className="admin-form-error">{error}</p> : null}
-          <label className="form-field">
-            <span>Trigger event</span>
-            <select
-              value={templateForm.eventType}
-              onChange={(event) => {
-                const eventType = event.target.value as NotificationEventType;
-
-                setTemplateForm({
-                  ...templateForm,
-                  eventType,
-                  severity: getDefaultNotificationSeverity(eventType)
-                });
-              }}
-            >
-              {notificationEventSelectOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Severity</span>
-            <select
-              value={templateForm.severity}
-              onChange={(event) =>
-                setTemplateForm({ ...templateForm, severity: event.target.value as NotificationSeverity })
-              }
-            >
-              {notificationSeverityOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Delivery mode</span>
-            <select
-              value={templateForm.deliveryMode}
-              onChange={(event) =>
-                setTemplateForm({
-                  ...templateForm,
-                  deliveryMode: event.target.value as NotificationDeliveryMode
-                })
-              }
-            >
-              {notificationDeliveryModeOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Subject</span>
-            <input
-              value={templateForm.subject}
-              onChange={(event) => setTemplateForm({ ...templateForm, subject: event.target.value })}
-              placeholder="Approval required: {{ticketKey}}"
-            />
-          </label>
-          <label className="form-field">
-            <span>Body</span>
-            <textarea
-              value={templateForm.body}
-              onChange={(event) => setTemplateForm({ ...templateForm, body: event.target.value })}
-              placeholder="{{ticketTitle}} is waiting for your review."
-            />
-          </label>
-          <AdminMultiSelectDropdown
-            label="Recipient role visibility"
-            options={roleOptions.map((role) => ({ value: role.key, label: role.label }))}
-            placeholder="Select recipient roles"
-            values={templateForm.enabledRoles}
-            onChange={(enabledRoles) =>
-              setTemplateForm({ ...templateForm, enabledRoles: enabledRoles as RoleKey[] })
+          <button className="primary-button" type="button" onClick={openTemplateEditor}>
+            <TegelIcon name="plus" size="16px" />
+            Add
+          </button>
+        </div>
+        <div className="notification-template-table-shell" id={`notification-template-panel-${activeTab}`}>
+          <AdminConfigTable
+            title="Notification templates"
+            summary={
+              activeTab === "all"
+                ? "All visible templates"
+                : `${getNotificationDeliveryModeLabel(activeTab)} templates`
             }
-          />
-          <p className="admin-hint">
-            Supported tokens: {notificationTokenList.map((token) => `{{${token}}}`).join(", ")}.
-          </p>
-          <AdminCheckbox
-            checked={templateForm.active}
-            label="Active template"
-            onChange={(active) => setTemplateForm({ ...templateForm, active })}
-          />
-          <AdminFormActions editing={Boolean(editingTemplateId)} onCancel={resetTemplateForm} />
-        </form>
-
-        <div className="notification-template-main">
-          <NotificationTemplatePreview config={config} template={previewTemplate} />
-          <div className="admin-editable-list">
-            {visibleNotificationTemplates.map((template) => (
-              <article className="admin-editable-record notification-template-record" key={template.id}>
-                <div className="admin-record-main">
-                  <div className="admin-record-header">
-                    <div>
-                      <strong>{template.subject}</strong>
-                      <span>{getNotificationEventLabel(template.eventType)}</span>
-                    </div>
-                    <div className="notification-record-status">
-                      <NotificationSeverityBadge severity={template.severity} />
-                      <AdminStatusPill active={template.active} />
-                    </div>
+            columns={[
+              { key: "event", label: "Event", minWidth: 220 },
+              { key: "subject", label: "Subject", minWidth: 260 },
+              { key: "delivery", label: "Delivery", minWidth: 150 },
+              { key: "roles", label: "Roles", minWidth: 210 },
+              { key: "severity", label: "Severity", minWidth: 128 },
+              { key: "status", label: "Status", minWidth: 128 },
+              {
+                key: "actions",
+                label: "Actions",
+                className: "admin-config-table-actions-cell",
+                width: 272,
+                resizable: false
+              }
+            ]}
+            emptyMessage="Create notification templates to route events by role and delivery mode."
+            rows={filteredNotificationTemplates.map((template) => ({
+              id: template.id,
+              active: template.active,
+              cells: {
+                event: (
+                  <div className="admin-table-cell-stack">
+                    <strong>{getNotificationEventLabel(template.eventType)}</strong>
+                    <span>{template.eventType}</span>
                   </div>
-                  <div className="notification-record-meta">
-                    <span>Delivery</span>
-                    <strong>{getNotificationDeliveryModeLabel(template.deliveryMode)}</strong>
-                    <span>Visible roles</span>
-                    <strong>
-                      {template.enabledRoles.map((role) => getConfigRoleLabel(config, role)).join(", ") ||
-                        "No roles selected"}
-                    </strong>
+                ),
+                subject: (
+                  <div className="admin-table-cell-stack">
+                    <strong>{template.subject}</strong>
+                    <span>{template.body}</span>
                   </div>
-                </div>
-                <div className="admin-record-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => startEditTemplate(template)}
-                  >
-                    <TegelIcon name="edit" size="16px" />
-                    Edit
-                  </button>
-                  {template.active ? (
+                ),
+                delivery: <span className="admin-pill">{getNotificationDeliveryModeLabel(template.deliveryMode)}</span>,
+                roles: (
+                  <span>
+                    {template.enabledRoles.map((role) => getConfigRoleLabel(config, role)).join(", ") ||
+                      "No roles selected"}
+                  </span>
+                ),
+                severity: <NotificationSeverityBadge severity={template.severity} />,
+                status: <AdminStatusPill active={template.active} />,
+                actions: (
+                  <div className="admin-record-actions">
                     <button
-                      className="secondary-button danger-button"
+                      className="secondary-button"
                       type="button"
-                      onClick={() => {
-                        onConfigChange((current) => ({
-                          ...current,
-                          notificationTemplates: current.notificationTemplates.map((item) =>
-                            item.id === template.id ? { ...item, active: false } : item
-                          )
-                        }));
-                        if (editingTemplateId === template.id) {
-                          resetTemplateForm();
-                        }
-                      }}
+                      onClick={() => startEditTemplate(template)}
                     >
-                      <TegelIcon name="cross" size="16px" />
-                      Deactivate
+                      <TegelIcon name="edit" size="16px" />
+                      Edit
                     </button>
-                  ) : (
-                    <button
-                      className="secondary-button danger-button hard-delete-button"
-                      type="button"
-                      onClick={() => {
-                        onConfigChange((current) => ({
-                          ...current,
-                          notificationTemplates: current.notificationTemplates.filter(
-                            (item) => item.id !== template.id
-                          )
-                        }));
-                        if (editingTemplateId === template.id) {
-                          resetTemplateForm();
-                        }
-                      }}
-                    >
-                      <TegelIcon name="trash" size="16px" />
-                      Hard delete
-                    </button>
-                  )}
-                </div>
-              </article>
-            ))}
-          </div>
+                    {template.active ? (
+                      <button
+                        className="secondary-button danger-button"
+                        type="button"
+                        onClick={() => {
+                          onConfigChange((current) => ({
+                            ...current,
+                            notificationTemplates: current.notificationTemplates.map((item) =>
+                              item.id === template.id ? { ...item, active: false } : item
+                            )
+                          }));
+                          if (editingTemplateId === template.id) {
+                            closeTemplateEditor();
+                          }
+                        }}
+                      >
+                        <TegelIcon name="cross" size="16px" />
+                        Deactivate
+                      </button>
+                    ) : (
+                      <button
+                        className="secondary-button danger-button hard-delete-button"
+                        type="button"
+                        onClick={() => {
+                          onConfigChange((current) => ({
+                            ...current,
+                            notificationTemplates: current.notificationTemplates.filter(
+                              (item) => item.id !== template.id
+                            )
+                          }));
+                          if (editingTemplateId === template.id) {
+                            closeTemplateEditor();
+                          }
+                        }}
+                      >
+                        <TegelIcon name="trash" size="16px" />
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                )
+              }
+            }))}
+          />
         </div>
       </div>
+      {isTemplateEditorOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            aria-labelledby="notification-template-editor-title"
+            aria-modal="true"
+            className="ticket-modal admin-master-modal notification-template-modal"
+            role="dialog"
+          >
+            <header className="modal-header">
+              <div>
+                <h2 id="notification-template-editor-title">
+                  {editingTemplateId ? "Edit notification template" : "Add notification template"}
+                </h2>
+                <p>Choose the event, delivery mode, and recipients before saving the template.</p>
+              </div>
+              <button className="icon-button quiet" type="button" onClick={closeTemplateEditor} aria-label="Close">
+                <TegelIcon name="cross" />
+              </button>
+            </header>
+            <form className="admin-editor-form admin-form admin-user-modal-form" onSubmit={saveTemplate}>
+              {error ? <p className="admin-form-error">{error}</p> : null}
+              <label className="form-field">
+                <span>Trigger event</span>
+                <select
+                  value={templateForm.eventType}
+                  onChange={(event) => {
+                    const eventType = event.target.value as NotificationEventType;
+
+                    setTemplateForm({
+                      ...templateForm,
+                      eventType,
+                      severity: getDefaultNotificationSeverity(eventType)
+                    });
+                  }}
+                >
+                  {notificationEventSelectOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Severity</span>
+                <select
+                  value={templateForm.severity}
+                  onChange={(event) =>
+                    setTemplateForm({ ...templateForm, severity: event.target.value as NotificationSeverity })
+                  }
+                >
+                  {notificationSeverityOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Delivery mode</span>
+                <select
+                  value={templateForm.deliveryMode}
+                  onChange={(event) =>
+                    setTemplateForm({
+                      ...templateForm,
+                      deliveryMode: event.target.value as NotificationDeliveryMode
+                    })
+                  }
+                >
+                  {notificationDeliveryModeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Subject</span>
+                <input
+                  value={templateForm.subject}
+                  onChange={(event) => setTemplateForm({ ...templateForm, subject: event.target.value })}
+                  placeholder="Approval required: {{ticketKey}}"
+                />
+              </label>
+              <label className="form-field">
+                <span>Body</span>
+                <textarea
+                  value={templateForm.body}
+                  onChange={(event) => setTemplateForm({ ...templateForm, body: event.target.value })}
+                  placeholder="{{ticketTitle}} is waiting for your review."
+                />
+              </label>
+              <AdminMultiSelectDropdown
+                label="Recipient role visibility"
+                options={roleOptions.map((role) => ({ value: role.key, label: role.label }))}
+                placeholder="Select recipient roles"
+                values={templateForm.enabledRoles}
+                onChange={(enabledRoles) =>
+                  setTemplateForm({ ...templateForm, enabledRoles: enabledRoles as RoleKey[] })
+                }
+              />
+              <p className="admin-hint">
+                Supported tokens: {notificationTokenList.map((token) => `{{${token}}}`).join(", ")}.
+              </p>
+              <AdminCheckbox
+                checked={templateForm.active}
+                label="Active template"
+                onChange={(active) => setTemplateForm({ ...templateForm, active })}
+              />
+              <AdminFormActions editing={Boolean(editingTemplateId)} onCancel={closeTemplateEditor} />
+            </form>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -41533,9 +42553,7 @@ function IntegrationConfigurationPanel({
   const [smtpForm, setSmtpForm] = useState<SmtpConfigFormState>(() =>
     buildSmtpConfigForm(config.integrations.smtp)
   );
-  const [activeIntegration, setActiveIntegration] = useState<IntegrationProviderKey>(() =>
-    configUsesJira(config) ? "jira" : "ai"
-  );
+  const [activeIntegration, setActiveIntegration] = useState<IntegrationProviderKey | null>(null);
   const [jiraError, setJiraError] = useState("");
   const [jiraSuccessMessage, setJiraSuccessMessage] = useState("");
   const [aiError, setAiError] = useState("");
@@ -41570,12 +42588,6 @@ function IntegrationConfigurationPanel({
   const selectedGitLabProduct = activeGitLabProducts.find(
     (product) => product.id === gitlabForm.selectedProductId
   );
-
-  useEffect(() => {
-    if (!hasJiraProducts && activeIntegration === "jira") {
-      setActiveIntegration("ai");
-    }
-  }, [activeIntegration, hasJiraProducts]);
 
   useEffect(() => {
     setJiraForm((current) => {
@@ -41646,34 +42658,8 @@ function IntegrationConfigurationPanel({
   }, [config.integrations.smtp]);
 
   useEffect(() => {
-    const secrets = readLocalIntegrationSecrets();
-
-    setLocalSecrets(secrets);
-    setJiraForm((current) => ({
-      ...current,
-      token: secrets.jiraToken ?? current.token
-    }));
-    setAiForm((current) => ({
-      ...current,
-      apiKey: secrets.openAiApiKey ?? current.apiKey,
-      testPrompt:
-        secrets.aiTestPrompt?.trim() === legacyAiTestPrompt
-          ? defaultAiTestPrompt
-          : (secrets.aiTestPrompt ?? current.testPrompt)
-    }));
-    setGitLabForm((current) => ({
-      ...current,
-      token: secrets.gitlabToken ?? current.token
-    }));
-    setEntraForm(buildEntraConfigForm(secrets));
-    setSmtpForm((current) => ({
-      ...current,
-      username: secrets.smtpUsername ?? current.username,
-      password: secrets.smtpPassword ?? current.password,
-      testRecipient: secrets.smtpTestRecipient ?? current.testRecipient,
-      testSubject: secrets.smtpTestSubject ?? current.testSubject,
-      testBody: secrets.smtpTestBody ?? current.testBody
-    }));
+    setLocalSecrets({});
+    setEntraForm(buildEntraConfigForm());
   }, []);
 
   useEffect(() => {
@@ -41697,36 +42683,8 @@ function IntegrationConfigurationPanel({
   }, [smtpForm]);
 
   function updateLocalSecrets(patch: Partial<LocalIntegrationSecrets>) {
-    const nextSecrets = {
-      ...localSecrets,
-      ...patch
-    };
-
-    setLocalSecrets(nextSecrets);
-
-    try {
-      writeLocalIntegrationSecrets(nextSecrets);
-    } catch {
-      const result: IntegrationTestResult = {
-        tone: "warning",
-        title: "Local credential save failed",
-        detail:
-          "The browser blocked localStorage, so credentials will need to be entered again after refresh.",
-        checkedAt: new Date().toISOString()
-      };
-
-      if (activeIntegration === "smtp") {
-        setSmtpTestResult(result);
-      } else if (activeIntegration === "ai") {
-        setAiTestResult(result);
-      } else if (activeIntegration === "gitlab") {
-        setGitLabTestResult(result);
-      } else if (activeIntegration === "entra") {
-        setEntraTestResult(result);
-      } else {
-        setJiraTestResult(result);
-      }
-    }
+    void patch;
+    setLocalSecrets({});
   }
 
   function clearLocalJiraToken() {
@@ -41871,7 +42829,7 @@ function IntegrationConfigurationPanel({
 
   function clearLocalEntraConfig() {
     updateLocalSecrets({ entraClientId: "", entraTenantId: "", entraRedirectUri: "" });
-    setEntraForm(buildEntraConfigForm({}));
+    setEntraForm(buildEntraConfigForm());
     setEntraSuccessMessage("");
     setEntraError("");
     setEntraTestResult({
@@ -41902,11 +42860,6 @@ function IntegrationConfigurationPanel({
     const defaultProjectKey = getValidJiraProjectKey(jiraForm.defaultProjectKey);
     const defaultIssueType = jiraForm.defaultIssueType.trim();
     const projectUrl = jiraForm.projectUrl.trim();
-    const username = jiraForm.username.trim();
-    const token = jiraForm.token.trim();
-    const hasConfiguredToken = Boolean(
-      token || localSecrets.jiraToken?.trim() || config.integrations.jira.tokenConfigured
-    );
 
     if (jiraForm.enabled && !apiBaseUrl) {
       setJiraError("Jira API base URL is required when Jira sync is enabled.");
@@ -41938,21 +42891,7 @@ function IntegrationConfigurationPanel({
       return;
     }
 
-    if (jiraForm.enabled && jiraForm.authMode === "emailApiToken" && !username) {
-      setJiraError("Username or email is required for email + API token authentication.");
-      setJiraSuccessMessage("");
-      return;
-    }
-
-    if (jiraForm.enabled && !hasConfiguredToken) {
-      setJiraError("Enter a Jira token before enabling Jira sync.");
-      setJiraSuccessMessage("");
-      return;
-    }
-
     const updatedAt = new Date().toISOString();
-    const tokenConfigured = hasConfiguredToken;
-    const effectiveToken = token || localSecrets.jiraToken?.trim() || "";
     const jira: JiraIntegrationConfig = {
       ...config.integrations.jira,
       enabled: jiraForm.enabled,
@@ -41964,12 +42903,10 @@ function IntegrationConfigurationPanel({
       defaultProjectKey,
       defaultIssueType,
       authMode: jiraForm.authMode,
-      username,
-      tokenConfigured,
-      tokenLastFour: effectiveToken ? effectiveToken.slice(-4) : config.integrations.jira.tokenLastFour,
-      tokenUpdatedAt: token
-        ? updatedAt
-        : (config.integrations.jira.tokenUpdatedAt ?? (effectiveToken ? updatedAt : undefined)),
+      username: "",
+      tokenConfigured: config.integrations.jira.tokenConfigured,
+      tokenLastFour: config.integrations.jira.tokenLastFour,
+      tokenUpdatedAt: config.integrations.jira.tokenUpdatedAt,
       metadataMode: "dynamic",
       syncDirection: "bidirectional",
       updatedAt
@@ -41982,22 +42919,15 @@ function IntegrationConfigurationPanel({
         jira
       }
     }));
-    if (token) {
-      updateLocalSecrets({ jiraToken: token });
-    }
     setJiraError("");
-    setJiraSuccessMessage(
-      token ? "Jira API configuration and local token saved." : "Jira API configuration saved."
-    );
-    setJiraForm({ ...buildJiraConfigForm(jira), token: token || localSecrets.jiraToken || "" });
+    setJiraSuccessMessage("Jira configuration saved.");
+    setJiraForm({ ...buildJiraConfigForm(jira), token: "", username: "" });
   }
 
   function saveAiConfig(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const model = aiForm.model.trim();
-    const apiKey = aiForm.apiKey.trim();
-    const effectiveApiKey = apiKey || localSecrets.openAiApiKey?.trim() || "";
 
     if (!model) {
       setAiError("OpenAI model is required.");
@@ -42011,11 +42941,9 @@ function IntegrationConfigurationPanel({
       enabled: aiForm.enabled,
       provider: "openai",
       model,
-      apiKeyConfigured: Boolean(effectiveApiKey || config.integrations.ai.apiKeyConfigured),
-      apiKeyLastFour: effectiveApiKey ? effectiveApiKey.slice(-4) : config.integrations.ai.apiKeyLastFour,
-      apiKeyUpdatedAt: apiKey
-        ? updatedAt
-        : (config.integrations.ai.apiKeyUpdatedAt ?? (effectiveApiKey ? updatedAt : undefined)),
+      apiKeyConfigured: config.integrations.ai.apiKeyConfigured,
+      apiKeyLastFour: config.integrations.ai.apiKeyLastFour,
+      apiKeyUpdatedAt: config.integrations.ai.apiKeyUpdatedAt,
       updatedAt
     };
 
@@ -42026,16 +42954,10 @@ function IntegrationConfigurationPanel({
         ai
       }
     }));
-    if (apiKey) {
-      updateLocalSecrets({ openAiApiKey: apiKey, aiTestPrompt: aiForm.testPrompt.trim() });
-    } else {
-      updateLocalSecrets({ aiTestPrompt: aiForm.testPrompt.trim() });
-    }
     setAiError("");
-    setAiSuccessMessage(apiKey ? "AI configuration and local OpenAI key saved." : "AI configuration saved.");
+    setAiSuccessMessage("AI configuration saved.");
     setAiForm({
       ...buildAiConfigForm(ai),
-      apiKey: apiKey || localSecrets.openAiApiKey || "",
       testPrompt: aiForm.testPrompt
     });
   }
@@ -42044,8 +42966,6 @@ function IntegrationConfigurationPanel({
     event.preventDefault();
 
     const apiBaseUrl = normalizeGitLabBaseUrl(gitlabForm.apiBaseUrl);
-    const token = gitlabForm.token.trim();
-    const effectiveToken = token || localSecrets.gitlabToken?.trim() || "";
     const defaultRef = gitlabForm.defaultRef.trim() || "main";
 
     if (gitlabForm.enabled && !apiBaseUrl) {
@@ -42060,22 +42980,14 @@ function IntegrationConfigurationPanel({
       return;
     }
 
-    if (gitlabForm.enabled && !effectiveToken) {
-      setGitLabError("Enter a GitLab access token before enabling GitLab integration.");
-      setGitLabSuccessMessage("");
-      return;
-    }
-
     const updatedAt = new Date().toISOString();
     const gitlab: GitLabIntegrationConfig = {
       ...config.integrations.gitlab,
       enabled: gitlabForm.enabled,
       apiBaseUrl,
-      tokenConfigured: Boolean(effectiveToken || config.integrations.gitlab.tokenConfigured),
-      tokenLastFour: effectiveToken ? effectiveToken.slice(-4) : config.integrations.gitlab.tokenLastFour,
-      tokenUpdatedAt: token
-        ? updatedAt
-        : (config.integrations.gitlab.tokenUpdatedAt ?? (effectiveToken ? updatedAt : undefined)),
+      tokenConfigured: config.integrations.gitlab.tokenConfigured,
+      tokenLastFour: config.integrations.gitlab.tokenLastFour,
+      tokenUpdatedAt: config.integrations.gitlab.tokenUpdatedAt,
       defaultRef,
       updatedAt
     };
@@ -42087,16 +42999,10 @@ function IntegrationConfigurationPanel({
         gitlab
       }
     }));
-    if (token) {
-      updateLocalSecrets({ gitlabToken: token });
-    }
     setGitLabError("");
-    setGitLabSuccessMessage(
-      token ? "GitLab configuration and local token saved." : "GitLab configuration saved."
-    );
+    setGitLabSuccessMessage("GitLab configuration saved.");
     setGitLabForm({
       ...buildGitLabConfigForm(gitlab),
-      token: token || localSecrets.gitlabToken || "",
       selectedProductId: gitlabForm.selectedProductId,
       groupSearch: gitlabForm.groupSearch,
       selectedGroupId: gitlabForm.selectedGroupId,
@@ -42159,15 +43065,8 @@ function IntegrationConfigurationPanel({
         smtp
       }
     }));
-    updateLocalSecrets({
-      smtpUsername: smtpForm.username.trim(),
-      smtpPassword: smtpForm.password,
-      smtpTestRecipient: smtpForm.testRecipient.trim(),
-      smtpTestSubject: smtpForm.testSubject.trim(),
-      smtpTestBody: smtpForm.testBody
-    });
     setSmtpError("");
-    setSmtpSuccessMessage("Email notification configuration and local SMTP test settings saved.");
+    setSmtpSuccessMessage("Email notification configuration saved.");
   }
 
   function testJiraConnection() {
@@ -42175,8 +43074,6 @@ function IntegrationConfigurationPanel({
     const defaultProjectKey = getValidJiraProjectKey(jiraForm.defaultProjectKey);
     const defaultIssueType = jiraForm.defaultIssueType.trim();
     const projectUrl = jiraForm.projectUrl.trim();
-    const username = jiraForm.username.trim();
-    const hasConfiguredToken = Boolean(jiraForm.token.trim() || localSecrets.jiraToken?.trim());
     const errors: string[] = [];
     const warnings: string[] = [];
 
@@ -42202,14 +43099,6 @@ function IntegrationConfigurationPanel({
       errors.push("Default Jira issue type is required.");
     }
 
-    if (jiraForm.authMode === "emailApiToken" && !username) {
-      errors.push("Username or email is required for email + API token authentication.");
-    }
-
-    if (!hasConfiguredToken) {
-      errors.push("Jira API token or PAT is not saved locally in this browser.");
-    }
-
     setJiraError("");
     setJiraSuccessMessage("");
     setJiraTestResult({
@@ -42224,8 +43113,8 @@ function IntegrationConfigurationPanel({
         errors.length > 0
           ? errors.join(" ")
           : warnings.length > 0
-            ? `${warnings.join(" ")} Local settings are otherwise valid; enable Jira before a production probe.`
-            : `Local settings are valid for ${apiBaseUrl}/${jiraForm.apiVersion}. Live Jira connectivity requires a server-side probe endpoint.`,
+            ? `${warnings.join(" ")} Platform-managed credentials will be used when Jira is enabled.`
+            : `Portal settings are valid for ${apiBaseUrl}/${jiraForm.apiVersion}. Live Jira connectivity uses server-managed secrets.`,
       checkedAt: new Date().toISOString()
     });
   }
@@ -42295,7 +43184,6 @@ function IntegrationConfigurationPanel({
           : `OpenAI accepted the request using ${data?.model ?? model}.`,
         checkedAt: new Date().toISOString()
       });
-      updateLocalSecrets({ aiTestPrompt: prompt });
     } catch (error) {
       setAiTestResult({
         tone: "danger",
@@ -42345,8 +43233,8 @@ function IntegrationConfigurationPanel({
         errors.length > 0
           ? errors.join(" ")
           : warnings.length > 0
-            ? `${warnings.join(" ")} Local settings are otherwise valid; enable outbound email before a production probe.`
-            : `Local settings are valid for ${host}:${port} using ${getSmtpSecurityLabel(smtpForm.security)}. Live SMTP connectivity requires a server-side probe endpoint.`,
+            ? `${warnings.join(" ")} Platform-managed SMTP credentials will be used when delivery is enabled.`
+            : `Portal settings are valid for ${host}:${port} using ${getSmtpSecurityLabel(smtpForm.security)}. Live SMTP connectivity uses server-managed secrets.`,
       checkedAt: new Date().toISOString()
     });
   }
@@ -42357,8 +43245,8 @@ function IntegrationConfigurationPanel({
       apiBaseUrl: normalizeJiraBaseUrl(jiraForm.apiBaseUrl),
       apiVersion: jiraForm.apiVersion,
       authMode: jiraForm.authMode,
-      username: jiraForm.username.trim(),
-      token: jiraForm.token.trim() || localSecrets.jiraToken?.trim() || "",
+      username: "",
+      token: "",
       defaultProjectKey: getValidJiraProjectKey(jiraForm.defaultProjectKey),
       defaultIssueType: jiraForm.defaultIssueType.trim()
     };
@@ -42368,16 +43256,14 @@ function IntegrationConfigurationPanel({
     return {
       enabled: aiForm.enabled,
       provider: "openai" as const,
-      model: aiForm.model.trim(),
-      apiKey: aiForm.apiKey.trim() || localSecrets.openAiApiKey?.trim() || ""
+      model: aiForm.model.trim()
     };
   }
 
   function buildGitLabActionConfig(): GitLabActionConfig {
     return {
       enabled: gitlabForm.enabled,
-      apiBaseUrl: normalizeGitLabBaseUrl(gitlabForm.apiBaseUrl),
-      token: gitlabForm.token.trim() || localSecrets.gitlabToken?.trim() || ""
+      apiBaseUrl: normalizeGitLabBaseUrl(gitlabForm.apiBaseUrl)
     };
   }
 
@@ -42389,8 +43275,8 @@ function IntegrationConfigurationPanel({
       security: smtpForm.security,
       fromName: smtpForm.fromName.trim() || "Nexus-support portal",
       fromEmail: smtpForm.fromEmail.trim(),
-      username: smtpForm.username.trim() || localSecrets.smtpUsername?.trim() || "",
-      password: smtpForm.password || localSecrets.smtpPassword || ""
+      username: "",
+      password: ""
     };
   }
 
@@ -43011,1240 +43897,315 @@ function IntegrationConfigurationPanel({
     }
   }
 
+  const integrationRows = [
+    {
+      key: "jira" as IntegrationProviderKey,
+      provider: "Jira",
+      summary: hasJiraProducts ? "Issue sync and handoff for Jira-backed products." : "No Jira-backed products in scope.",
+      status: config.integrations.jira.enabled ? "Enabled" : "Disabled",
+      statusClass: config.integrations.jira.enabled ? "is-active" : "is-inactive",
+      visible: hasJiraProducts,
+      details: config.integrations.jira.defaultProjectKey
+        ? `Project ${config.integrations.jira.defaultProjectKey}`
+        : "Project key not configured"
+    },
+    {
+      key: "ai" as IntegrationProviderKey,
+      provider: "AI assistant",
+      summary: "Prompt generation, chat assistance, and writing support.",
+      status: config.integrations.ai.enabled ? "Enabled" : "Disabled",
+      statusClass: config.integrations.ai.enabled ? "is-active" : "is-inactive",
+      visible: true,
+      details: config.integrations.ai.model || "Model not configured"
+    },
+    {
+      key: "gitlab" as IntegrationProviderKey,
+      provider: "GitLab",
+      summary: "Repository search and source review for configured products.",
+      status: config.integrations.gitlab.enabled ? "Enabled" : "Disabled",
+      statusClass: config.integrations.gitlab.enabled ? "is-active" : "is-inactive",
+      visible: true,
+      details: config.integrations.gitlab.apiBaseUrl || "Base URL not configured"
+    },
+    {
+      key: "smtp" as IntegrationProviderKey,
+      provider: "SMTP email",
+      summary: "Outbound email delivery and notification routing.",
+      status: config.integrations.smtp.enabled ? "Enabled" : "Disabled",
+      statusClass: config.integrations.smtp.enabled ? "is-active" : "is-inactive",
+      visible: true,
+      details: config.integrations.smtp.host || "Host not configured"
+    },
+    {
+      key: "entra" as IntegrationProviderKey,
+      provider: "Entra / Azure Graph",
+      summary: "Sign-in and Microsoft Graph settings for portal actions.",
+      status: "Managed",
+      statusClass: "is-managed",
+      visible: true,
+      details: entraForm.tenantId.trim() ? `Tenant ${entraForm.tenantId.trim()}` : "Tenant not configured"
+    }
+  ].filter((row) => row.visible);
+
+  const selectedIntegrationRow = activeIntegration
+    ? integrationRows.find((row) => row.key === activeIntegration)
+    : undefined;
+
+  function openIntegrationDetails(provider: IntegrationProviderKey) {
+    setActiveIntegration(provider);
+  }
+
+  function closeIntegrationDetails() {
+    setActiveIntegration(null);
+  }
+
   return (
-    <div className="integration-settings-layout">
-      <aside className="integration-secondary-sidebar" aria-label="Integration providers">
-        {hasJiraProducts ? (
-          <button
-            className={`integration-provider-button ${activeIntegration === "jira" ? "is-active" : ""}`}
-            type="button"
-            aria-pressed={activeIntegration === "jira"}
-            onClick={() => setActiveIntegration("jira")}
-          >
-            <span className="integration-provider-heading">
-              <span className="integration-provider-icon">
-                <TegelIcon name="route" size="18px" />
-              </span>
-              <span>
-                <strong>Jira</strong>
-                <small>Issue sync and handoff</small>
-              </span>
-            </span>
-            <span
-              className={`integration-provider-status ${config.integrations.jira.enabled ? "is-active" : "is-inactive"}`}
-            >
-              {config.integrations.jira.enabled ? "Enabled" : "Disabled"}
-            </span>
-            <span className="integration-provider-meta">
-              Project {config.integrations.jira.defaultProjectKey || "not set"}
-            </span>
-            <span className="integration-provider-meta">
-              {jiraForm.token
-                ? "Local token saved"
-                : `Token ${getJiraTokenStatus(config.integrations.jira).toLowerCase()}`}
-            </span>
+    activeIntegration === null ? (
+      <div className="integration-admin-manager admin-master-manager">
+        <AdminConfigTable
+          title="Integrations"
+          summary={`${formatCount(integrationRows.length)} shown / ${formatCount(integrationRows.length)} total`}
+          columns={[
+            { key: "provider", label: "Provider" },
+            { key: "summary", label: "Summary" },
+            { key: "status", label: "Status", className: "admin-config-table-status" },
+            {
+              key: "actions",
+              label: "Actions",
+              className: "admin-config-table-actions-cell",
+              width: 124,
+              minWidth: 112,
+              resizable: false
+            }
+          ]}
+          rows={integrationRows.map((row) => ({
+            id: row.key,
+            active: selectedIntegrationRow?.key === row.key,
+            cells: {
+              provider: (
+                <div className="admin-config-cell-stack">
+                  <strong>{row.provider}</strong>
+                  <span>{row.details}</span>
+                </div>
+              ),
+              summary: row.summary,
+              status: <span className={`admin-status-pill ${row.statusClass}`}>{row.status}</span>,
+              actions: (
+                <button className="secondary-button admin-row-edit-button" type="button" onClick={() => openIntegrationDetails(row.key)}>
+                  <TegelIcon name="document" size="16px" />
+                  Open
+                </button>
+              )
+            }
+          }))}
+          emptyMessage="No integrations configured."
+        />
+      </div>
+    ) : (
+      <div className="ticket-list-workspace ticket-list-detail-mode integration-detail-mode">
+        <div className="ticket-detail-toolbar integration-detail-toolbar">
+          <button className="secondary-button" type="button" onClick={closeIntegrationDetails}>
+            <TegelIcon name="cross" size="16px" />
+            Back to integrations
           </button>
-        ) : null}
+          <span>{selectedIntegrationRow ? `${selectedIntegrationRow.provider} configuration` : "Integration"}</span>
+        </div>
 
-        <button
-          className={`integration-provider-button ${activeIntegration === "ai" ? "is-active" : ""}`}
-          type="button"
-          aria-pressed={activeIntegration === "ai"}
-          onClick={() => setActiveIntegration("ai")}
-        >
-          <span className="integration-provider-heading">
-            <span className="integration-provider-icon">
-              <TegelIcon name="document" size="18px" />
-            </span>
-            <span>
-              <strong>AI</strong>
-              <small>{hasJiraProducts ? "Chat and Jira writing" : "Chat and portal writing"}</small>
-            </span>
-          </span>
-          <span
-            className={`integration-provider-status ${config.integrations.ai.enabled ? "is-active" : "is-inactive"}`}
-          >
-            {config.integrations.ai.enabled ? "Enabled" : "Disabled"}
-          </span>
-          <span className="integration-provider-meta">
-            {config.integrations.ai.model || "Model not configured"}
-          </span>
-          <span className="integration-provider-meta">
-            {aiForm.apiKey
-              ? "Local OpenAI key saved"
-              : `Key ${getAiApiKeyStatus(config.integrations.ai).toLowerCase()}`}
-          </span>
-        </button>
+        <section className="panel integration-detail-panel">
+          <header className="admin-record-header integration-detail-header">
+            <div>
+              <strong>{selectedIntegrationRow?.provider ?? "Integration"}</strong>
+              <span>{selectedIntegrationRow?.summary ?? "Configuration and runtime status."}</span>
+            </div>
+            {selectedIntegrationRow ? (
+              <span className={`admin-status-pill ${selectedIntegrationRow.statusClass}`}>{selectedIntegrationRow.status}</span>
+            ) : null}
+          </header>
 
-        <button
-          className={`integration-provider-button ${activeIntegration === "gitlab" ? "is-active" : ""}`}
-          type="button"
-          aria-pressed={activeIntegration === "gitlab"}
-          onClick={() => setActiveIntegration("gitlab")}
-        >
-          <span className="integration-provider-heading">
-            <span className="integration-provider-icon">
-              <TegelIcon name="document" size="18px" />
-            </span>
-            <span>
-              <strong>GitLab</strong>
-              <small>Source and requirement review</small>
-            </span>
-          </span>
-          <span
-            className={`integration-provider-status ${config.integrations.gitlab.enabled ? "is-active" : "is-inactive"}`}
-          >
-            {config.integrations.gitlab.enabled ? "Enabled" : "Disabled"}
-          </span>
-          <span className="integration-provider-meta">
-            {config.integrations.gitlab.apiBaseUrl || "Base URL not configured"}
-          </span>
-          <span className="integration-provider-meta">
-            {gitlabForm.token
-              ? "Local GitLab token saved"
-              : `Token ${getGitLabTokenStatus(config.integrations.gitlab).toLowerCase()}`}
-          </span>
-        </button>
-
-        <button
-          className={`integration-provider-button ${activeIntegration === "smtp" ? "is-active" : ""}`}
-          type="button"
-          aria-pressed={activeIntegration === "smtp"}
-          onClick={() => setActiveIntegration("smtp")}
-        >
-          <span className="integration-provider-heading">
-            <span className="integration-provider-icon">
-              <TegelIcon name="send" size="18px" />
-            </span>
-            <span>
-              <strong>SMTP</strong>
-              <small>Email delivery</small>
-            </span>
-          </span>
-          <span
-            className={`integration-provider-status ${config.integrations.smtp.enabled ? "is-active" : "is-inactive"}`}
-          >
-            {config.integrations.smtp.enabled ? "Enabled" : "Disabled"}
-          </span>
-          <span className="integration-provider-meta">
-            {config.integrations.smtp.host || "Host not configured"}
-          </span>
-          <span className="integration-provider-meta">
-            {smtpForm.password
-              ? "Local SMTP credentials saved"
-              : getNotificationDeliveryModeLabel(config.integrations.smtp.deliveryMode)}
-          </span>
-        </button>
-      </aside>
-
-      <div className="integration-settings-main">
-        {activeIntegration === "jira" && hasJiraProducts ? (
-          <div className="integration-settings-grid" aria-label="Jira settings">
-            <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveJiraConfig}>
-              <h3>Jira settings</h3>
-              {jiraError ? <p className="admin-form-error">{jiraError}</p> : null}
-              {jiraSuccessMessage ? <p className="admin-form-success">{jiraSuccessMessage}</p> : null}
-              <AdminCheckbox
-                checked={jiraForm.enabled}
-                label="Enable Jira sync"
-                onChange={(enabled) => {
-                  setJiraForm({ ...jiraForm, enabled });
-                  setJiraSuccessMessage("");
-                }}
-              />
-              <label className="form-field">
-                <span>Jira API base URL</span>
-                <input
-                  value={jiraForm.apiBaseUrl}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, apiBaseUrl: event.target.value });
-                    setJiraSuccessMessage("");
-                  }}
-                  placeholder="https://issues.scania.com"
-                />
-              </label>
-              <label className="form-field">
-                <span>API version</span>
-                <select
-                  value={jiraForm.apiVersion}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, apiVersion: event.target.value as JiraApiVersion });
-                    setJiraSuccessMessage("");
-                  }}
-                >
-                  {jiraApiVersionOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Authentication</span>
-                <select
-                  value={jiraForm.authMode}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, authMode: event.target.value as JiraAuthMode });
-                    setJiraSuccessMessage("");
-                  }}
-                >
-                  {jiraAuthModeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Username / email</span>
-                <input
-                  value={jiraForm.username}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, username: event.target.value });
-                    setJiraSuccessMessage("");
-                  }}
-                  placeholder="service.account@scania.com"
-                />
-              </label>
-              <label className="form-field">
-                <span>API token / PAT</span>
-                <input
-                  autoComplete="off"
-                  type="password"
-                  value={jiraForm.token}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, token: event.target.value });
-                    setJiraSuccessMessage("");
-                  }}
-                  placeholder={
-                    jiraForm.token
-                      ? "Using locally saved token"
-                      : config.integrations.jira.tokenConfigured
-                        ? "Paste token to save locally"
-                        : "Paste token"
-                  }
-                />
-              </label>
-              <div className="admin-record-grid compact-record-grid">
-                <span>Token status</span>
-                <strong>{getJiraTokenStatus(config.integrations.jira)}</strong>
-                <span>Local token</span>
-                <strong>{jiraForm.token ? "Saved in this browser" : "Not saved locally"}</strong>
-                <span>API endpoint</span>
-                <strong>
-                  {jiraForm.apiBaseUrl
-                    ? `${jiraForm.apiBaseUrl.replace(/\/+$/, "")}/${jiraForm.apiVersion}`
-                    : "Not configured"}
-                </strong>
-              </div>
-              <label className="form-field">
-                <span>Default project key</span>
-                <input
-                  value={jiraForm.defaultProjectKey}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, defaultProjectKey: event.target.value });
-                    setJiraSuccessMessage("");
-                  }}
-                  placeholder="NEXUS"
-                />
-              </label>
-              <label className="form-field">
-                <span>Default issue type</span>
-                <input
-                  value={jiraForm.defaultIssueType}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, defaultIssueType: event.target.value });
-                    setJiraSuccessMessage("");
-                  }}
-                  placeholder="Task"
-                />
-              </label>
-              <label className="form-field">
-                <span>Project browser URL</span>
-                <input
-                  value={jiraForm.projectUrl}
-                  onChange={(event) => {
-                    setJiraForm({ ...jiraForm, projectUrl: event.target.value });
-                    setJiraSuccessMessage("");
-                  }}
-                  placeholder="https://issues.scania.com/projects/NEXUS/issues/?filter=allopenissues"
-                />
-              </label>
-              <div className="integration-operation-panel">
-                <h4>Live Jira actions</h4>
+          {activeIntegration === "jira" && hasJiraProducts ? (
+            <div className="integration-settings-grid" aria-label="Jira settings">
+              <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveJiraConfig}>
+                <h3>Jira settings</h3>
+                {jiraError ? <p className="admin-form-error">{jiraError}</p> : null}
+                {jiraSuccessMessage ? <p className="admin-form-success">{jiraSuccessMessage}</p> : null}
+                <AdminCheckbox checked={jiraForm.enabled} label="Enable Jira sync" onChange={(enabled) => { setJiraForm({ ...jiraForm, enabled }); setJiraSuccessMessage(""); }} />
                 <label className="form-field">
-                  <span>Test task summary</span>
-                  <input
-                    value={jiraForm.testIssueSummary}
-                    onChange={(event) => {
-                      setJiraForm({ ...jiraForm, testIssueSummary: event.target.value });
-                      setJiraSuccessMessage("");
-                    }}
-                    placeholder="Nexus-support portal integration test task"
-                  />
+                  <span>Jira API base URL</span>
+                  <input value={jiraForm.apiBaseUrl} onChange={(event) => { setJiraForm({ ...jiraForm, apiBaseUrl: event.target.value }); setJiraSuccessMessage(""); }} placeholder="https://issues.scania.com" />
                 </label>
-                <div className="integration-action-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isSyncingJiraData || isCreatingJiraTask}
-                    onClick={syncJiraData}
-                  >
-                    <TegelIcon name="route" size="16px" />
-                    {isSyncingJiraData ? "Syncing..." : "Sync Jira data"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isCreatingJiraTask || isSyncingJiraData}
-                    onClick={createJiraTask}
-                  >
-                    <TegelIcon name="document" size="16px" />
-                    {isCreatingJiraTask ? "Creating..." : "Create Jira task"}
-                  </button>
-                </div>
-                <p className="admin-hint">
-                  Live Jira actions use the token saved in this browser. This is local developer persistence;
-                  production should use a managed secret store.
-                </p>
-              </div>
-              <p className="admin-hint">
-                Saving with a token stores it in this browser localStorage so refreshes and app restarts can
-                reuse it locally.
-              </p>
-              <div className="admin-form-actions">
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={!jiraForm.token}
-                  onClick={clearLocalJiraToken}
-                >
-                  <TegelIcon name="cross" size="16px" />
-                  Clear local token
-                </button>
-                <button className="secondary-button" type="button" onClick={testJiraConnection}>
-                  <TegelIcon name="route" size="16px" />
-                  Test connection
-                </button>
-                <button className="primary-button" type="submit">
-                  <TegelIcon name="save" size="16px" />
-                  Save Jira configuration
-                </button>
-              </div>
-              <IntegrationTestResultBanner result={jiraTestResult} />
-            </form>
-
-            <article className="integration-card jira-config-summary">
-              <div className="admin-record-header">
-                <div>
-                  <strong>Jira integration</strong>
-                  <span>{config.integrations.jira.syncDirection} sync</span>
-                </div>
-                <AdminStatusPill active={config.integrations.jira.enabled} />
-              </div>
-              <div className="admin-record-grid">
-                <span>API base</span>
-                <strong>{getJiraApiBaseUrl(config.integrations.jira) || "Not configured"}</strong>
-                <span>API endpoint</span>
-                <strong>{getJiraApiEndpoint(config.integrations.jira)}</strong>
-                <span>API version</span>
-                <strong>{getJiraApiVersionLabel(config.integrations.jira.apiVersion ?? "rest/api/2")}</strong>
-                <span>Authentication</span>
-                <strong>
-                  {getJiraAuthModeLabel(config.integrations.jira.authMode ?? "personalAccessToken")}
-                </strong>
-                <span>Token</span>
-                <strong>{getJiraTokenStatus(config.integrations.jira)}</strong>
-                <span>Default project</span>
-                <strong>{config.integrations.jira.defaultProjectKey}</strong>
-                <span>Issue type</span>
-                <strong>{config.integrations.jira.defaultIssueType}</strong>
-                <span>Metadata</span>
-                <strong>{config.integrations.jira.metadataMode}</strong>
-                <span>Updated</span>
-                <strong>{formatLocalDateTime(new Date(config.integrations.jira.updatedAt))}</strong>
-              </div>
-            </article>
-          </div>
-        ) : activeIntegration === "ai" ? (
-          <div className="integration-settings-grid" aria-label="AI settings">
-            <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveAiConfig}>
-              <h3>AI settings</h3>
-              {aiError ? <p className="admin-form-error">{aiError}</p> : null}
-              {aiSuccessMessage ? <p className="admin-form-success">{aiSuccessMessage}</p> : null}
-              <AdminCheckbox
-                checked={aiForm.enabled}
-                label="Enable AI integration"
-                onChange={(enabled) => {
-                  setAiForm({ ...aiForm, enabled });
-                  setAiSuccessMessage("");
-                }}
-              />
-              <label className="form-field">
-                <span>Provider</span>
-                <input readOnly value="OpenAI" />
-              </label>
-              <label className="form-field">
-                <span>Model</span>
-                <input
-                  value={aiForm.model}
-                  onChange={(event) => {
-                    setAiForm({ ...aiForm, model: event.target.value });
-                    setAiSuccessMessage("");
-                  }}
-                  placeholder="gpt-5.5"
-                />
-              </label>
-              <label className="form-field">
-                <span>OpenAI API key</span>
-                <input
-                  autoComplete="off"
-                  type="password"
-                  value={aiForm.apiKey}
-                  onChange={(event) => {
-                    setAiForm({ ...aiForm, apiKey: event.target.value });
-                    setAiSuccessMessage("");
-                  }}
-                  placeholder={
-                    aiForm.apiKey
-                      ? "Using locally saved key"
-                      : config.integrations.ai.apiKeyConfigured
-                        ? "Paste key to save locally"
-                        : "Paste key or use OPENAI_API_KEY"
-                  }
-                />
-              </label>
-              <div className="admin-record-grid compact-record-grid">
-                <span>Key status</span>
-                <strong>{getAiApiKeyStatus(config.integrations.ai)}</strong>
-                <span>Local key</span>
-                <strong>{aiForm.apiKey ? "Saved in this browser" : "Not saved locally"}</strong>
-                <span>Endpoint</span>
-                <strong>OpenAI Responses API</strong>
-              </div>
-              <div className="integration-operation-panel">
-                <h4>Live AI test</h4>
-                <label className="form-field form-field-wide">
-                  <span>Test prompt</span>
-                  <textarea
-                    rows={4}
-                    value={aiForm.testPrompt}
-                    onChange={(event) => {
-                      setAiForm({ ...aiForm, testPrompt: event.target.value });
-                      setAiSuccessMessage("");
-                    }}
-                  />
+                <label className="form-field">
+                  <span>API version</span>
+                  <select value={jiraForm.apiVersion} onChange={(event) => { setJiraForm({ ...jiraForm, apiVersion: event.target.value as JiraApiVersion }); setJiraSuccessMessage(""); }}>
+                    {jiraApiVersionOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}
+                  </select>
                 </label>
-                <div className="integration-action-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isTestingAi}
-                    onClick={() => void testAiGeneration()}
-                  >
-                    <TegelIcon name="send" size="16px" />
-                    {isTestingAi ? "Generating..." : "Test AI"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!aiForm.apiKey}
-                    onClick={clearLocalAiApiKey}
-                  >
-                    <TegelIcon name="cross" size="16px" />
-                    Clear local key
-                  </button>
+                <label className="form-field">
+                  <span>Authentication</span>
+                  <select value={jiraForm.authMode} onChange={(event) => { setJiraForm({ ...jiraForm, authMode: event.target.value as JiraAuthMode }); setJiraSuccessMessage(""); }}>
+                    {jiraAuthModeOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>Username / email</span>
+                  <input value={jiraForm.username} onChange={(event) => { setJiraForm({ ...jiraForm, username: event.target.value }); setJiraSuccessMessage(""); }} placeholder="service.account@scania.com" />
+                </label>
+                <label className="form-field">
+                  <span>API token / PAT</span>
+                  <input autoComplete="off" type="password" value={jiraForm.token} onChange={(event) => { setJiraForm({ ...jiraForm, token: event.target.value }); setJiraSuccessMessage(""); }} placeholder={jiraForm.token ? "Using locally saved token" : config.integrations.jira.tokenConfigured ? "Paste token to save locally" : "Paste token"} />
+                </label>
+                <div className="admin-record-grid compact-record-grid">
+                  <span>Token status</span>
+                  <strong>{getJiraTokenStatus(config.integrations.jira)}</strong>
+                  <span>API endpoint</span>
+                  <strong>{jiraForm.apiBaseUrl ? `${jiraForm.apiBaseUrl.replace(/\/+$/, "")}/${jiraForm.apiVersion}` : "Not configured"}</strong>
                 </div>
-                <p className="admin-hint">
-                  Production should use OPENAI_API_KEY or a managed server-side secret instead of
-                  browser-local storage.
-                </p>
-              </div>
-              <div className="admin-form-actions">
-                <button className="primary-button" type="submit">
-                  <TegelIcon name="save" size="16px" />
-                  Save AI configuration
-                </button>
-              </div>
-              <IntegrationTestResultBanner result={aiTestResult} />
-            </form>
-
-            <article className="integration-card jira-config-summary">
-              <div className="admin-record-header">
-                <div>
-                  <strong>AI integration</strong>
-                  <span>{config.integrations.ai.provider}</span>
-                </div>
-                <AdminStatusPill active={config.integrations.ai.enabled} />
-              </div>
-              <div className="admin-record-grid">
-                <span>Provider</span>
-                <strong>{config.integrations.ai.provider}</strong>
-                <span>Model</span>
-                <strong>{config.integrations.ai.model || "Not configured"}</strong>
-                <span>API key</span>
-                <strong>{getAiApiKeyStatus(config.integrations.ai)}</strong>
-                <span>Updated</span>
-                <strong>{formatLocalDateTime(new Date(config.integrations.ai.updatedAt))}</strong>
-              </div>
-            </article>
-          </div>
-        ) : activeIntegration === "gitlab" ? (
-          <div className="integration-settings-grid" aria-label="GitLab settings">
-            <form
-              className="admin-editor-form admin-form integration-config-form"
-              onSubmit={saveGitLabConfig}
-            >
-              <h3>GitLab settings</h3>
-              {gitlabError ? <p className="admin-form-error">{gitlabError}</p> : null}
-              {gitlabSuccessMessage ? <p className="admin-form-success">{gitlabSuccessMessage}</p> : null}
-              <AdminCheckbox
-                checked={gitlabForm.enabled}
-                label="Enable GitLab integration"
-                onChange={(enabled) => {
-                  setGitLabForm({ ...gitlabForm, enabled });
-                  setGitLabSuccessMessage("");
-                }}
-              />
-              <label className="form-field">
-                <span>GitLab base URL</span>
-                <input
-                  value={gitlabForm.apiBaseUrl}
-                  onChange={(event) => {
-                    setGitLabForm({ ...gitlabForm, apiBaseUrl: event.target.value });
-                    setGitLabSuccessMessage("");
-                  }}
-                  placeholder={defaultGitLabBaseUrl}
-                />
-              </label>
-              <label className="form-field">
-                <span>Default ref</span>
-                <input
-                  value={gitlabForm.defaultRef}
-                  onChange={(event) => {
-                    setGitLabForm({
-                      ...gitlabForm,
-                      defaultRef: event.target.value,
-                      ref: event.target.value || gitlabForm.ref
-                    });
-                    setGitLabSuccessMessage("");
-                  }}
-                  placeholder="main"
-                />
-              </label>
-              <label className="form-field">
-                <span>GitLab access token</span>
-                <input
-                  autoComplete="off"
-                  type="password"
-                  value={gitlabForm.token}
-                  onChange={(event) => {
-                    setGitLabForm({ ...gitlabForm, token: event.target.value });
-                    setGitLabSuccessMessage("");
-                  }}
-                  placeholder={
-                    gitlabForm.token
-                      ? "Using locally saved token"
-                      : config.integrations.gitlab.tokenConfigured
-                        ? "Paste token to save locally"
-                        : "Paste token"
-                  }
-                />
-              </label>
-              <div className="admin-record-grid compact-record-grid">
-                <span>Token status</span>
-                <strong>{getGitLabTokenStatus(config.integrations.gitlab)}</strong>
-                <span>Local token</span>
-                <strong>{gitlabForm.token ? "Saved in this browser" : "Not saved locally"}</strong>
-                <span>API endpoint</span>
-                <strong>
-                  {gitlabForm.apiBaseUrl
-                    ? `${normalizeGitLabBaseUrl(gitlabForm.apiBaseUrl)}/api/v4`
-                    : "Not configured"}
-                </strong>
-              </div>
-              <div className="integration-operation-panel">
-                <h4>Product repositories</h4>
-                <div className="integration-field-grid">
+                <label className="form-field">
+                  <span>Default project key</span>
+                  <input value={jiraForm.defaultProjectKey} onChange={(event) => { setJiraForm({ ...jiraForm, defaultProjectKey: event.target.value }); setJiraSuccessMessage(""); }} placeholder="NEXUS" />
+                </label>
+                <label className="form-field">
+                  <span>Default issue type</span>
+                  <input value={jiraForm.defaultIssueType} onChange={(event) => { setJiraForm({ ...jiraForm, defaultIssueType: event.target.value }); setJiraSuccessMessage(""); }} placeholder="Task" />
+                </label>
+                <div className="integration-operation-panel">
+                  <h4>Live Jira actions</h4>
                   <label className="form-field">
-                    <span>Product</span>
-                    <select
-                      value={gitlabForm.selectedProductId}
-                      onChange={(event) => selectGitLabProductForAdmin(event.target.value)}
-                    >
-                      <option value="">Select product</option>
-                      {activeGitLabProducts.map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.productName}
-                        </option>
-                      ))}
-                    </select>
+                    <span>Test task summary</span>
+                    <input value={jiraForm.testIssueSummary} onChange={(event) => { setJiraForm({ ...jiraForm, testIssueSummary: event.target.value }); setJiraSuccessMessage(""); }} placeholder="Nexus-support portal integration test task" />
                   </label>
-                  <label className="form-field">
-                    <span>Group search</span>
-                    <input
-                      value={gitlabForm.groupSearch}
-                      onChange={(event) => {
-                        setGitLabForm({ ...gitlabForm, groupSearch: event.target.value });
-                        setGitLabSuccessMessage("");
-                      }}
-                      placeholder="group name or path"
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>Selected group</span>
-                    <input
-                      readOnly
-                      value={
-                        gitlabForm.selectedGroupPath || gitlabForm.selectedGroupName || "All token projects"
-                      }
-                    />
-                  </label>
-                </div>
-                <div className="integration-action-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isSearchingGitLabGroups}
-                    onClick={() => void searchGitLabGroupsFromAdmin()}
-                  >
-                    <TegelIcon name="route" size="16px" />
-                    {isSearchingGitLabGroups ? "Loading..." : "Load groups"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isSearchingGitLabProjects}
-                    onClick={() => void searchGitLabProjectsFromAdmin()}
-                  >
-                    <TegelIcon name="document" size="16px" />
-                    {isSearchingGitLabProjects
-                      ? "Loading..."
-                      : gitlabForm.selectedGroupId
-                        ? "Load group projects"
-                        : "Load all projects"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!gitlabForm.selectedGroupId}
-                    onClick={() => {
-                      setGitLabForm((current) => ({
-                        ...current,
-                        selectedGroupId: "",
-                        selectedGroupName: "",
-                        selectedGroupPath: "",
-                        selectedGroupWebUrl: ""
-                      }));
-                      setGitLabProjectResults([]);
-                    }}
-                  >
-                    <TegelIcon name="cross" size="16px" />
-                    Clear group
-                  </button>
-                </div>
-                {gitlabGroupResults.length > 0 ? (
-                  <div className="gitlab-result-list" aria-label="GitLab group results">
-                    {gitlabGroupResults.map((group) => (
-                      <button
-                        className={`gitlab-result-button ${gitlabForm.selectedGroupId === String(group.id) ? "is-selected" : ""}`}
-                        key={group.id}
-                        type="button"
-                        onClick={() => {
-                          selectGitLabGroupForAdmin(group);
-                          void searchGitLabProjectsFromAdmin(group);
-                        }}
-                      >
-                        <strong>{group.fullPath || group.name}</strong>
-                        <span>{group.visibility || "unknown visibility"}</span>
-                      </button>
-                    ))}
+                  <div className="integration-action-row">
+                    <button className="secondary-button" type="button" disabled={isSyncingJiraData || isCreatingJiraTask} onClick={syncJiraData}>
+                      <TegelIcon name="route" size="16px" />
+                      {isSyncingJiraData ? "Syncing..." : "Sync Jira data"}
+                    </button>
+                    <button className="secondary-button" type="button" disabled={isCreatingJiraTask || isSyncingJiraData} onClick={createJiraTask}>
+                      <TegelIcon name="document" size="16px" />
+                      {isCreatingJiraTask ? "Creating..." : "Create Jira task"}
+                    </button>
                   </div>
-                ) : null}
-                <div className="integration-field-grid">
-                  <label className="form-field">
-                    <span>Project search</span>
-                    <input
-                      value={gitlabForm.projectSearch}
-                      onChange={(event) => {
-                        setGitLabForm({ ...gitlabForm, projectSearch: event.target.value });
-                        setGitLabSuccessMessage("");
-                      }}
-                      placeholder="project name or path"
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>Selected project</span>
-                    <input
-                      readOnly
-                      value={
-                        gitlabForm.selectedProjectPath ||
-                        gitlabForm.selectedProjectName ||
-                        "No project selected"
-                      }
-                    />
-                  </label>
                 </div>
-                <div className="integration-action-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isSearchingGitLabProjects}
-                    onClick={() => void searchGitLabProjectsFromAdmin()}
-                  >
-                    <TegelIcon name="document" size="16px" />
-                    {isSearchingGitLabProjects ? "Loading..." : "Load projects"}
-                  </button>
-                  <button
-                    className="primary-button"
-                    type="button"
-                    disabled={!gitlabForm.selectedProductId || !gitlabForm.selectedProjectId}
-                    onClick={saveGitLabProductRepositoryMapping}
-                  >
-                    <TegelIcon name="save" size="16px" />
-                    Save product mapping
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!gitlabForm.token}
-                    onClick={clearLocalGitLabToken}
-                  >
+                <div className="admin-form-actions">
+                  <button className="secondary-button" type="button" disabled={!jiraForm.token} onClick={clearLocalJiraToken}>
                     <TegelIcon name="cross" size="16px" />
                     Clear local token
                   </button>
+                  <button className="secondary-button" type="button" onClick={testJiraConnection}>
+                    <TegelIcon name="route" size="16px" />
+                    Test connection
+                  </button>
+                  <button className="primary-button" type="submit">
+                    <TegelIcon name="save" size="16px" />
+                    Save Jira configuration
+                  </button>
                 </div>
-                {gitlabProjectResults.length > 0 ? (
-                  <div className="gitlab-result-list" aria-label="GitLab project search results">
-                    {gitlabProjectResults.map((project) => (
-                      <button
-                        className={`gitlab-result-button ${gitlabForm.selectedProjectId === String(project.id) ? "is-selected" : ""}`}
-                        key={project.id}
-                        type="button"
-                        onClick={() => selectGitLabProjectForAdmin(project)}
-                      >
-                        <strong>{project.pathWithNamespace || project.name}</strong>
-                        <span>
-                          {project.defaultBranch || gitlabForm.defaultRef} ·{" "}
-                          {project.visibility || "unknown visibility"}
-                        </span>
-                      </button>
-                    ))}
+                <IntegrationTestResultBanner result={jiraTestResult} />
+              </form>
+            </div>
+          ) : activeIntegration === "ai" ? (
+            <div className="integration-settings-grid" aria-label="AI settings">
+              <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveAiConfig}>
+                <h3>AI settings</h3>
+                {aiError ? <p className="admin-form-error">{aiError}</p> : null}
+                {aiSuccessMessage ? <p className="admin-form-success">{aiSuccessMessage}</p> : null}
+                <AdminCheckbox checked={aiForm.enabled} label="Enable AI integration" onChange={(enabled) => { setAiForm({ ...aiForm, enabled }); setAiSuccessMessage(""); }} />
+                <label className="form-field"><span>Model</span><input value={aiForm.model} onChange={(event) => { setAiForm({ ...aiForm, model: event.target.value }); setAiSuccessMessage(""); }} placeholder="gpt-5.5" /></label>
+                <div className="integration-operation-panel">
+                  <h4>Live AI test</h4>
+                  <label className="form-field form-field-wide"><span>Test prompt</span><textarea rows={4} value={aiForm.testPrompt} onChange={(event) => { setAiForm({ ...aiForm, testPrompt: event.target.value }); setAiSuccessMessage(""); }} /></label>
+                  <div className="integration-action-row">
+                    <button className="secondary-button" type="button" disabled={isTestingAi} onClick={() => void testAiGeneration()}>
+                      <TegelIcon name="send" size="16px" />
+                      {isTestingAi ? "Generating..." : "Test AI"}
+                    </button>
                   </div>
-                ) : null}
-                {gitlabProductMappings.length > 0 ? (
-                  <div className="gitlab-mapping-list" aria-label="Saved product repository mappings">
-                    {gitlabProductMappings.map((mapping) => (
-                      <article className="gitlab-mapping-card" key={mapping.productId}>
-                        <div>
-                          <strong>{mapping.productName}</strong>
-                          <span>
-                            {mapping.projectPathWithNamespace} ·{" "}
-                            {mapping.ref || mapping.defaultBranch || "main"}
-                          </span>
-                          {mapping.groupFullPath ? <small>{mapping.groupFullPath}</small> : null}
-                        </div>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => removeGitLabProductRepositoryMapping(mapping.productId)}
-                        >
-                          Remove
-                        </button>
-                      </article>
-                    ))}
+                </div>
+                <div className="admin-form-actions">
+                  <button className="primary-button" type="submit"><TegelIcon name="save" size="16px" />Save AI configuration</button>
+                </div>
+                <IntegrationTestResultBanner result={aiTestResult} />
+              </form>
+            </div>
+          ) : activeIntegration === "gitlab" ? (
+            <div className="integration-settings-grid" aria-label="GitLab settings">
+              <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveGitLabConfig}>
+                <h3>GitLab settings</h3>
+                {gitlabError ? <p className="admin-form-error">{gitlabError}</p> : null}
+                {gitlabSuccessMessage ? <p className="admin-form-success">{gitlabSuccessMessage}</p> : null}
+                <AdminCheckbox checked={gitlabForm.enabled} label="Enable GitLab integration" onChange={(enabled) => { setGitLabForm({ ...gitlabForm, enabled }); setGitLabSuccessMessage(""); }} />
+                <label className="form-field"><span>GitLab base URL</span><input value={gitlabForm.apiBaseUrl} onChange={(event) => { setGitLabForm({ ...gitlabForm, apiBaseUrl: event.target.value }); setGitLabSuccessMessage(""); }} placeholder={defaultGitLabBaseUrl} /></label>
+                <label className="form-field"><span>Default ref</span><input value={gitlabForm.defaultRef} onChange={(event) => { setGitLabForm({ ...gitlabForm, defaultRef: event.target.value, ref: event.target.value || gitlabForm.ref }); setGitLabSuccessMessage(""); }} placeholder="main" /></label>
+                <div className="integration-operation-panel">
+                  <h4>Repository mapping</h4>
+                  <div className="integration-field-grid">
+                    <label className="form-field"><span>Product</span><select value={gitlabForm.selectedProductId} onChange={(event) => selectGitLabProductForAdmin(event.target.value)}><option value="">Select product</option>{activeGitLabProducts.map((product) => (<option key={product.id} value={product.id}>{product.productName}</option>))}</select></label>
+                    <label className="form-field"><span>Group search</span><input value={gitlabForm.groupSearch} onChange={(event) => { setGitLabForm({ ...gitlabForm, groupSearch: event.target.value }); setGitLabSuccessMessage(""); }} placeholder="group name or path" /></label>
+                    <label className="form-field"><span>Project search</span><input value={gitlabForm.projectSearch} onChange={(event) => { setGitLabForm({ ...gitlabForm, projectSearch: event.target.value }); setGitLabSuccessMessage(""); }} placeholder="project name or path" /></label>
                   </div>
-                ) : (
-                  <p className="admin-hint">No product repositories mapped yet.</p>
-                )}
-                <p className="admin-hint">
-                  Groups and projects are loaded from the GitLab token permissions. Select a product and
-                  project, then save the mapping for requirement reviews.
-                </p>
-              </div>
-              <div className="integration-operation-panel">
-                <h4>Live GitLab source test</h4>
-                <div className="integration-field-grid">
-                  <label className="form-field">
-                    <span>Selected project</span>
-                    <input
-                      readOnly
-                      value={
-                        gitlabForm.selectedProjectPath ||
-                        gitlabForm.selectedProjectName ||
-                        "No project selected"
-                      }
-                    />
-                  </label>
+                  <div className="integration-action-row">
+                    <button className="secondary-button" type="button" disabled={isSearchingGitLabGroups} onClick={() => void searchGitLabGroupsFromAdmin()}><TegelIcon name="route" size="16px" />{isSearchingGitLabGroups ? "Loading..." : "Load groups"}</button>
+                    <button className="secondary-button" type="button" disabled={isSearchingGitLabProjects} onClick={() => void searchGitLabProjectsFromAdmin()}><TegelIcon name="document" size="16px" />{isSearchingGitLabProjects ? "Loading..." : "Load projects"}</button>
+                    <button className="primary-button" type="button" disabled={!gitlabForm.selectedProductId || !gitlabForm.selectedProjectId} onClick={saveGitLabProductRepositoryMapping}><TegelIcon name="save" size="16px" />Save product mapping</button>
+                  </div>
                 </div>
-                <div className="integration-field-grid">
-                  <label className="form-field">
-                    <span>Ref</span>
-                    <input
-                      value={gitlabForm.ref}
-                      onChange={(event) => {
-                        setGitLabForm({ ...gitlabForm, ref: event.target.value });
-                        setGitLabSuccessMessage("");
-                      }}
-                      placeholder={gitlabForm.selectedProjectDefaultBranch || gitlabForm.defaultRef || "main"}
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>Code search</span>
-                    <input
-                      value={gitlabForm.codeSearch}
-                      onChange={(event) => {
-                        setGitLabForm({ ...gitlabForm, codeSearch: event.target.value });
-                        setGitLabSuccessMessage("");
-                      }}
-                      placeholder="route, handler, component"
-                    />
-                  </label>
-                  <label className="form-field form-field-wide">
-                    <span>File path</span>
-                    <input
-                      value={gitlabForm.filePath}
-                      onChange={(event) => {
-                        setGitLabForm({ ...gitlabForm, filePath: event.target.value });
-                        setGitLabSuccessMessage("");
-                      }}
-                      placeholder="src/path/to/file.ts"
-                    />
-                  </label>
+                <div className="integration-operation-panel">
+                  <h4>Live GitLab source test</h4>
+                  <div className="integration-field-grid">
+                    <label className="form-field"><span>Ref</span><input value={gitlabForm.ref} onChange={(event) => { setGitLabForm({ ...gitlabForm, ref: event.target.value }); setGitLabSuccessMessage(""); }} placeholder={gitlabForm.selectedProjectDefaultBranch || gitlabForm.defaultRef || "main"} /></label>
+                    <label className="form-field"><span>Code search</span><input value={gitlabForm.codeSearch} onChange={(event) => { setGitLabForm({ ...gitlabForm, codeSearch: event.target.value }); setGitLabSuccessMessage(""); }} placeholder="route, handler, component" /></label>
+                    <label className="form-field form-field-wide"><span>File path</span><input value={gitlabForm.filePath} onChange={(event) => { setGitLabForm({ ...gitlabForm, filePath: event.target.value }); setGitLabSuccessMessage(""); }} placeholder="src/path/to/file.ts" /></label>
+                  </div>
+                  <div className="integration-action-row">
+                    <button className="secondary-button" type="button" disabled={isSearchingGitLabCode || !gitlabForm.selectedProjectId || !gitlabForm.codeSearch.trim()} onClick={() => void searchGitLabCodeFromAdmin()}><TegelIcon name="document" size="16px" />{isSearchingGitLabCode ? "Searching..." : "Search code"}</button>
+                    <button className="secondary-button" type="button" disabled={isLoadingGitLabFile || !gitlabForm.selectedProjectId || !gitlabForm.filePath.trim()} onClick={() => void loadGitLabFileFromAdmin()}><TegelIcon name="link" size="16px" />{isLoadingGitLabFile ? "Loading..." : "Load source"}</button>
+                  </div>
                 </div>
+                <div className="admin-form-actions"><button className="primary-button" type="submit"><TegelIcon name="save" size="16px" />Save GitLab configuration</button></div>
+                <IntegrationTestResultBanner result={gitlabTestResult} />
+              </form>
+            </div>
+          ) : activeIntegration === "entra" ? (
+            <div className="integration-settings-grid" aria-label="Entra and Azure settings">
+              <section className="admin-editor-form admin-form integration-config-form">
+                <h3>Entra/Azure Graph settings</h3>
+                <p className="admin-hint">Entra sign-in is managed from environment variables and is not editable in the Admin UI.</p>
+                <div className="admin-record-grid compact-record-grid">
+                  <span>Client ID</span><strong>{entraForm.clientId || "Not configured"}</strong>
+                  <span>Tenant</span><strong>{entraForm.tenantId || "Not configured"}</strong>
+                  <span>Redirect URI</span><strong>{entraForm.redirectUri || "Not configured"}</strong>
+                  <span>Authority</span><strong>{entraForm.tenantId.trim() ? `https://login.microsoftonline.com/${entraForm.tenantId.trim()}` : "Tenant required"}</strong>
+                </div>
+                <div className="admin-form-actions">
+                  <button className="secondary-button" type="button" onClick={testEntraConfig}><TegelIcon name="global" size="16px" />Check readiness</button>
+                  <button className="secondary-button" type="button" onClick={openEntraAdminConsent}><TegelIcon name="link" size="16px" />Open admin consent</button>
+                  <button className="primary-button" type="button" onClick={closeIntegrationDetails}><TegelIcon name="cross" size="16px" />Back</button>
+                </div>
+              </section>
+            </div>
+          ) : (
+            <div className="integration-settings-grid" aria-label="SMTP settings">
+              <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveSmtpConfig}>
+                <h3>SMTP settings</h3>
+                {smtpError ? <p className="admin-form-error">{smtpError}</p> : null}
+                {smtpSuccessMessage ? <p className="admin-form-success">{smtpSuccessMessage}</p> : null}
+                <AdminCheckbox checked={smtpForm.enabled} label="Enable outbound email delivery" onChange={(enabled) => { setSmtpForm({ ...smtpForm, enabled }); setSmtpSuccessMessage(""); }} />
+                <label className="form-field"><span>SMTP host</span><input value={smtpForm.host} onChange={(event) => { setSmtpForm({ ...smtpForm, host: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="smtp.company.example" /></label>
+                <label className="form-field"><span>SMTP port</span><input min="1" max="65535" type="number" value={smtpForm.port} onChange={(event) => { setSmtpForm({ ...smtpForm, port: event.target.value }); setSmtpSuccessMessage(""); }} /></label>
+                <label className="form-field"><span>Security</span><select value={smtpForm.security} onChange={(event) => { setSmtpForm({ ...smtpForm, security: event.target.value as SmtpConfig["security"] }); setSmtpSuccessMessage(""); }}>{smtpSecurityOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}</select></label>
+                <label className="form-field"><span>Sender name</span><input value={smtpForm.fromName} onChange={(event) => { setSmtpForm({ ...smtpForm, fromName: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="Nexus-support portal" /></label>
+                <label className="form-field"><span>Sender email</span><input type="email" value={smtpForm.fromEmail} onChange={(event) => { setSmtpForm({ ...smtpForm, fromEmail: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="noreply@scania.com" /></label>
+                <label className="form-field"><span>Test recipient</span><input type="email" value={smtpForm.testRecipient} onChange={(event) => { setSmtpForm({ ...smtpForm, testRecipient: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="you@scania.com" /></label>
                 <div className="integration-action-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={
-                      isSearchingGitLabCode || !gitlabForm.selectedProjectId || !gitlabForm.codeSearch.trim()
-                    }
-                    onClick={() => void searchGitLabCodeFromAdmin()}
-                  >
-                    <TegelIcon name="document" size="16px" />
-                    {isSearchingGitLabCode ? "Searching..." : "Search code"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={
-                      isLoadingGitLabFile || !gitlabForm.selectedProjectId || !gitlabForm.filePath.trim()
-                    }
-                    onClick={() => void loadGitLabFileFromAdmin()}
-                  >
-                    <TegelIcon name="link" size="16px" />
-                    {isLoadingGitLabFile ? "Loading..." : "Load source"}
-                  </button>
+                  <button className="secondary-button" type="button" disabled={isSendingTestEmail} onClick={sendTestEmail}><TegelIcon name="send" size="16px" />{isSendingTestEmail ? "Sending..." : "Send test email"}</button>
+                  <button className="secondary-button" type="button" onClick={testSmtpConnection}><TegelIcon name="send" size="16px" />Test connection</button>
                 </div>
-                {gitlabCodeResults.length > 0 ? (
-                  <div className="gitlab-result-list" aria-label="GitLab code search results">
-                    {gitlabCodeResults.map((result) => (
-                      <button
-                        className="gitlab-result-button"
-                        key={`${result.projectId}-${result.path}-${result.ref}`}
-                        type="button"
-                        onClick={() => {
-                          setGitLabForm((current) => ({
-                            ...current,
-                            filePath: result.path,
-                            ref: result.ref || current.ref
-                          }));
-                          void loadGitLabFileFromAdmin(result.path, result.ref || gitlabForm.ref);
-                        }}
-                      >
-                        <strong>{result.path || result.filename}</strong>
-                        <span>{result.ref || gitlabForm.ref || "selected ref"}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {gitlabSourcePreview ? (
-                  <div className="gitlab-source-preview">
-                    <div>
-                      <strong>{gitlabSourcePreview.filePath}</strong>
-                      <span>
-                        {gitlabSourcePreview.ref} · {gitlabSourcePreview.sizeBytes} bytes
-                        {gitlabSourcePreview.truncated ? " · truncated" : ""}
-                      </span>
-                    </div>
-                    <pre>{gitlabSourcePreview.content.slice(0, 4000)}</pre>
-                  </div>
-                ) : null}
-                <p className="admin-hint">
-                  Select a project in Product repositories above before testing source lookup. Live GitLab
-                  actions use the token saved in this browser.
-                </p>
-              </div>
-              <div className="admin-form-actions">
-                <button className="primary-button" type="submit">
-                  <TegelIcon name="save" size="16px" />
-                  Save GitLab configuration
-                </button>
-              </div>
-              <IntegrationTestResultBanner result={gitlabTestResult} />
-            </form>
-
-            <article className="integration-card jira-config-summary">
-              <div className="admin-record-header">
-                <div>
-                  <strong>GitLab integration</strong>
-                  <span>Source lookup and AI requirement review</span>
-                </div>
-                <AdminStatusPill active={config.integrations.gitlab.enabled} />
-              </div>
-              <div className="admin-record-grid">
-                <span>API base</span>
-                <strong>{config.integrations.gitlab.apiBaseUrl || "Not configured"}</strong>
-                <span>Default ref</span>
-                <strong>{config.integrations.gitlab.defaultRef || "main"}</strong>
-                <span>Token</span>
-                <strong>{getGitLabTokenStatus(config.integrations.gitlab)}</strong>
-                <span>Product mappings</span>
-                <strong>{gitlabProductMappings.length}</strong>
-                <span>Updated</span>
-                <strong>{formatLocalDateTime(new Date(config.integrations.gitlab.updatedAt))}</strong>
-              </div>
-            </article>
-          </div>
-        ) : activeIntegration === "entra" ? (
-          <div className="integration-settings-grid" aria-label="Entra and Azure settings">
-            <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveEntraConfig}>
-              <h3>Entra/Azure Graph settings</h3>
-              {entraError ? <p className="admin-form-error">{entraError}</p> : null}
-              {entraSuccessMessage ? <p className="admin-form-success">{entraSuccessMessage}</p> : null}
-              <label className="form-field">
-                <span>Application client ID</span>
-                <input
-                  value={entraForm.clientId}
-                  onChange={(event) => {
-                    setEntraForm({ ...entraForm, clientId: event.target.value });
-                    setEntraSuccessMessage("");
-                  }}
-                  placeholder="00000000-0000-0000-0000-000000000000"
-                />
-              </label>
-              <label className="form-field">
-                <span>Tenant ID or domain</span>
-                <input
-                  value={entraForm.tenantId}
-                  onChange={(event) => {
-                    setEntraForm({ ...entraForm, tenantId: event.target.value });
-                    setEntraSuccessMessage("");
-                  }}
-                  placeholder="tenant-id or company.onmicrosoft.com"
-                />
-              </label>
-              <label className="form-field form-field-wide">
-                <span>Redirect URI</span>
-                <input
-                  value={entraForm.redirectUri}
-                  onChange={(event) => {
-                    setEntraForm({ ...entraForm, redirectUri: event.target.value });
-                    setEntraSuccessMessage("");
-                  }}
-                  placeholder="http://localhost:3001"
-                />
-              </label>
-              <div className="admin-record-grid compact-record-grid">
-                <span>Authority</span>
-                <strong>
-                  {entraForm.tenantId.trim()
-                    ? `https://login.microsoftonline.com/${entraForm.tenantId.trim()}`
-                    : "Tenant required"}
-                </strong>
-                <span>Graph endpoint</span>
-                <strong>{microsoftGraphEventEndpoint}</strong>
-                <span>Required scopes</span>
-                <strong>{entraRequiredScopes.join(", ")} (login)</strong>
-                <span>Meeting scopes</span>
-                <strong>{entraMeetingScopes.join(", ")}</strong>
-                <span>Admin consent URL</span>
-                <strong>
-                  {buildEntraAdminConsentUrl(entraForm) || "Complete app ID, tenant, and redirect URI first"}
-                </strong>
-                <span>Storage</span>
-                <strong>Browser localStorage, env fallback supported</strong>
-              </div>
-              <p className="admin-hint">
-                Add this redirect URI to the Entra app registration as a Single-page application URI. Sign-in
-                only requests User.Read. Calendar/meeting scopes are requested when creating a meeting; if
-                that step shows Need admin approval, an Entra admin must grant consent for those permissions.
-              </p>
-              <div className="admin-form-actions">
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={!entraForm.clientId && !entraForm.tenantId && !entraForm.redirectUri}
-                  onClick={clearLocalEntraConfig}
-                >
-                  <TegelIcon name="cross" size="16px" />
-                  Clear local settings
-                </button>
-                <button className="secondary-button" type="button" onClick={testEntraConfig}>
-                  <TegelIcon name="global" size="16px" />
-                  Check readiness
-                </button>
-                <button className="secondary-button" type="button" onClick={openEntraAdminConsent}>
-                  <TegelIcon name="link" size="16px" />
-                  Open admin consent
-                </button>
-                <button className="primary-button" type="submit">
-                  <TegelIcon name="save" size="16px" />
-                  Save Entra settings
-                </button>
-              </div>
-              <IntegrationTestResultBanner result={entraTestResult} />
-            </form>
-
-            <article className="integration-card jira-config-summary">
-              <div className="admin-record-header">
-                <div>
-                  <strong>Microsoft Graph calendar auth</strong>
-                  <span>Outlook event and optional Teams meeting creation</span>
-                </div>
-                <AdminStatusPill
-                  active={Boolean(entraForm.clientId && entraForm.tenantId && entraForm.redirectUri)}
-                />
-              </div>
-              <div className="admin-record-grid">
-                <span>Client ID</span>
-                <strong>{entraForm.clientId || "Not configured"}</strong>
-                <span>Tenant</span>
-                <strong>{entraForm.tenantId || "Not configured"}</strong>
-                <span>Redirect URI</span>
-                <strong>{entraForm.redirectUri || "Not configured"}</strong>
-                <span>Permissions</span>
-                <strong>User.Read login · meeting scopes on demand</strong>
-                <span>Meeting timezone</span>
-                <strong>Europe/Stockholm</strong>
-              </div>
-            </article>
-          </div>
-        ) : (
-          <div className="integration-settings-grid" aria-label="SMTP settings">
-            <form className="admin-editor-form admin-form integration-config-form" onSubmit={saveSmtpConfig}>
-              <h3>SMTP settings</h3>
-              {smtpError ? <p className="admin-form-error">{smtpError}</p> : null}
-              {smtpSuccessMessage ? <p className="admin-form-success">{smtpSuccessMessage}</p> : null}
-              <AdminCheckbox
-                checked={smtpForm.enabled}
-                label="Enable outbound email delivery"
-                onChange={(enabled) => {
-                  setSmtpForm({ ...smtpForm, enabled });
-                  setSmtpSuccessMessage("");
-                }}
-              />
-              <label className="form-field">
-                <span>Default delivery mode</span>
-                <select
-                  value={smtpForm.deliveryMode}
-                  onChange={(event) => {
-                    setSmtpForm({
-                      ...smtpForm,
-                      deliveryMode: event.target.value as NotificationDeliveryMode
-                    });
-                    setSmtpSuccessMessage("");
-                  }}
-                >
-                  {notificationDeliveryModeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>SMTP host</span>
-                <input
-                  value={smtpForm.host}
-                  onChange={(event) => {
-                    setSmtpForm({ ...smtpForm, host: event.target.value });
-                    setSmtpSuccessMessage("");
-                  }}
-                  placeholder="smtp.company.example"
-                />
-              </label>
-              <label className="form-field">
-                <span>SMTP port</span>
-                <input
-                  min="1"
-                  max="65535"
-                  type="number"
-                  value={smtpForm.port}
-                  onChange={(event) => {
-                    setSmtpForm({ ...smtpForm, port: event.target.value });
-                    setSmtpSuccessMessage("");
-                  }}
-                />
-              </label>
-              <label className="form-field">
-                <span>Security</span>
-                <select
-                  value={smtpForm.security}
-                  onChange={(event) => {
-                    setSmtpForm({ ...smtpForm, security: event.target.value as SmtpConfig["security"] });
-                    setSmtpSuccessMessage("");
-                  }}
-                >
-                  {smtpSecurityOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Sender name</span>
-                <input
-                  value={smtpForm.fromName}
-                  onChange={(event) => {
-                    setSmtpForm({ ...smtpForm, fromName: event.target.value });
-                    setSmtpSuccessMessage("");
-                  }}
-                  placeholder="Nexus-support portal"
-                />
-              </label>
-              <label className="form-field">
-                <span>Sender email</span>
-                <input
-                  type="email"
-                  value={smtpForm.fromEmail}
-                  onChange={(event) => {
-                    setSmtpForm({ ...smtpForm, fromEmail: event.target.value });
-                    setSmtpSuccessMessage("");
-                  }}
-                  placeholder="noreply@scania.com"
-                />
-              </label>
-              <div className="integration-operation-panel">
-                <h4>Live SMTP test</h4>
-                <div className="integration-field-grid">
-                  <label className="form-field">
-                    <span>SMTP username</span>
-                    <input
-                      autoComplete="off"
-                      value={smtpForm.username}
-                      onChange={(event) => {
-                        setSmtpForm({ ...smtpForm, username: event.target.value });
-                        setSmtpSuccessMessage("");
-                      }}
-                      placeholder="Leave empty for relay/no-auth SMTP"
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>SMTP password</span>
-                    <input
-                      autoComplete="off"
-                      type="password"
-                      value={smtpForm.password}
-                      onChange={(event) => {
-                        setSmtpForm({ ...smtpForm, password: event.target.value });
-                        setSmtpSuccessMessage("");
-                      }}
-                      placeholder="Not saved"
-                    />
-                  </label>
-                </div>
-                <label className="form-field">
-                  <span>Test recipient</span>
-                  <input
-                    type="email"
-                    value={smtpForm.testRecipient}
-                    onChange={(event) => {
-                      setSmtpForm({ ...smtpForm, testRecipient: event.target.value });
-                      setSmtpSuccessMessage("");
-                    }}
-                    placeholder="you@scania.com"
-                  />
-                </label>
-                <label className="form-field">
-                  <span>Test subject</span>
-                  <input
-                    value={smtpForm.testSubject}
-                    onChange={(event) => {
-                      setSmtpForm({ ...smtpForm, testSubject: event.target.value });
-                      setSmtpSuccessMessage("");
-                    }}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>Test body</span>
-                  <textarea
-                    rows={4}
-                    value={smtpForm.testBody}
-                    onChange={(event) => {
-                      setSmtpForm({ ...smtpForm, testBody: event.target.value });
-                      setSmtpSuccessMessage("");
-                    }}
-                  />
-                </label>
-                <div className="integration-action-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={isSendingTestEmail}
-                    onClick={sendTestEmail}
-                  >
-                    <TegelIcon name="send" size="16px" />
-                    {isSendingTestEmail ? "Sending..." : "Send test email"}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={!smtpForm.username && !smtpForm.password}
-                    onClick={clearLocalSmtpCredentials}
-                  >
-                    <TegelIcon name="cross" size="16px" />
-                    Clear local credentials
-                  </button>
-                </div>
-                <p className="admin-hint">
-                  Saving stores SMTP test credentials and recipient in this browser localStorage for local
-                  development.
-                </p>
-              </div>
-              <p className="admin-hint">
-                Backend delivery should validate credentials and enforce role visibility before sending in
-                production.
-              </p>
-              <div className="admin-form-actions">
-                <button className="secondary-button" type="button" onClick={testSmtpConnection}>
-                  <TegelIcon name="send" size="16px" />
-                  Test connection
-                </button>
-                <button className="primary-button" type="submit">
-                  <TegelIcon name="save" size="16px" />
-                  Save email configuration
-                </button>
-              </div>
-              <IntegrationTestResultBanner result={smtpTestResult} />
-            </form>
-
-            <article className="integration-card email-config-summary">
-              <div className="admin-record-header">
-                <div>
-                  <strong>Email notifications</strong>
-                  <span>{getNotificationDeliveryModeLabel(config.integrations.smtp.deliveryMode)}</span>
-                </div>
-                <AdminStatusPill active={config.integrations.smtp.enabled} />
-              </div>
-              <div className="admin-record-grid">
-                <span>Host</span>
-                <strong>{config.integrations.smtp.host || "Not configured"}</strong>
-                <span>Port</span>
-                <strong>{config.integrations.smtp.port}</strong>
-                <span>Security</span>
-                <strong>{getSmtpSecurityLabel(config.integrations.smtp.security)}</strong>
-                <span>From</span>
-                <strong>{`${config.integrations.smtp.fromName} <${config.integrations.smtp.fromEmail}>`}</strong>
-                <span>Updated</span>
-                <strong>{formatLocalDateTime(new Date(config.integrations.smtp.updatedAt))}</strong>
-              </div>
-            </article>
-          </div>
-        )}
+                <div className="admin-form-actions"><button className="primary-button" type="submit"><TegelIcon name="save" size="16px" />Save email configuration</button></div>
+                <IntegrationTestResultBanner result={smtpTestResult} />
+              </form>
+            </div>
+          )}
+        </section>
       </div>
-    </div>
+    )
   );
 }
 
@@ -44562,7 +44523,10 @@ function AdminMultiSelectDropdown({
   const labelId = `${controlId}-label`;
   const listId = `${controlId}-list`;
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
   const selectedValues = useMemo(() => new Set(values), [values]);
   const isDisabled = disabled || options.length === 0;
   const summary = getAdminMultiSelectSummary(values, options, placeholder);
@@ -44573,7 +44537,12 @@ function AdminMultiSelectDropdown({
     }
 
     function handlePointerDown(event: PointerEvent) {
-      if (event.target instanceof Node && !containerRef.current?.contains(event.target)) {
+      if (
+        event.target instanceof Node &&
+        !containerRef.current?.contains(event.target) &&
+        !popoverRef.current?.contains(event.target) &&
+        !triggerRef.current?.contains(event.target)
+      ) {
         setIsOpen(false);
       }
     }
@@ -44590,6 +44559,46 @@ function AdminMultiSelectDropdown({
     return () => {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    function updatePopoverPosition() {
+      const trigger = triggerRef.current;
+
+      if (!trigger) {
+        return;
+      }
+
+      const rect = trigger.getBoundingClientRect();
+      const maxHeight = Math.max(160, Math.min(232, window.innerHeight - 32));
+      let top = rect.bottom + 6;
+
+      if (top + maxHeight > window.innerHeight - 16) {
+        top = Math.max(16, rect.top - maxHeight - 6);
+      }
+
+      setPopoverStyle({
+        position: "fixed",
+        top,
+        left: rect.left,
+        width: rect.width,
+        maxHeight,
+        zIndex: 2000
+      });
+    }
+
+    updatePopoverPosition();
+    window.addEventListener("resize", updatePopoverPosition);
+    window.addEventListener("scroll", updatePopoverPosition, true);
+
+    return () => {
+      window.removeEventListener("resize", updatePopoverPosition);
+      window.removeEventListener("scroll", updatePopoverPosition, true);
     };
   }, [isOpen]);
 
@@ -44626,6 +44635,7 @@ function AdminMultiSelectDropdown({
           className="admin-multi-select-trigger"
           disabled={isDisabled}
           type="button"
+          ref={triggerRef}
           onClick={() => setIsOpen((current) => !current)}
         >
           <span className={`admin-multi-select-summary ${values.length ? "" : "is-placeholder"}`}>
@@ -44634,42 +44644,47 @@ function AdminMultiSelectDropdown({
           {values.length > 1 ? <span className="admin-multi-select-count">{values.length}</span> : null}
           <TegelIcon className="admin-multi-select-chevron" name="chevron_right" size="16px" />
         </button>
-        {isOpen ? (
-          <div
-            aria-labelledby={labelId}
-            aria-multiselectable="true"
-            className="admin-multi-select-popover"
-            id={listId}
-            role="listbox"
-          >
-            {clearLabel ? (
-              <label
-                aria-selected={values.length === 0}
-                className="admin-multi-select-option admin-multi-select-clear-option"
-                role="option"
+        {isOpen && typeof document !== "undefined"
+          ? createPortal(
+              <div
+                aria-labelledby={labelId}
+                aria-multiselectable="true"
+                className="admin-multi-select-popover"
+                id={listId}
+                role="listbox"
+                ref={popoverRef}
+                style={popoverStyle}
               >
-                <input checked={values.length === 0} type="checkbox" onChange={() => onChange([])} />
-                <span>{clearLabel}</span>
-              </label>
-            ) : null}
-            {options.map((option) => (
-              <label
-                aria-selected={selectedValues.has(option.value)}
-                className={`admin-multi-select-option ${option.disabled ? "is-disabled" : ""}`}
-                key={option.value}
-                role="option"
-              >
-                <input
-                  checked={selectedValues.has(option.value)}
-                  disabled={option.disabled}
-                  type="checkbox"
-                  onChange={() => toggleValue(option.value)}
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
-        ) : null}
+                {clearLabel ? (
+                  <label
+                    aria-selected={values.length === 0}
+                    className="admin-multi-select-option admin-multi-select-clear-option"
+                    role="option"
+                  >
+                    <input checked={values.length === 0} type="checkbox" onChange={() => onChange([])} />
+                    <span>{clearLabel}</span>
+                  </label>
+                ) : null}
+                {options.map((option) => (
+                  <label
+                    aria-selected={selectedValues.has(option.value)}
+                    className={`admin-multi-select-option ${option.disabled ? "is-disabled" : ""}`}
+                    key={option.value}
+                    role="option"
+                  >
+                    <input
+                      checked={selectedValues.has(option.value)}
+                      disabled={option.disabled}
+                      type="checkbox"
+                      onChange={() => toggleValue(option.value)}
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                ))}
+              </div>,
+              document.body
+            )
+          : null}
       </div>
       {helperText ? <small>{helperText}</small> : null}
     </div>
@@ -46842,7 +46857,7 @@ function CommentPanel({
               <div className="comment-topline">
                 <strong>{comment.author}</strong>
                 <span>
-                  {comment.role} · {comment.source}
+                  {comment.role} Â· {comment.source}
                 </span>
               </div>
               {comment.source === "jira" ? (
@@ -46899,3 +46914,4 @@ function CommentPanel({
     </section>
   );
 }
+

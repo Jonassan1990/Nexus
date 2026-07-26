@@ -6,10 +6,10 @@ import { Toaster } from "sonner";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  applicationName: "Nexus-support portal",
+  applicationName: "Nexus Support",
   title: {
-    default: "Nexus-support portal",
-    template: "%s | Nexus-support portal"
+    default: "Nexus Support",
+    template: "%s | Nexus Support"
   },
   description: "Enterprise governance and support workflow portal.",
   robots: {
@@ -19,13 +19,13 @@ export const metadata: Metadata = {
     nosnippet: true
   },
   openGraph: {
-    title: "Nexus-support portal",
+    title: "Nexus Support",
     description: "Enterprise governance and support workflow portal.",
     type: "website"
   },
   twitter: {
     card: "summary",
-    title: "Nexus-support portal",
+    title: "Nexus Support",
     description: "Enterprise governance and support workflow portal."
   }
 };

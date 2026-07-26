@@ -126,7 +126,7 @@ type MessageTree = {
 export const messages: Record<AppLocale, MessageTree> = {
   en: {
     shell: {
-      portalTitle: "Nexus-support portal",
+      portalTitle: "Nexus Support",
       searchTicket: "Search ticket",
       open: "Open",
       user: "User",

@@ -239,19 +239,19 @@ CREATE INDEX idx_jira_drafts_issue_key ON jira_drafts(jira_issue_key);
 CREATE TABLE attachment_objects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     ticket_id UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-    file_name TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    byte_size BIGINT NOT NULL,
+    original_filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
     checksum_sha256 TEXT NOT NULL,
-    relation_type TEXT NOT NULL,
-    relation_id UUID,
-    storage_provider TEXT NOT NULL DEFAULT 'local',
-    bucket_name TEXT,
-    object_key TEXT,
-    local_path TEXT,
-    preview_available BOOLEAN NOT NULL DEFAULT false,
     uploaded_by TEXT NOT NULL,
-    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    storage_provider TEXT NOT NULL DEFAULT 's3',
+    bucket_name TEXT NOT NULL,
+    s3_key TEXT NOT NULL,
+    relation_type TEXT NOT NULL DEFAULT 'ticket_information',
+    relation_id UUID,
+    preview_available BOOLEAN NOT NULL DEFAULT false,
+    CONSTRAINT chk_attachment_storage_provider CHECK (storage_provider = 's3')
 );
 
 CREATE INDEX idx_attachment_objects_ticket ON attachment_objects(ticket_id);

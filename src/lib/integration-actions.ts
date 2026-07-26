@@ -1,4 +1,9 @@
 import type { JiraApiVersion, JiraAuthMode, SmtpConfig } from "./admin-config";
+import {
+  getAuroraConnectionConfig,
+  getJiraPlatformCredentials,
+  getSmtpPlatformCredentials
+} from "./platform-secrets";
 
 export type JiraActionConfig = {
   enabled: boolean;
@@ -151,14 +156,15 @@ export function buildJiraAgileEndpoint(config: JiraActionConfig, path: string): 
 }
 
 export function buildJiraHeaders(config: JiraActionConfig): HeadersInit {
-  const token = config.token?.trim() ?? "";
+  const credentials = getJiraPlatformCredentials();
+  const token = credentials.token;
 
   if (!token) {
     return {};
   }
 
   if (config.authMode === "emailApiToken") {
-    const username = config.username?.trim() ?? "";
+    const username = credentials.username;
     return {
       Authorization: `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`
     };
@@ -176,6 +182,7 @@ export function buildJiraHeaders(config: JiraActionConfig): HeadersInit {
 export function validateJiraActionConfig(config: JiraActionConfig): string[] {
   const errors: string[] = [];
   const apiBaseUrl = normalizeJiraBaseUrl(config.apiBaseUrl);
+  const credentials = getJiraPlatformCredentials();
 
   if (!config.enabled) {
     errors.push("Jira sync must be enabled before running Jira actions.");
@@ -197,14 +204,10 @@ export function validateJiraActionConfig(config: JiraActionConfig): string[] {
     errors.push("OAuth2 client credentials are not configured in this portal.");
   }
 
-  if (config.authMode === "emailApiToken" && !config.username?.trim()) {
-    errors.push("Username or email is required for email + API token authentication.");
-  }
-
-  if (!config.token?.trim()) {
-    errors.push(
-      "Paste a Jira token or PAT for this test. Saved token status cannot be used because secrets are not stored in the browser."
-    );
+  if (!credentials.token) {
+    errors.push("Jira credentials are not configured on the server.");
+  } else if (config.authMode === "emailApiToken" && !credentials.username) {
+    errors.push("Jira username or email is required for email + API token authentication.");
   }
 
   return errors;
@@ -289,4 +292,12 @@ export function applyJiraOptionalIssueFields(
   }
 
   return fields;
+}
+
+export function getPlatformSmtpCredentials(): ReturnType<typeof getSmtpPlatformCredentials> {
+  return getSmtpPlatformCredentials();
+}
+
+export function getPlatformAuroraConnectionConfig(): ReturnType<typeof getAuroraConnectionConfig> {
+  return getAuroraConnectionConfig();
 }

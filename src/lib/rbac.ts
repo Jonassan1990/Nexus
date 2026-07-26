@@ -47,3 +47,14 @@ export function canView(role: RoleKey, visibility: VisibilityLevel): boolean {
 export function filterVisible<T extends { visibility: VisibilityLevel }>(items: T[], role: RoleKey): T[] {
   return items.filter((item) => canView(role, item.visibility));
 }
+
+export function filterVisibleForRoles<T extends { visibility: VisibilityLevel }>(
+  items: T[],
+  roles: readonly RoleKey[]
+): T[] {
+  if (!roles.length) {
+    return [];
+  }
+
+  return items.filter((item) => roles.some((role) => canView(role, item.visibility)));
+}

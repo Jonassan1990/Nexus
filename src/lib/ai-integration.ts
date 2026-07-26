@@ -1,8 +1,9 @@
+import { getOpenAiPlatformApiKey } from "./platform-secrets";
+
 export type AiActionConfig = {
   enabled: boolean;
   provider: "openai";
   model: string;
-  apiKey?: string;
 };
 
 export type AiChatMessage = {
@@ -90,8 +91,8 @@ export function getDefaultOpenAiModel(): string {
   return process.env.OPENAI_MODEL?.trim() || defaultOpenAiModel;
 }
 
-export function resolveOpenAiApiKey(config?: Pick<AiActionConfig, "apiKey">): string {
-  return config?.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
+export function resolveOpenAiApiKey(): string {
+  return getOpenAiPlatformApiKey();
 }
 
 export function validateAiActionConfig(config: AiActionConfig): string[] {
@@ -109,9 +110,9 @@ export function validateAiActionConfig(config: AiActionConfig): string[] {
     errors.push("OpenAI model is required.");
   }
 
-  if (!resolveOpenAiApiKey(config)) {
+  if (!resolveOpenAiApiKey()) {
     errors.push(
-      "OpenAI API key is required. Configure OPENAI_API_KEY on the server or provide a local integration key."
+      "OpenAI API key is required. Configure OPENAI_API_KEY on the server."
     );
   }
 
@@ -157,7 +158,7 @@ async function createOpenAiResponse(
   config: AiActionConfig,
   body: OpenAiResponsesApiBody
 ): Promise<OpenAiGenerateResult> {
-  const apiKey = resolveOpenAiApiKey(config);
+  const apiKey = resolveOpenAiApiKey();
   const response = await fetch(openAiResponsesEndpoint, {
     method: "POST",
     headers: {

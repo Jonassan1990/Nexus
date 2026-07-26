@@ -1,21 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLocalDatabasePath, listTickets, replaceTickets, saveTicket } from "@/lib/local-database";
+import {
+  canAccessTicket,
+  filterTicketsForPrincipal,
+  requireAdminPrincipal,
+  requireApiPrincipal
+} from "@/lib/auth/api-auth";
+import { getLocalDatabasePath, listTickets, replaceTickets, saveTicket } from "@/lib/database";
 import { getTicketTypeLabel } from "@/lib/nexus-data";
-import { filterVisible } from "@/lib/rbac";
+import { filterVisibleForRoles } from "@/lib/rbac";
 import type { RoleKey, Ticket, TicketState } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function isRoleKey(value: string | null): value is RoleKey {
-  return value !== null && /^[a-z0-9_-]{2,64}$/i.test(value);
-}
-
-function toTicketResponse(ticket: Ticket, role: RoleKey) {
+function toTicketResponse(ticket: Ticket, roles: readonly RoleKey[]) {
   return {
     ...ticket,
-    comments: filterVisible(ticket.comments, role),
-    audit: filterVisible(ticket.audit, role)
+    comments: filterVisibleForRoles(ticket.comments, roles),
+    audit: filterVisibleForRoles(ticket.audit, roles)
   };
 }
 
@@ -108,12 +110,18 @@ function getTicketPayload(payload: unknown): unknown {
   return payload;
 }
 
-export function GET(request: NextRequest) {
+export async function GET(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const searchParams = request.nextUrl.searchParams;
   const query = searchParams.get("q")?.trim().toLowerCase() ?? "";
-  const role = isRoleKey(searchParams.get("role")) ? searchParams.get("role") : "requester";
+  const visibleTickets = filterTicketsForPrincipal(await listTickets(), principal);
 
-  const result = listTickets()
+  const result = visibleTickets
     .filter((ticket) => {
       if (!query) {
         return true;
@@ -131,19 +139,26 @@ export function GET(request: NextRequest) {
         .toLowerCase()
         .includes(query);
     })
-    .map((ticket) => toTicketResponse(ticket, role as RoleKey));
+    .map((ticket) => toTicketResponse(ticket, principal.roles));
 
   return NextResponse.json({
     data: result,
     meta: {
       count: result.length,
-      role,
+      role: principal.primaryRole,
+      isAdmin: principal.isAdmin,
       databasePath: getLocalDatabasePath()
     }
   });
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = await request.json().catch(() => null);
   const ticketPayload = getTicketPayload(payload);
 
@@ -175,7 +190,19 @@ export async function POST(request: NextRequest) {
   }
 
   const ticket = ticketPayload as Ticket;
-  saveTicket(ticket);
+  if (!canAccessTicket(ticket, principal)) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "forbidden",
+          message: "You do not have access to update this ticket."
+        }
+      },
+      { status: 403 }
+    );
+  }
+
+  await saveTicket(ticket);
 
   return NextResponse.json(
     {
@@ -189,7 +216,16 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  const payload = (await request.json().catch(() => null)) as { tickets?: unknown } | null;
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
+  const payload = (await request.json().catch(() => null)) as {
+    tickets?: unknown;
+    confirmEmptyReplace?: unknown;
+  } | null;
   const ticketPayloads = payload?.tickets;
 
   if (!Array.isArray(ticketPayloads)) {
@@ -202,6 +238,24 @@ export async function PUT(request: NextRequest) {
       },
       { status: 400 }
     );
+  }
+
+  // PoC safety: block accidental / malicious full wipes via empty replace.
+  if (ticketPayloads.length === 0) {
+    const existingCount = (await listTickets()).length;
+    if (existingCount > 0 && payload?.confirmEmptyReplace !== true) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "confirm_empty_replace_required",
+            message:
+              "Refusing to replace existing tickets with an empty list. Pass confirmEmptyReplace: true only for intentional wipe.",
+            details: [`existingTicketCount=${existingCount}`]
+          }
+        },
+        { status: 409 }
+      );
+    }
   }
 
   const errors = ticketPayloads.flatMap((ticket, index) => validateTicket(ticket, index));
@@ -217,6 +271,11 @@ export async function PUT(request: NextRequest) {
     }
 
     keys.add(ticket.key);
+    const candidateTicket = ticket as unknown as Ticket;
+
+    if (!canAccessTicket(candidateTicket, principal)) {
+      errors.push(`Ticket ${ticket.key} is outside your authorized scope.`);
+    }
   }
 
   if (errors.length > 0) {
@@ -232,7 +291,7 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  replaceTickets(ticketPayloads as Ticket[]);
+  await replaceTickets(ticketPayloads as Ticket[]);
 
   return NextResponse.json({
     data: {

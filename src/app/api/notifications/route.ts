@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
 import { notifications } from "@/lib/nexus-data";
-import { filterVisible } from "@/lib/rbac";
-import type { RoleKey } from "@/lib/types";
+import { filterVisibleForRoles } from "@/lib/rbac";
 
-const defaultRole: RoleKey = "requester";
+export async function GET(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
 
-function toRole(value: string | null): RoleKey {
-  return value && /^[a-z0-9_-]{2,64}$/i.test(value) ? (value as RoleKey) : defaultRole;
-}
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
 
-export function GET(request: NextRequest) {
-  const role = toRole(request.nextUrl.searchParams.get("role"));
-  const visibleNotifications = filterVisible(notifications, role);
+  const visibleNotifications = filterVisibleForRoles(notifications, principal.roles);
 
   return NextResponse.json({
     data: visibleNotifications,
     meta: {
       unread: visibleNotifications.filter((item) => item.unread).length,
-      role
+      role: principal.primaryRole
     }
   });
 }

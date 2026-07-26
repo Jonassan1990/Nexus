@@ -1,7 +1,8 @@
+import { getGitLabPlatformToken } from "./platform-secrets";
+
 export type GitLabActionConfig = {
   enabled: boolean;
   apiBaseUrl: string;
-  token?: string;
 };
 
 export type GitLabGroupResult = {
@@ -112,6 +113,7 @@ export function buildGitLabApiUrl(
 export function validateGitLabActionConfig(config: GitLabActionConfig): string[] {
   const errors: string[] = [];
   const apiBaseUrl = normalizeGitLabBaseUrl(config.apiBaseUrl);
+  const token = getGitLabPlatformToken();
 
   if (!config.enabled) {
     errors.push("GitLab integration must be enabled before running GitLab actions.");
@@ -131,17 +133,19 @@ export function validateGitLabActionConfig(config: GitLabActionConfig): string[]
     }
   }
 
-  if (!config.token?.trim()) {
-    errors.push("GitLab access token is required for project and source lookup.");
+  if (!token) {
+    errors.push("GitLab access token is required on the server for project and source lookup.");
   }
 
   return errors;
 }
 
-function buildGitLabHeaders(config: GitLabActionConfig): HeadersInit {
+function buildGitLabHeaders(_config: GitLabActionConfig): HeadersInit {
+  const token = getGitLabPlatformToken();
+
   return {
     Accept: "application/json",
-    "PRIVATE-TOKEN": config.token?.trim() ?? ""
+    "PRIVATE-TOKEN": token
   };
 }
 

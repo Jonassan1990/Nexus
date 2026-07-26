@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTicketByKeyFromDatabase, saveTicket } from "@/lib/local-database";
+import { canAccessTicket, requireApiPrincipal } from "@/lib/auth/api-auth";
+import { getTicketByKeyFromDatabase, saveTicket } from "@/lib/database";
 import { evaluateTransition, type TransitionRequest } from "@/lib/workflow-engine";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as TransitionRequest | null;
 
   if (!payload) {
@@ -20,7 +27,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const ticket = getTicketByKeyFromDatabase(payload.ticketKey);
+  const ticket = await getTicketByKeyFromDatabase(payload.ticketKey);
 
   if (!ticket) {
     return NextResponse.json(
@@ -31,6 +38,18 @@ export async function POST(request: NextRequest) {
         }
       },
       { status: 404 }
+    );
+  }
+
+  if (!canAccessTicket(ticket, principal)) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "forbidden",
+          message: "You do not have access to this ticket."
+        }
+      },
+      { status: 403 }
     );
   }
 
@@ -56,7 +75,7 @@ export async function POST(request: NextRequest) {
     audit: result.auditEntry ? [...ticket.audit, result.auditEntry] : ticket.audit
   };
 
-  saveTicket(updatedTicket);
+  await saveTicket(updatedTicket);
 
   return NextResponse.json({
     data: {

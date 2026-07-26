@@ -11,7 +11,7 @@ import {
 import { uploadJiraIssueAttachments, type JiraIssueAttachmentInput } from "@/lib/jira-attachments";
 import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
-import { enqueueOutboxJob } from "@/lib/local-database";
+import { enqueueOutboxJob } from "@/lib/database";
 
 export const runtime = "nodejs";
 
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (process.env.NEXUS_OUTBOX_JIRA === "1") {
-    const job = enqueueOutboxJob({
+    const job = await enqueueOutboxJob({
       type: "jira_create",
       payload: {
         ticketKey: payload.issue?.sourceTicketKey?.trim() || summary,

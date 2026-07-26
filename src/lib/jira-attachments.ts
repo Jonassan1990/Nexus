@@ -1,4 +1,5 @@
 import { buildJiraEndpoint, buildJiraHeaders, type JiraActionConfig } from "./integration-actions";
+import { getPublicAppUrl } from "./auth/cognito";
 
 export type JiraIssueAttachmentInput = {
   id?: string;
@@ -6,6 +7,7 @@ export type JiraIssueAttachmentInput = {
   mimeType?: string;
   byteSize?: number;
   contentDataUrl?: string;
+  downloadUrl?: string;
 };
 
 export type JiraIssueAttachmentUploadResult = {
@@ -110,7 +112,7 @@ function parseAttachmentDataUrl(value: string): { mimeType: string; content: Buf
   }
 }
 
-function prepareJiraAttachment(attachment: JiraIssueAttachmentInput): PreparedJiraAttachment {
+async function readAttachmentBinary(attachment: JiraIssueAttachmentInput): Promise<PreparedJiraAttachment> {
   const fileName = sanitizeJiraAttachmentFileName(attachment.fileName);
   const declaredByteSize = attachment.byteSize;
 
@@ -126,46 +128,107 @@ function prepareJiraAttachment(attachment: JiraIssueAttachmentInput): PreparedJi
     };
   }
 
-  if (!attachment.contentDataUrl?.trim()) {
+  if (attachment.contentDataUrl?.trim()) {
+    const decoded = parseAttachmentDataUrl(attachment.contentDataUrl.trim());
+
+    if (!decoded) {
+      return {
+        ok: false,
+        fileName,
+        warning: `${fileName} was not uploaded because its stored content is not a valid data URL.`
+      };
+    }
+
+    if (decoded.content.byteLength === 0) {
+      return {
+        ok: false,
+        fileName,
+        warning: `${fileName} was not uploaded because its stored content is empty.`
+      };
+    }
+
+    if (decoded.content.byteLength > jiraAttachmentMaxUploadBytes) {
+      return {
+        ok: false,
+        fileName,
+        warning: `${fileName} is larger than the ${Math.round(jiraAttachmentMaxUploadBytes / 1024 / 1024)} MB Jira upload limit used by this portal.`
+      };
+    }
+
     return {
-      ok: false,
+      ok: true,
       fileName,
-      warning: `${fileName} was not uploaded because the ticket only has attachment metadata, not stored file content.`
+      mimeType: attachment.mimeType?.trim() || decoded.mimeType || defaultAttachmentMimeType,
+      content: decoded.content
     };
   }
 
-  const decoded = parseAttachmentDataUrl(attachment.contentDataUrl.trim());
+  if (attachment.downloadUrl?.trim()) {
+    try {
+      let publicAppUrl = "";
 
-  if (!decoded) {
-    return {
-      ok: false,
-      fileName,
-      warning: `${fileName} was not uploaded because its stored content is not a valid data URL.`
-    };
-  }
+      try {
+        publicAppUrl = getPublicAppUrl();
+      } catch {
+        publicAppUrl = (process.env.NEXUS_APP_URL ?? "http://localhost:3000").trim();
+      }
 
-  if (decoded.content.byteLength === 0) {
-    return {
-      ok: false,
-      fileName,
-      warning: `${fileName} was not uploaded because its stored content is empty.`
-    };
-  }
+      const resolvedDownloadUrl = new URL(attachment.downloadUrl.trim(), publicAppUrl).toString();
+      const response = await fetch(resolvedDownloadUrl, {
+        method: "GET",
+        signal: AbortSignal.timeout(30000)
+      });
 
-  if (decoded.content.byteLength > jiraAttachmentMaxUploadBytes) {
-    return {
-      ok: false,
-      fileName,
-      warning: `${fileName} is larger than the ${Math.round(jiraAttachmentMaxUploadBytes / 1024 / 1024)} MB Jira upload limit used by this portal.`
-    };
+      if (!response.ok) {
+        return {
+          ok: false,
+          fileName,
+          warning: `${fileName} was not uploaded because the stored file could not be downloaded for Jira sync.`
+        };
+      }
+
+      const bytes = Buffer.from(await response.arrayBuffer());
+
+      if (bytes.byteLength === 0) {
+        return {
+          ok: false,
+          fileName,
+          warning: `${fileName} was not uploaded because its stored content is empty.`
+        };
+      }
+
+      if (bytes.byteLength > jiraAttachmentMaxUploadBytes) {
+        return {
+          ok: false,
+          fileName,
+          warning: `${fileName} is larger than the ${Math.round(jiraAttachmentMaxUploadBytes / 1024 / 1024)} MB Jira upload limit used by this portal.`
+        };
+      }
+
+      return {
+        ok: true,
+        fileName,
+        mimeType: attachment.mimeType?.trim() || response.headers.get("content-type") || defaultAttachmentMimeType,
+        content: bytes
+      };
+    } catch {
+      return {
+        ok: false,
+        fileName,
+        warning: `${fileName} was not uploaded because the stored file could not be downloaded for Jira sync.`
+      };
+    }
   }
 
   return {
-    ok: true,
+    ok: false,
     fileName,
-    mimeType: attachment.mimeType?.trim() || decoded.mimeType || defaultAttachmentMimeType,
-    content: decoded.content
+    warning: `${fileName} was not uploaded because the ticket only has attachment metadata, not stored file content.`
   };
+}
+
+async function prepareJiraAttachment(attachment: JiraIssueAttachmentInput): Promise<PreparedJiraAttachment> {
+  return readAttachmentBinary(attachment);
 }
 
 async function fetchExistingJiraAttachmentFileNames(
@@ -342,7 +405,7 @@ export async function uploadJiraIssueAttachments(
   result.warnings.push(...existingAttachments.warnings);
 
   for (const attachment of attachments) {
-    const preparedAttachment = prepareJiraAttachment(attachment);
+    const preparedAttachment = await prepareJiraAttachment(attachment);
 
     if (!preparedAttachment.ok) {
       result.skipped.push(preparedAttachment.fileName);

@@ -1,9 +1,9 @@
-import { listTickets } from "@/lib/local-database";
+import { listTickets } from "@/lib/database";
 import { summarizeWorkflowHealth } from "@/lib/workflow-engine";
 import { TegelIcon } from "./TegelIcon";
 
-export function TvDashboard() {
-  const tickets = listTickets();
+export async function TvDashboard() {
+  const tickets = await listTickets();
   const breached = tickets.filter((ticket) => ticket.slaState === "breach").length;
   const watch = tickets.filter((ticket) => ticket.slaState === "watch").length;
   const healthy = tickets.filter((ticket) => ticket.slaState === "healthy").length;
@@ -12,7 +12,7 @@ export function TvDashboard() {
     <main className="tv-shell">
       <header className="tv-header">
         <div>
-          <h1>Nexus-support portal operations</h1>
+          <h1>Nexus Support operations</h1>
           <p>SLA monitoring, escalation focus, and governed workflow throughput</p>
         </div>
         <span>Live governance board</span>
