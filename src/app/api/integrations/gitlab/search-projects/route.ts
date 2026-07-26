@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  searchGitLabProjects,
-  validateGitLabActionConfig,
-  type GitLabActionConfig
-} from "@/lib/gitlab-integration";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
+import { searchGitLabProjects, validateGitLabActionConfig } from "@/lib/gitlab-integration";
+import { readAdminConfig } from "@/lib/database";
+import { getGitLabPlatformToken } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
 type GitLabProjectSearchPayload = {
-  config?: GitLabActionConfig;
   query?: string;
 };
 
@@ -17,14 +15,20 @@ function errorResponse(code: string, message: string, details: string[] = [], st
 }
 
 export async function POST(request: NextRequest) {
-  const payload = (await request.json().catch(() => null)) as GitLabProjectSearchPayload | null;
+  const principal = await requireApiPrincipal(request);
 
-  if (!payload?.config) {
-    return errorResponse("invalid_json", "Request body must include GitLab configuration.");
+  if (principal instanceof NextResponse) {
+    return principal;
   }
 
-  const errors = validateGitLabActionConfig(payload.config);
-  const query = payload.query?.trim() ?? "";
+  const payload = (await request.json().catch(() => null)) as GitLabProjectSearchPayload | null;
+  const adminConfig = await readAdminConfig();
+  const gitlabConfig = {
+    ...adminConfig.integrations.gitlab,
+    token: getGitLabPlatformToken()
+  };
+  const errors = validateGitLabActionConfig(gitlabConfig);
+  const query = payload?.query?.trim() ?? "";
 
   if (!query) {
     errors.push("Project search text is required.");
@@ -35,7 +39,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const projects = await searchGitLabProjects(payload.config, query);
+    const projects = await searchGitLabProjects(gitlabConfig, query);
 
     return NextResponse.json({
       data: {

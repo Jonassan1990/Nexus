@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
 import {
   buildJiraAgileEndpoint,
   buildJiraEndpoint,
@@ -6,6 +7,7 @@ import {
   validateJiraActionConfig,
   type JiraActionConfig
 } from "@/lib/integration-actions";
+import { getJiraPlatformCredentials } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
@@ -203,13 +205,22 @@ function buildJiraStatusMetadata(projectStatuses: JiraProjectStatusesResponse): 
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as JiraSyncPayload | null;
 
   if (!payload?.config) {
     return errorResponse("invalid_json", "Request body must include Jira configuration.");
   }
 
-  const config = payload.config;
+  const config: JiraActionConfig = {
+    ...payload.config,
+    ...getJiraPlatformCredentials()
+  };
   const errors = validateJiraActionConfig(config);
 
   if (errors.length > 0) {

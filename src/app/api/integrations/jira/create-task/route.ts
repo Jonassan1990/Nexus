@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
 import {
   applyJiraOptionalIssueFields,
   buildJiraDescription,
@@ -12,6 +13,7 @@ import { uploadJiraIssueAttachments, type JiraIssueAttachmentInput } from "@/lib
 import { placeJiraIssueInSprintOrBacklog } from "@/lib/jira-agile-placement";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
 import { enqueueOutboxJob } from "@/lib/database";
+import { getJiraPlatformCredentials } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
@@ -47,13 +49,22 @@ function errorResponse(code: string, message: string, details: string[] = [], st
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as CreateJiraTaskPayload | null;
 
   if (!payload?.config) {
     return errorResponse("invalid_json", "Request body must include Jira configuration.");
   }
 
-  const config = payload.config;
+  const config: JiraActionConfig = {
+    ...payload.config,
+    ...getJiraPlatformCredentials()
+  };
   const errors = validateJiraActionConfig(config);
   const summary = payload.issue?.summary?.trim() || "Nexus-support portal integration test task";
 

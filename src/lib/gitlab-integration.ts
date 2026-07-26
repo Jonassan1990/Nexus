@@ -1,8 +1,7 @@
-import { getGitLabPlatformToken } from "./platform-secrets";
-
 export type GitLabActionConfig = {
   enabled: boolean;
   apiBaseUrl: string;
+  token?: string;
 };
 
 export type GitLabGroupResult = {
@@ -113,7 +112,7 @@ export function buildGitLabApiUrl(
 export function validateGitLabActionConfig(config: GitLabActionConfig): string[] {
   const errors: string[] = [];
   const apiBaseUrl = normalizeGitLabBaseUrl(config.apiBaseUrl);
-  const token = getGitLabPlatformToken();
+  const token = config.token?.trim() ?? "";
 
   if (!config.enabled) {
     errors.push("GitLab integration must be enabled before running GitLab actions.");
@@ -141,7 +140,7 @@ export function validateGitLabActionConfig(config: GitLabActionConfig): string[]
 }
 
 function buildGitLabHeaders(_config: GitLabActionConfig): HeadersInit {
-  const token = getGitLabPlatformToken();
+  const token = _config.token?.trim() ?? "";
 
   return {
     Accept: "application/json",

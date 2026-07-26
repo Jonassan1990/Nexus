@@ -1,5 +1,3 @@
-import { getEntraPlatformConfig } from "@/lib/platform-secrets";
-
 /** Scopes requested at sign-in — keep minimal so users can consent without admin approval. */
 export const graphLoginScopes = ["User.Read"] as const;
 
@@ -20,12 +18,12 @@ export type EntraPublicConfig = {
 };
 
 function readLocalEntraConfig(): Pick<EntraPublicConfig, "clientId" | "tenantId" | "redirectUri"> {
-  const platformConfig = getEntraPlatformConfig();
-
   return {
-    clientId: platformConfig.clientId,
-    tenantId: platformConfig.tenantId,
-    redirectUri: platformConfig.redirectUri
+    clientId:
+      (process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_CLIENT_ID ?? process.env.NEXT_PUBLIC_MICROSOFT_CLIENT_ID ?? "").trim(),
+    tenantId:
+      (process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_TENANT_ID ?? process.env.NEXT_PUBLIC_MICROSOFT_TENANT_ID ?? "").trim(),
+    redirectUri: (process.env.NEXT_PUBLIC_MICROSOFT_GRAPH_REDIRECT_URI ?? "").trim()
   };
 }
 

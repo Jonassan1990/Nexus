@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAdminPrincipal } from "@/lib/auth/api-auth";
 import {
   claimOutboxJobs,
   completeOutboxJob,
@@ -12,7 +13,13 @@ import { processOutboxJob } from "@/lib/outbox-worker";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   return NextResponse.json({
     data: {
       jobs: await listOutboxJobs(40)
@@ -21,6 +28,12 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const body = (await request.json().catch(() => ({}))) as {
     action?: "enqueue" | "process";
     job?: OutboxEnqueueInput;

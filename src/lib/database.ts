@@ -23,7 +23,7 @@ import {
 import { adminConfig } from "@/lib/admin-config";
 import { buildDemoTickets } from "@/lib/demo-tickets";
 import { createOutboxJobId, type OutboxEnqueueInput, type OutboxJob, type OutboxJobStatus } from "@/lib/outbox";
-import { getAuroraConnectionConfig } from "@/lib/platform-secrets";
+import { getAuroraConnectionConfig, hasAuroraConnectionConfig } from "@/lib/platform-secrets";
 import {
   deleteAttachmentObject,
   parseAttachmentDataUrl,
@@ -112,7 +112,7 @@ function detectDatabaseKind(): "sqlite" | "aurora" {
     return "aurora";
   }
 
-  if (process.env.AURORA_MASTER_SECRET_JSON?.trim()) {
+  if (hasAuroraConnectionConfig()) {
     return "aurora";
   }
 

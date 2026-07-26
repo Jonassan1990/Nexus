@@ -1,9 +1,4 @@
 import type { JiraApiVersion, JiraAuthMode, SmtpConfig } from "./admin-config";
-import {
-  getAuroraConnectionConfig,
-  getJiraPlatformCredentials,
-  getSmtpPlatformCredentials
-} from "./platform-secrets";
 
 export type JiraActionConfig = {
   enabled: boolean;
@@ -147,6 +142,17 @@ export function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+function encodeBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary);
+}
+
 export function buildJiraEndpoint(config: JiraActionConfig, path: string): string {
   return `${normalizeJiraBaseUrl(config.apiBaseUrl)}/${config.apiVersion}/${path.replace(/^\/+/, "")}`;
 }
@@ -156,17 +162,21 @@ export function buildJiraAgileEndpoint(config: JiraActionConfig, path: string): 
 }
 
 export function buildJiraHeaders(config: JiraActionConfig): HeadersInit {
-  const credentials = getJiraPlatformCredentials();
-  const token = credentials.token;
+  const token = config.token?.trim() ?? "";
 
   if (!token) {
     return {};
   }
 
   if (config.authMode === "emailApiToken") {
-    const username = credentials.username;
+    const username = config.username?.trim() ?? "";
+
+    if (!username) {
+      return {};
+    }
+
     return {
-      Authorization: `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`
+      Authorization: `Basic ${encodeBase64(`${username}:${token}`)}`
     };
   }
 
@@ -182,7 +192,8 @@ export function buildJiraHeaders(config: JiraActionConfig): HeadersInit {
 export function validateJiraActionConfig(config: JiraActionConfig): string[] {
   const errors: string[] = [];
   const apiBaseUrl = normalizeJiraBaseUrl(config.apiBaseUrl);
-  const credentials = getJiraPlatformCredentials();
+  const token = config.token?.trim() ?? "";
+  const username = config.username?.trim() ?? "";
 
   if (!config.enabled) {
     errors.push("Jira sync must be enabled before running Jira actions.");
@@ -204,9 +215,9 @@ export function validateJiraActionConfig(config: JiraActionConfig): string[] {
     errors.push("OAuth2 client credentials are not configured in this portal.");
   }
 
-  if (!credentials.token) {
+  if (!token) {
     errors.push("Jira credentials are not configured on the server.");
-  } else if (config.authMode === "emailApiToken" && !credentials.username) {
+  } else if (config.authMode === "emailApiToken" && !username) {
     errors.push("Jira username or email is required for email + API token authentication.");
   }
 
@@ -292,12 +303,4 @@ export function applyJiraOptionalIssueFields(
   }
 
   return fields;
-}
-
-export function getPlatformSmtpCredentials(): ReturnType<typeof getSmtpPlatformCredentials> {
-  return getSmtpPlatformCredentials();
-}
-
-export function getPlatformAuroraConnectionConfig(): ReturnType<typeof getAuroraConnectionConfig> {
-  return getAuroraConnectionConfig();
 }

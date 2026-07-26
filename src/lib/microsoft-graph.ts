@@ -1,4 +1,5 @@
 import { isValidEmail } from "./integration-actions";
+import { getSecretProvider } from "./secret-provider";
 
 const graphBaseUrl = "https://graph.microsoft.com/v1.0";
 const graphScope = "https://graph.microsoft.com/.default";
@@ -334,7 +335,7 @@ function validateMeetingInput(input: CreateTeamsMeetingInput, authMode: GraphAut
   }
 
   if (authMode === "client_credentials") {
-    const organizerEmail = input.organizerEmail?.trim() || process.env.GRAPH_ORGANIZER_EMAIL?.trim() || "";
+    const organizerEmail = input.organizerEmail?.trim() || getSecretProvider().getGraphOrganizerEmail();
 
     if (!organizerEmail || !isValidEmail(organizerEmail)) {
       errors.push(
@@ -347,10 +348,11 @@ function validateMeetingInput(input: CreateTeamsMeetingInput, authMode: GraphAut
 }
 
 function validateClientCredentialsConfig(): void {
+  const credentials = getSecretProvider().getMicrosoftGraphClientCredentials();
   const missing = [
-    readRequiredEnv("TENANT_ID") ? "" : "TENANT_ID",
-    readRequiredEnv("CLIENT_ID") ? "" : "CLIENT_ID",
-    readRequiredEnv("CLIENT_SECRET") ? "" : "CLIENT_SECRET"
+    credentials.tenantId ? "" : "TENANT_ID",
+    credentials.clientId ? "" : "CLIENT_ID",
+    credentials.clientSecret ? "" : "CLIENT_SECRET"
   ].filter(Boolean);
 
   if (missing.length > 0) {
@@ -367,7 +369,8 @@ function getGraphErrorDetails(body: GraphErrorBody | null): string[] {
 async function getClientCredentialsAccessToken(): Promise<string> {
   validateClientCredentialsConfig();
 
-  const tenantId = readRequiredEnv("TENANT_ID");
+  const credentials = getSecretProvider().getMicrosoftGraphClientCredentials();
+  const tenantId = credentials.tenantId;
   const response = await fetch(
     `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`,
     {
@@ -376,8 +379,8 @@ async function getClientCredentialsAccessToken(): Promise<string> {
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: new URLSearchParams({
-        client_id: readRequiredEnv("CLIENT_ID"),
-        client_secret: readRequiredEnv("CLIENT_SECRET"),
+        client_id: credentials.clientId,
+        client_secret: credentials.clientSecret,
         grant_type: "client_credentials",
         // The .default scope uses the application permissions granted to the Entra app registration.
         scope: graphScope
@@ -407,7 +410,7 @@ function buildGraphEventEndpoint(input: CreateTeamsMeetingInput, authMode: Graph
     return `${graphBaseUrl}/me/calendar/events`;
   }
 
-  const organizerEmail = input.organizerEmail?.trim() || process.env.GRAPH_ORGANIZER_EMAIL?.trim() || "";
+  const organizerEmail = input.organizerEmail?.trim() || getSecretProvider().getGraphOrganizerEmail();
 
   return `${graphBaseUrl}/users/${encodeURIComponent(organizerEmail)}/calendar/events`;
 }
@@ -424,7 +427,7 @@ function buildGraphEventLookupEndpoint(
     return `${graphBaseUrl}/me/events/${encodeURIComponent(eventId)}?${selectedFields}`;
   }
 
-  const organizerEmail = input.organizerEmail?.trim() || process.env.GRAPH_ORGANIZER_EMAIL?.trim() || "";
+  const organizerEmail = input.organizerEmail?.trim() || getSecretProvider().getGraphOrganizerEmail();
 
   return `${graphBaseUrl}/users/${encodeURIComponent(organizerEmail)}/events/${encodeURIComponent(eventId)}?${selectedFields}`;
 }

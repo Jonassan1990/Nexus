@@ -9663,7 +9663,7 @@ function useJiraTemplateFieldMetadata(
       return;
     }
 
-    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localToken = "platform-managed";
 
     if (!localToken) {
       setMetadata({
@@ -14706,7 +14706,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       throw new Error("Complete required workflow gates before creating the Jira issue.");
     }
 
-    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localJiraToken = "platform-managed";
 
     if (!localJiraToken) {
       throw new Error(
@@ -14864,7 +14864,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
     };
     assertJiraReleasePlanningIsValid(updatedDraft);
     const ticketForUpdate = { ...ticket, relatedJiraKey: jiraIssueKey, jiraDraft: updatedDraft };
-    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localJiraToken = "platform-managed";
 
     if (!localJiraToken) {
       throw new Error(
@@ -15011,7 +15011,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       throw new Error("Write a Jira comment before sending.");
     }
 
-    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localJiraToken = "platform-managed";
 
     if (!localJiraToken) {
       throw new Error(
@@ -15428,7 +15428,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         return;
       }
 
-      const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+      const localJiraToken = "platform-managed";
 
       if (!localJiraToken) {
         if (!silent) {
@@ -15567,7 +15567,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       return;
     }
 
-    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localJiraToken = "platform-managed";
 
     if (!localJiraToken) {
       startupJiraSyncHandledRef.current = true;
@@ -21268,7 +21268,7 @@ function useReleasePlanJiraMetadata(config: AdminConfig, tickets: Ticket[]): Rel
       return;
     }
 
-    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localToken = "platform-managed";
 
     if (!localToken) {
       setJiraMetadata(getEmptyReleasePlanJiraMetadata());
@@ -25562,7 +25562,7 @@ function JiraSyncPanel({
       return;
     }
 
-    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localToken = "platform-managed";
 
     if (!localToken) {
       setJiraFieldMetadata({
@@ -25780,7 +25780,6 @@ function JiraSyncPanel({
     setJiraCreateError("");
 
     try {
-      const localOpenAiKey = readLocalIntegrationSecrets().openAiApiKey?.trim() ?? "";
       const response = await fetch("/api/integrations/ai/generate-text", {
         method: "POST",
         headers: {
@@ -25845,8 +25844,6 @@ function JiraSyncPanel({
   }
 
   function getGitLabActionConfigForReview(): GitLabActionConfig {
-    const localGitLabToken = readLocalIntegrationSecrets().gitlabToken?.trim() ?? "";
-
     return buildGitLabActionConfigFromAdmin(config);
   }
 
@@ -25864,7 +25861,6 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: getGitLabActionConfigForReview(),
           query
         })
       });
@@ -25917,7 +25913,6 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: getGitLabActionConfigForReview(),
           projectId,
           search,
           ref:
@@ -25979,7 +25974,6 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: getGitLabActionConfigForReview(),
           projectId: project.id,
           filePath,
           ref
@@ -26049,8 +26043,6 @@ function JiraSyncPanel({
       setGitLabReviewSuccess("");
       return;
     }
-
-    const localOpenAiKey = readLocalIntegrationSecrets().openAiApiKey?.trim() ?? "";
 
     setGitLabReviewState("reviewing");
     setGitLabReviewError("");
@@ -26220,7 +26212,7 @@ function JiraSyncPanel({
       return;
     }
 
-    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
+    const localJiraToken = "platform-managed";
 
     if (!localJiraToken) {
       setJiraStatusSyncError(
@@ -28237,7 +28229,6 @@ function EscalationPanel({
     }));
 
     try {
-      const localOpenAiKey = readLocalIntegrationSecrets().openAiApiKey?.trim() ?? "";
       const response = await fetch("/api/integrations/ai/generate-text", {
         method: "POST",
         headers: {
@@ -34233,22 +34224,6 @@ interface DatabaseQueryResult {
   statementType: string;
 }
 
-type LocalIntegrationSecrets = {
-  jiraToken?: string;
-  openAiApiKey?: string;
-  aiTestPrompt?: string;
-  gitlabToken?: string;
-  entraClientId?: string;
-  entraTenantId?: string;
-  entraRedirectUri?: string;
-  smtpUsername?: string;
-  smtpPassword?: string;
-  smtpTestRecipient?: string;
-  smtpTestSubject?: string;
-  smtpTestBody?: string;
-  updatedAt?: string;
-};
-
 type PruEditRef = {
   productId: string;
   pruId: string;
@@ -34825,21 +34800,6 @@ function getIntegrationActionErrorCode(error: unknown): string {
   const code = (error as { code?: unknown }).code;
 
   return typeof code === "string" ? code : "";
-}
-
-function readLocalIntegrationSecrets(): LocalIntegrationSecrets {
-  return {
-    jiraToken: "platform-managed",
-    openAiApiKey: "platform-managed",
-    gitlabToken: "platform-managed",
-    smtpUsername: "platform-managed",
-    smtpPassword: "platform-managed",
-    aiTestPrompt: defaultAiTestPrompt
-  };
-}
-
-function writeLocalIntegrationSecrets(secrets: LocalIntegrationSecrets): void {
-  void secrets;
 }
 
 function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
@@ -42573,7 +42533,6 @@ function IntegrationConfigurationPanel({
   const [gitlabProjectResults, setGitLabProjectResults] = useState<GitLabProjectResult[]>([]);
   const [gitlabCodeResults, setGitLabCodeResults] = useState<GitLabCodeSearchResult[]>([]);
   const [gitlabSourcePreview, setGitLabSourcePreview] = useState<GitLabRepositoryFileResult | null>(null);
-  const [localSecrets, setLocalSecrets] = useState<LocalIntegrationSecrets>({});
   const [isCreatingJiraTask, setIsCreatingJiraTask] = useState(false);
   const [isSyncingJiraData, setIsSyncingJiraData] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
@@ -42658,7 +42617,6 @@ function IntegrationConfigurationPanel({
   }, [config.integrations.smtp]);
 
   useEffect(() => {
-    setLocalSecrets({});
     setEntraForm(buildEntraConfigForm());
   }, []);
 
@@ -42682,13 +42640,7 @@ function IntegrationConfigurationPanel({
     setSmtpTestResult(null);
   }, [smtpForm]);
 
-  function updateLocalSecrets(patch: Partial<LocalIntegrationSecrets>) {
-    void patch;
-    setLocalSecrets({});
-  }
-
   function clearLocalJiraToken() {
-    updateLocalSecrets({ jiraToken: "" });
     setJiraForm((current) => ({ ...current, token: "" }));
     setJiraSuccessMessage("");
     setJiraTestResult({
@@ -42701,7 +42653,6 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalAiApiKey() {
-    updateLocalSecrets({ openAiApiKey: "" });
     setAiForm((current) => ({ ...current, apiKey: "" }));
     setAiSuccessMessage("");
     setAiTestResult({
@@ -42713,7 +42664,6 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalGitLabToken() {
-    updateLocalSecrets({ gitlabToken: "" });
     setGitLabForm((current) => ({ ...current, token: "" }));
     setGitLabSuccessMessage("");
     setGitLabTestResult({
@@ -42769,7 +42719,6 @@ function IntegrationConfigurationPanel({
       updatedAt: new Date().toISOString()
     };
 
-    updateLocalSecrets(nextEntraConfig);
     setEntraForm({
       clientId: nextEntraConfig.entraClientId,
       tenantId: nextEntraConfig.entraTenantId,
@@ -42828,7 +42777,6 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalEntraConfig() {
-    updateLocalSecrets({ entraClientId: "", entraTenantId: "", entraRedirectUri: "" });
     setEntraForm(buildEntraConfigForm());
     setEntraSuccessMessage("");
     setEntraError("");
@@ -42842,7 +42790,6 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalSmtpCredentials() {
-    updateLocalSecrets({ smtpUsername: "", smtpPassword: "" });
     setSmtpForm((current) => ({ ...current, username: "", password: "" }));
     setSmtpSuccessMessage("");
     setSmtpTestResult({
@@ -43359,7 +43306,6 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildGitLabActionConfig(),
           query
         })
       });
@@ -43418,7 +43364,6 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildGitLabActionConfig(),
           query,
           groupId
         })
@@ -43568,7 +43513,6 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildGitLabActionConfig(),
           projectId,
           search,
           ref: gitlabForm.ref.trim() || gitlabForm.selectedProjectDefaultBranch || gitlabForm.defaultRef
@@ -43644,7 +43588,6 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          config: buildGitLabActionConfig(),
           projectId,
           filePath,
           ref
@@ -46914,4 +46857,3 @@ function CommentPanel({
     </section>
   );
 }
-

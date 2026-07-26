@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
 import {
   createTeamsCalendarEvent,
   MicrosoftGraphApiError,
@@ -23,6 +24,12 @@ function errorResponse(code: string, message: string, details: string[] = [], st
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as CreateTeamsMeetingInput | null;
 
   if (!payload) {

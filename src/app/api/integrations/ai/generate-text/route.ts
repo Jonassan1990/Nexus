@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
 import {
   generateAiChatText,
   generateEscalationMeetingSeriesText,
@@ -48,6 +49,12 @@ function isChatMessage(value: unknown): value is AiChatMessage {
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as AiGenerateTextPayload | null;
 
   if (!payload?.config) {

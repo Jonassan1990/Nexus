@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
 import {
   extractJiraIssueKey,
   validateJiraActionConfig,
   type JiraActionConfig
 } from "@/lib/integration-actions";
 import { fetchJiraIssueStatus } from "@/lib/jira-issue-status";
+import { getJiraPlatformCredentials } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
@@ -27,13 +29,22 @@ function errorResponse(code: string, message: string, details: string[] = [], st
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireApiPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as JiraIssueStatusPayload | null;
 
   if (!payload?.config) {
     return errorResponse("invalid_json", "Request body must include Jira configuration.");
   }
 
-  const config = payload.config;
+  const config: JiraActionConfig = {
+    ...payload.config,
+    ...getJiraPlatformCredentials()
+  };
   const errors = validateJiraActionConfig(config);
   const jiraKey = extractJiraIssueKey(payload.issueKey);
 

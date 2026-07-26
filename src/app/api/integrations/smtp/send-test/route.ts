@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import nodemailer from "nodemailer";
+import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import { requireAdminPrincipal } from "@/lib/auth/api-auth";
 import { isValidEmail, type SmtpActionConfig } from "@/lib/integration-actions";
-import { getSmtpPlatformCredentials } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
@@ -40,14 +40,6 @@ function validatePayload(payload: SendTestEmailPayload): string[] {
     errors.push("Outbound email delivery must be enabled before sending a test email.");
   }
 
-  if (!config.host.trim()) {
-    errors.push("SMTP host is required.");
-  }
-
-  if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
-    errors.push("SMTP port must be between 1 and 65535.");
-  }
-
   if (!config.fromEmail.trim() || !isValidEmail(config.fromEmail.trim())) {
     errors.push("A valid sender email address is required.");
   }
@@ -68,6 +60,12 @@ function validatePayload(payload: SendTestEmailPayload): string[] {
 }
 
 export async function POST(request: NextRequest) {
+  const principal = await requireAdminPrincipal(request);
+
+  if (principal instanceof NextResponse) {
+    return principal;
+  }
+
   const payload = (await request.json().catch(() => null)) as SendTestEmailPayload | null;
 
   if (!payload) {
@@ -82,67 +80,54 @@ export async function POST(request: NextRequest) {
 
   const config = payload.config as SmtpActionConfig;
   const message = payload.message as Required<NonNullable<SendTestEmailPayload["message"]>>;
-  const platformCredentials = getSmtpPlatformCredentials();
-  const auth =
-    platformCredentials.username && platformCredentials.password
-      ? {
-          user: platformCredentials.username,
-          pass: platformCredentials.password
-        }
-      : undefined;
-
-  const transporter = nodemailer.createTransport({
-    host: config.host.trim(),
-    port: config.port,
-    secure: config.security === "sslTls",
-    requireTLS: config.security === "starttls",
-    ignoreTLS: config.security === "none",
-    auth,
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-    tls: {
-      minVersion: "TLSv1.2"
-    }
-  });
+  const sesClient = new SESClient({});
 
   console.info(
     JSON.stringify({
       event: "smtp_test_email_attempt",
-      host: config.host,
-      port: config.port,
-      security: config.security,
-      authConfigured: Boolean(auth)
+      fromEmail: config.fromEmail,
+      recipientCount: 1
     })
   );
 
   try {
-    const result = await transporter.sendMail({
-      from: {
-        name: config.fromName.trim() || "Nexus-support portal",
-        address: config.fromEmail.trim()
-      },
-      to: message.to.trim(),
-      subject: message.subject.trim(),
-      text: message.body.trim()
-    });
+    const result = await sesClient.send(
+      new SendEmailCommand({
+        Source: `${config.fromName.trim() || "Nexus-support portal"} <${config.fromEmail.trim()}>`,
+        Destination: {
+          ToAddresses: [message.to.trim()]
+        },
+        Message: {
+          Subject: {
+            Data: message.subject.trim(),
+            Charset: "UTF-8"
+          },
+          Body: {
+            Text: {
+              Data: message.body.trim(),
+              Charset: "UTF-8"
+            }
+          }
+        },
+        ReplyToAddresses: [config.fromEmail.trim()]
+      })
+    );
 
     console.info(
       JSON.stringify({
         event: "smtp_test_email_success",
-        host: config.host,
-        accepted: result.accepted.length,
-        rejected: result.rejected.length
+        messageId: result.MessageId ?? "",
+        status: "sent"
       })
     );
 
     return NextResponse.json({
       data: {
-        status: result.rejected.length > 0 ? "partial" : "sent",
-        messageId: result.messageId,
-        accepted: result.accepted,
-        rejected: result.rejected,
-        response: result.response
+        status: "sent",
+        messageId: result.MessageId ?? "",
+        accepted: [message.to.trim()],
+        rejected: [],
+        response: "Sent through AWS SES."
       }
     });
   } catch (error) {
@@ -151,7 +136,6 @@ export async function POST(request: NextRequest) {
     console.error(
       JSON.stringify({
         event: "smtp_test_email_failed",
-        host: config.host,
         message: messageText
       })
     );

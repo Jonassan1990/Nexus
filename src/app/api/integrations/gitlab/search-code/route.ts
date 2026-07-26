@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  searchGitLabCode,
-  validateGitLabActionConfig,
-  type GitLabActionConfig
-} from "@/lib/gitlab-integration";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
+import { searchGitLabCode, validateGitLabActionConfig } from "@/lib/gitlab-integration";
+import { readAdminConfig } from "@/lib/database";
+import { getGitLabPlatformToken } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
 type GitLabCodeSearchPayload = {
-  config?: GitLabActionConfig;
   projectId?: number;
   search?: string;
   ref?: string;
@@ -19,16 +17,22 @@ function errorResponse(code: string, message: string, details: string[] = [], st
 }
 
 export async function POST(request: NextRequest) {
-  const payload = (await request.json().catch(() => null)) as GitLabCodeSearchPayload | null;
+  const principal = await requireApiPrincipal(request);
 
-  if (!payload?.config) {
-    return errorResponse("invalid_json", "Request body must include GitLab configuration.");
+  if (principal instanceof NextResponse) {
+    return principal;
   }
 
-  const errors = validateGitLabActionConfig(payload.config);
-  const search = payload.search?.trim() ?? "";
+  const payload = (await request.json().catch(() => null)) as GitLabCodeSearchPayload | null;
+  const adminConfig = await readAdminConfig();
+  const gitlabConfig = {
+    ...adminConfig.integrations.gitlab,
+    token: getGitLabPlatformToken()
+  };
+  const errors = validateGitLabActionConfig(gitlabConfig);
+  const search = payload?.search?.trim() ?? "";
 
-  if (!Number.isInteger(payload.projectId) || Number(payload.projectId) <= 0) {
+  if (!Number.isInteger(payload?.projectId) || Number(payload?.projectId) <= 0) {
     errors.push("A valid GitLab project ID is required.");
   }
 
@@ -41,7 +45,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const results = await searchGitLabCode(payload.config, Number(payload.projectId), search, payload.ref);
+    const results = await searchGitLabCode(
+      gitlabConfig,
+      Number(payload?.projectId),
+      search,
+      payload?.ref
+    );
 
     return NextResponse.json({
       data: {

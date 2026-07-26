@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  listGitLabGroups,
-  validateGitLabActionConfig,
-  type GitLabActionConfig
-} from "@/lib/gitlab-integration";
+import { requireApiPrincipal } from "@/lib/auth/api-auth";
+import { listGitLabGroups, validateGitLabActionConfig } from "@/lib/gitlab-integration";
+import { readAdminConfig } from "@/lib/database";
+import { getGitLabPlatformToken } from "@/lib/platform-secrets";
 
 export const runtime = "nodejs";
 
 type GitLabGroupListPayload = {
-  config?: GitLabActionConfig;
   query?: string;
 };
 
@@ -17,20 +15,26 @@ function errorResponse(code: string, message: string, details: string[] = [], st
 }
 
 export async function POST(request: NextRequest) {
-  const payload = (await request.json().catch(() => null)) as GitLabGroupListPayload | null;
+  const principal = await requireApiPrincipal(request);
 
-  if (!payload?.config) {
-    return errorResponse("invalid_json", "Request body must include GitLab configuration.");
+  if (principal instanceof NextResponse) {
+    return principal;
   }
 
-  const errors = validateGitLabActionConfig(payload.config);
+  const payload = (await request.json().catch(() => null)) as GitLabGroupListPayload | null;
+  const adminConfig = await readAdminConfig();
+  const gitlabConfig = {
+    ...adminConfig.integrations.gitlab,
+    token: getGitLabPlatformToken()
+  };
+  const errors = validateGitLabActionConfig(gitlabConfig);
 
   if (errors.length > 0) {
     return errorResponse("validation_failed", "GitLab group list failed validation.", errors);
   }
 
   try {
-    const groups = await listGitLabGroups(payload.config, payload.query ?? "");
+    const groups = await listGitLabGroups(gitlabConfig, payload?.query ?? "");
 
     return NextResponse.json({
       data: {
