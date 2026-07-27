@@ -155,10 +155,6 @@ export class MicrosoftGraphApiError extends Error {
   }
 }
 
-function readRequiredEnv(name: string): string {
-  return process.env[name]?.trim() ?? "";
-}
-
 function normalizeDateTimeValue(value: string): string {
   const trimmedValue = value.trim();
 

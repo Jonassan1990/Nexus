@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Transform, Readable } from "node:stream";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { NextRequest, NextResponse } from "next/server";
 import {
   deleteAttachmentObject,
@@ -35,7 +36,7 @@ function readChecksum(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-async function runVirusScanHookPlaceholder(_fileName: string, _mimeType: string, _sizeBytes: number): Promise<void> {
+async function runVirusScanHookPlaceholder(): Promise<void> {
   return Promise.resolve();
 }
 
@@ -126,7 +127,7 @@ export async function POST(request: NextRequest) {
   const sizeBytes = fileEntry.size;
   const checksumHash = createHash("sha256");
   const attachmentId = randomUUID();
-  const uploadStream = Readable.fromWeb(fileEntry.stream() as any).pipe(
+  const uploadStream = Readable.fromWeb(fileEntry.stream() as NodeReadableStream<Uint8Array>).pipe(
     new Transform({
       transform(chunk, _encoding, callback) {
         checksumHash.update(chunk);
@@ -137,7 +138,7 @@ export async function POST(request: NextRequest) {
   const s3Key = createAttachmentS3Key(ticket.id, attachmentId, fileName);
   const bucketName = getAttachmentBucketName();
 
-  await runVirusScanHookPlaceholder(fileName, mimeType, sizeBytes);
+  await runVirusScanHookPlaceholder();
 
   const uploadedAt = new Date().toISOString();
 

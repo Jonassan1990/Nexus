@@ -518,7 +518,7 @@ async function syncAttachmentRowsForTicket(ticket: Ticket, db: DatabaseSync): Pr
     const relationType = attachment.relation || "ticket_information";
     const existing = existingById.get(attachment.id);
     let storedRecord: StoredAttachmentRecord | null = null;
-    let contentDataUrl = attachment.contentDataUrl?.trim() ?? "";
+    const contentDataUrl = attachment.contentDataUrl?.trim() ?? "";
 
     if (contentDataUrl) {
       const decoded = parseAttachmentDataUrl(contentDataUrl);

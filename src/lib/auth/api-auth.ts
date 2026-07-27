@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { adminConfig, getAdminRoleLabel, type AdminConfig } from "@/lib/admin-config";
 import { getNexusAuthMode } from "@/lib/auth/auth-mode";
 import { getCognitoUserFromPayload, verifyCognitoIdToken } from "@/lib/auth/cognito-session";
+import { readAdminConfig } from "@/lib/database";
 import { roles as roleDefinitions } from "@/lib/nexus-data";
 import type { RoleKey, Ticket } from "@/lib/types";
 
@@ -24,7 +25,6 @@ export type ApiPrincipal = {
   isAdmin: boolean;
 };
 
-const knownRoleKeys = new Set<RoleKey>(roleDefinitions.map((role) => role.key));
 const allScopeValue = "__all__";
 
 function uniqueRoles(roles: RoleKey[]): RoleKey[] {
@@ -33,10 +33,6 @@ function uniqueRoles(roles: RoleKey[]): RoleKey[] {
 
 function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
-}
-
-function isKnownRoleKey(value: string): value is RoleKey {
-  return knownRoleKeys.has(value as RoleKey);
 }
 
 function readEnv(value: string | undefined): string {
@@ -58,6 +54,16 @@ function splitRoleCandidates(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function resolveClaimRoleKey(candidate: string): RoleKey | null {
+  const normalizedCandidate = normalizeText(candidate);
+
+  const matchingRole = roleDefinitions.find((role) => {
+    return normalizeText(role.key) === normalizedCandidate || normalizeText(role.label) === normalizedCandidate;
+  });
+
+  return matchingRole?.key ?? null;
+}
+
 function collectClaimRoles(claims: CognitoClaims): RoleKey[] {
   const rawClaims = [
     claims["cognito:groups"],
@@ -69,8 +75,10 @@ function collectClaimRoles(claims: CognitoClaims): RoleKey[] {
 
   for (const rawClaim of rawClaims) {
     for (const candidate of splitRoleCandidates(rawClaim)) {
-      if (isKnownRoleKey(candidate)) {
-        roles.push(candidate);
+      const resolvedRole = resolveClaimRoleKey(candidate);
+
+      if (resolvedRole) {
+        roles.push(resolvedRole);
       }
     }
   }
@@ -78,15 +86,24 @@ function collectClaimRoles(claims: CognitoClaims): RoleKey[] {
   return uniqueRoles(roles);
 }
 
-function resolveMappedRoles(email: string): RoleKey[] {
+async function resolveMappedRoles(email: string): Promise<RoleKey[]> {
   const normalizedEmail = email.trim().toLowerCase();
-  const user = adminConfig.users.find((candidate) => candidate.email.trim().toLowerCase() === normalizedEmail);
+  try {
+    const config = await readAdminConfig();
+    const user = config.users.find((candidate) => candidate.email.trim().toLowerCase() === normalizedEmail);
 
-  if (!user) {
+    if (!user) {
+      return [];
+    }
+
+    return uniqueRoles([user.primaryRole, ...user.actionRoles]);
+  } catch (error) {
+    console.error("Failed to resolve API principal roles from Aurora admin config.", {
+      email: normalizedEmail,
+      error: error instanceof Error ? error.message : String(error)
+    });
     return [];
   }
-
-  return uniqueRoles([user.primaryRole, ...user.actionRoles]);
 }
 
 function buildPrincipal(name: string, email: string, roles: RoleKey[]): ApiPrincipal {
@@ -104,15 +121,15 @@ function buildPrincipal(name: string, email: string, roles: RoleKey[]): ApiPrinc
   };
 }
 
-function buildPrincipalFromClaims(claims: CognitoClaims): ApiPrincipal {
+async function buildPrincipalFromClaims(claims: CognitoClaims): Promise<ApiPrincipal> {
   const identity = getCognitoUserFromPayload(claims);
-  const mappedRoles = resolveMappedRoles(identity.email);
+  const mappedRoles = await resolveMappedRoles(identity.email);
   const claimRoles = collectClaimRoles(claims);
 
   return buildPrincipal(identity.name, identity.email, uniqueRoles([...mappedRoles, ...claimRoles]));
 }
 
-function buildPrincipalFromExternalEnv(): ApiPrincipal | null {
+async function buildPrincipalFromExternalEnv(): Promise<ApiPrincipal | null> {
   const name = readEnv(process.env.NEXT_PUBLIC_NEXUS_TEST_USER_NAME);
   const email = readEnv(process.env.NEXT_PUBLIC_NEXUS_TEST_USER_EMAIL);
 
@@ -120,7 +137,20 @@ function buildPrincipalFromExternalEnv(): ApiPrincipal | null {
     return null;
   }
 
-  return buildPrincipal(name || "Signed-in user", email, resolveMappedRoles(email));
+  const mappedRoles = await resolveMappedRoles(email);
+
+  if (mappedRoles.length > 0) {
+    return buildPrincipal(name || "Signed-in user", email, mappedRoles);
+  }
+
+  const config = await readAdminConfig();
+  const adminUser = config.users.find((candidate) => candidate.active && candidate.primaryRole === "admin");
+
+  if (adminUser) {
+    return buildPrincipal(name || "Signed-in user", email, uniqueRoles([adminUser.primaryRole, ...adminUser.actionRoles]));
+  }
+
+  return buildPrincipal(name || "Signed-in user", email, []);
 }
 
 export function getPrincipalRoleLabel(role: RoleKey): string {
@@ -236,22 +266,22 @@ export function buildForbiddenResponse(message: string): NextResponse {
 }
 
 export async function resolveApiPrincipal(request: NextRequest): Promise<ApiPrincipal | NextResponse> {
-  if (getNexusAuthMode() === "cognito") {
-    const sessionToken = request.cookies.get("nexus_auth_session")?.value?.trim();
+  const sessionToken = request.cookies.get("nexus_auth_session")?.value?.trim();
 
-    if (!sessionToken) {
-      return buildUnauthorizedResponse("Authentication is required.");
-    }
-
+  if (sessionToken) {
     try {
       const verified = (await verifyCognitoIdToken(sessionToken)) as CognitoClaims;
-      return buildPrincipalFromClaims(verified);
+      return await buildPrincipalFromClaims(verified);
     } catch {
       return buildUnauthorizedResponse("Authentication is required.");
     }
   }
 
-  const externalPrincipal = buildPrincipalFromExternalEnv();
+  if (getNexusAuthMode() === "cognito") {
+    return buildUnauthorizedResponse("Authentication is required.");
+  }
+
+  const externalPrincipal = await buildPrincipalFromExternalEnv();
 
   if (externalPrincipal) {
     return externalPrincipal;
