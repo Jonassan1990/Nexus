@@ -1,0 +1,272 @@
+/**
+ * Nexus Support — Design System utilities (Phase 0)
+ * Prefer these classes over inventing font-size / spacing / color in components.
+ */
+
+/* Typography */
+.nx-display-xl {
+  font-family: var(--font-display);
+  font-size: var(--type-display-xl-size);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--type-display-xl-line);
+  color: var(--text-primary);
+  letter-spacing: 0;
+}
+
+.nx-display {
+  font-family: var(--font-display);
+  font-size: var(--type-display-size);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--type-display-line);
+  color: var(--text-primary);
+}
+
+.nx-h1 {
+  font-family: var(--font-display);
+  font-size: var(--type-h1-size);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--type-h1-line);
+  color: var(--text-primary);
+}
+
+.nx-h2 {
+  font-family: var(--font-display);
+  font-size: var(--type-h2-size);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--type-h2-line);
+  color: var(--text-primary);
+}
+
+.nx-h3 {
+  font-family: var(--font-sans);
+  font-size: var(--type-h3-size);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--type-h3-line);
+  color: var(--text-primary);
+}
+
+.nx-title {
+  font-family: var(--font-sans);
+  font-size: var(--type-title-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--type-title-line);
+  color: var(--text-primary);
+}
+
+.nx-body-lg {
+  font-family: var(--font-sans);
+  font-size: var(--type-body-lg-size);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--type-body-lg-line);
+  color: var(--text-primary);
+}
+
+.nx-body {
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--type-body-line);
+  color: var(--text-primary);
+}
+
+.nx-small {
+  font-family: var(--font-sans);
+  font-size: var(--type-small-size);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--type-small-line);
+  color: var(--text-secondary);
+}
+
+.nx-caption {
+  font-family: var(--font-sans);
+  font-size: var(--type-caption-size);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--type-caption-line);
+  color: var(--text-muted);
+}
+
+.nx-label {
+  font-family: var(--font-sans);
+  font-size: var(--type-label-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--type-label-line);
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.nx-mono {
+  font-family: var(--font-mono);
+  font-size: var(--type-mono-size);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--type-mono-line);
+  color: var(--text-primary);
+}
+
+.nx-text-secondary {
+  color: var(--text-secondary);
+}
+
+.nx-text-muted {
+  color: var(--text-muted);
+}
+
+.nx-text-inverse {
+  color: var(--text-inverse);
+}
+
+/* Layout helpers — 8px grid */
+.nx-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-md);
+}
+
+.nx-stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-sm);
+}
+
+.nx-stack-lg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-lg);
+}
+
+.nx-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-stack-sm);
+}
+
+.nx-cluster-md {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-stack-md);
+}
+
+.nx-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-stack-sm);
+}
+
+.nx-grid-gap {
+  gap: var(--space-stack-md);
+}
+
+.nx-pad-sm {
+  padding: var(--space-inset-sm);
+}
+
+.nx-pad-md {
+  padding: var(--space-inset-md);
+}
+
+.nx-pad-lg {
+  padding: var(--space-inset-lg);
+}
+
+.nx-surface {
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-none);
+}
+
+.nx-surface-muted {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-none);
+}
+
+.nx-surface-elevated {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-popover);
+}
+
+.nx-divider {
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  margin: var(--space-stack-md) 0;
+}
+
+/* Elevation helpers */
+.nx-elevation-none {
+  box-shadow: var(--elevation-none);
+}
+
+.nx-elevation-border {
+  box-shadow: var(--elevation-border);
+}
+
+.nx-elevation-popover {
+  box-shadow: var(--elevation-popover);
+}
+
+.nx-elevation-modal {
+  box-shadow: var(--elevation-modal);
+}
+
+/* Motion helpers — no translateY */
+.nx-transition-colors {
+  transition:
+    color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.nx-transition-shadow {
+  transition: box-shadow var(--motion-base) var(--motion-ease);
+}
+
+/* Icon size helpers */
+.nx-icon-sm {
+  width: var(--icon-sm);
+  height: var(--icon-sm);
+}
+
+.nx-icon-md {
+  width: var(--icon-md);
+  height: var(--icon-md);
+}
+
+.nx-icon-lg {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+}
+
+.nx-icon-xl {
+  width: var(--icon-xl);
+  height: var(--icon-xl);
+}
+
+/* Focus — WCAG AA */
+.nx-focusable:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Touch targets */
+.nx-touch {
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+}
+
+/* Accessibility — reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,172 @@
+/**
+ * Nexus Support — Composition patterns (Phase 1.5)
+ */
+
+.nx-dashboard-section,
+.nx-table-section,
+.nx-form-section {
+  width: 100%;
+}
+
+.nx-table-section__panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.nx-form-section__fields {
+  display: grid;
+  gap: var(--space-stack-md);
+}
+
+.nx-split-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, var(--nx-split-secondary, 360px));
+  gap: var(--space-stack-md);
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+}
+
+.nx-split-view__primary,
+.nx-split-view__secondary {
+  min-width: 0;
+}
+
+.nx-inspector-panel {
+  padding: var(--space-inset-md);
+}
+
+.nx-inspector-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-stack-md);
+  padding-bottom: var(--space-stack-sm);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.nx-inspector-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-md);
+}
+
+.nx-command-bar {
+  padding: var(--space-inset-sm);
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+}
+
+.nx-sidebar-group__nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nx-sidebar-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-stack-sm);
+}
+
+.nx-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: var(--type-body-size);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.nx-sidebar-item:hover,
+.nx-sidebar-item:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.nx-sidebar-item:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.nx-sidebar-item.is-active {
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 24%, var(--border-default));
+  color: var(--primary);
+}
+
+.nx-sidebar-item__label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nx-sidebar-item__trailing {
+  color: var(--text-muted);
+  font-size: var(--type-caption-size);
+}
+
+.nx-quick-actions,
+.nx-recent-items {
+  padding: var(--space-inset-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-sm);
+}
+
+.nx-recent-items__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nx-recent-items__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-2);
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nx-recent-items__item:hover,
+.nx-recent-items__item:focus-visible {
+  background: var(--surface-hover);
+  border-color: var(--border-default);
+  outline: none;
+}
+
+.nx-recent-items__item:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+@media (max-width: 1023px) {
+  .nx-split-view {
+    grid-template-columns: 1fr;
+  }
+}

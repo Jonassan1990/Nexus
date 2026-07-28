@@ -7,8 +7,14 @@ export function getScopedModuleHeaderTitle(
   fallbackLabel: string,
   locale: AppLocale = "en"
 ): string {
-  if (activeModule === "dashboard" && role === "requester") {
-    return locale === "sv" ? "Min supportsida" : "My support dashboard";
+  if (activeModule === "dashboard") {
+    return locale === "sv"
+      ? role === "requester"
+        ? "Mitt kommandocenter"
+        : "Kommandocenter"
+      : role === "requester"
+        ? "My command center"
+        : "Command Center";
   }
 
   if (activeModule === "tickets" && role === "requester") {

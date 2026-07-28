@@ -1,0 +1,146 @@
+/**
+ * Work Management patterns — Phase 4
+ * No fixed heights. Token surfaces only.
+ */
+
+.nx-work-item-list,
+.nx-work-item-details,
+.nx-work-item-filters,
+.nx-work-item-toolbar {
+  width: 100%;
+  min-width: 0;
+}
+
+.nx-work-item-list__panel {
+  padding: 0;
+  overflow: auto;
+}
+
+.nx-work-item-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.nx-work-item-details__summary {
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.nx-work-item-timeline__list,
+.nx-work-item-activity__list,
+.nx-work-item-comments__list,
+.nx-status-timeline__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nx-work-item-timeline__step,
+.nx-work-item-activity__item,
+.nx-work-item-comments__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.nx-work-item-timeline__step:last-child,
+.nx-work-item-activity__item:last-child,
+.nx-work-item-comments__item:last-child {
+  border-bottom: 0;
+}
+
+.nx-work-item-activity__item {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.nx-work-item-activity__meta,
+.nx-work-item-comments__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.nx-work-item-comments__item {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.nx-work-item-comments__composer {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
+}
+
+.nx-assignment-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.nx-assignment-panel__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.nx-assignment-panel__list > div {
+  display: grid;
+  gap: 2px;
+}
+
+.nx-assignment-panel__list dt {
+  color: var(--text-muted);
+  font-size: var(--type-caption-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nx-assignment-panel__list dd {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.nx-status-timeline__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.nx-status-timeline__item {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+
+.nx-status-timeline__item.is-complete {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.nx-status-timeline__item.is-active {
+  border-color: var(--info);
+  color: var(--info);
+  background: var(--info-soft);
+}
+
+.nx-status-timeline__item.is-blocked,
+.nx-status-timeline__item.is-rejected {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+@media (max-width: 760px) {
+  .nx-work-item-activity__item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -14,12 +14,39 @@ import type {
 } from "react";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { chartColorVars, priorityChartColorVars } from "@/lib/theme/cssVar";
+import { emailColorValues } from "@/lib/theme/primitiveValues";
+import { Content, Page } from "@/design-system/layout";
+import { CommandPaletteHost } from "@/features/workspace/CommandPaletteHost";
+import { focusMainContent } from "@/features/workspace/focusMainContent";
+import { useWorkspacePreferences } from "@/features/workspace/useWorkspacePreferences";
+import { CommandCenter } from "@/features/command-center/CommandCenter";
+import { KnowledgeExperience } from "@/features/knowledge";
+import {
+  addNotificationReadKeysForPersona,
+  getNotificationReadKeys,
+  NOTIFICATION_READ_STORAGE_KEY,
+  searchWorkspaceTickets,
+  getTicketSearchHaystack,
+  resolveWorkspaceTicketQuery,
+  resolveRecentTicketItems,
+  handleListNavigationKeyDown,
+  useUserPreferences,
+  BulkActionBar
+} from "@/features/workspace";
+import {
+  WorkItemFilters,
+  WorkItemList,
+  WorkItemToolbar,
+  WorkItemDetails,
+  AssignmentPanel,
+  StatusTimeline
+} from "@/features/work-management";
 import { getTicketTypeLabel, roles, ticketTypes, workflowTemplates } from "@/lib/nexus-data";
 import {
   TdsHeader,
   TdsHeaderHamburger,
   TdsHeaderItem,
-  TdsHeaderLauncherButton,
   TdsHeaderTitle
 } from "@scania/tegel-react";
 import {
@@ -82,7 +109,7 @@ import type {
 } from "@/lib/admin-config";
 import { canView, filterVisible } from "@/lib/rbac";
 import { ModuleHeader } from "./ModuleHeader";
-import { EmptyState, PanelHeader } from "./PanelPrimitives";
+import { EmptyState, PanelHeader, WorkspacePanel } from "./PanelPrimitives";
 import { PortalSidebar } from "./PortalSidebar";
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 import { getTicketsEmptyCopy } from "@/lib/portal-copy";
@@ -463,8 +490,9 @@ function formatPersonaSecondaryRoles(config: AdminConfig, persona: RolePersonaOp
 }
 
 const navItems = [
-  { key: "dashboard", label: "Dashboard", iconName: "dashboard", visibleTo: allRoles },
+  { key: "dashboard", label: "Command Center", iconName: "dashboard", visibleTo: allRoles },
   { key: "tickets", label: "Ticket List", iconName: "folder", visibleTo: allRoles },
+  { key: "knowledge", label: "Knowledge", iconName: "document", visibleTo: allRoles },
   { key: "releasePlan", label: "Release Plan", iconName: "calendar", visibleTo: allRoles },
   { key: "approvals", label: "Approvals", iconName: "document_check", visibleTo: approverRoles },
   { key: "globalization", label: "Globalization", iconName: "global", visibleTo: approverRoles },
@@ -972,16 +1000,14 @@ function canCommentOnJiraForTicket(config: AdminConfig, persona: RolePersonaOpti
 }
 
 function getTicketSearchText(ticket: Ticket, config: AdminConfig): string {
-  return [
-    ticket.key,
-    ticket.title,
-    ticket.product,
-    ticket.module,
-    ticket.site,
-    getConfigTicketTypeLabel(config, ticket.typeId)
-  ]
-    .join(" ")
-    .toLowerCase();
+  return getTicketSearchHaystack({
+    key: ticket.key,
+    title: ticket.title,
+    product: ticket.product,
+    module: ticket.module,
+    site: ticket.site,
+    typeLabel: getConfigTicketTypeLabel(config, ticket.typeId)
+  });
 }
 
 function parseStringListRecord(value: string | null): Record<string, string[]> {
@@ -1664,27 +1690,8 @@ type JiraSyncMetadataPayload = {
 
 type AdminConfigUpdater = Dispatch<SetStateAction<AdminConfig>>;
 
-const notificationReadStorageKey = "nexus-notification-read-state-v1";
+const notificationReadStorageKey = NOTIFICATION_READ_STORAGE_KEY;
 const persistenceDebounceMs = 400;
-
-function getNotificationReadKeys(notification: NotificationItem): string[] {
-  return notification.readKey && notification.readKey !== notification.id
-    ? [notification.id, notification.readKey]
-    : [notification.id];
-}
-
-function addNotificationReadKeysForPersona(
-  current: Record<string, string[]>,
-  personaId: string,
-  notification: NotificationItem
-): Record<string, string[]> {
-  return {
-    ...current,
-    [personaId]: Array.from(
-      new Set([...(current[personaId] ?? []), ...getNotificationReadKeys(notification)])
-    )
-  };
-}
 
 const defaultAiTestPrompt = "Tell me about yourself.";
 const legacyAiTestPrompt = "Write a short Jira handoff summary for a production support request.";
@@ -1699,16 +1706,7 @@ const ticketStateOptions = [
   { value: "closed", label: "Closed" }
 ] as const satisfies readonly { value: TicketState; label: string }[];
 const REPORT_ALL_VALUE = "all";
-const reportChartColors = [
-  "var(--accent-2)",
-  "var(--success)",
-  "var(--warning)",
-  "var(--danger)",
-  "var(--neutral)",
-  "#546a8a",
-  "#287d88",
-  "#7c5f17"
-];
+const reportChartColors = [...chartColorVars];
 
 const emptyAnalyticsReportFilters: AnalyticsReportFilters = {
   region: REPORT_ALL_VALUE,
@@ -5918,7 +5916,7 @@ function renderNotificationEmailHtmlBody(body: string, context: Record<string, s
 
   return `<!doctype html>
 <html>
-  <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1f2933;">
+  <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:${emailColorValues.textPrimary};">
     ${bodyHtml}
   </body>
 </html>`;
@@ -9663,7 +9661,7 @@ function useJiraTemplateFieldMetadata(
       return;
     }
 
-    const localToken = "platform-managed";
+    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localToken) {
       setMetadata({
@@ -11705,6 +11703,27 @@ export function NexusPortal() {
   const [isCreateTicketOpen, setIsCreateTicketOpen] = useState(false);
   const [isSideMenuOpen, setIsSideMenuOpen] = useState(false);
   const [isSideNavCompact, setIsSideNavCompact] = useState(true);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const {
+    preferences: workspacePreferences,
+    toggleFavourite,
+    togglePinned,
+    rememberRecent,
+    rememberTicket
+  } = useWorkspacePreferences();
+  const { preferences: userPreferences, ready: userPreferencesReady, setActingRoleAccessEnabled: persistActingRoleAccess } =
+    useUserPreferences();
+  const userPreferencesHydratedRef = useRef(false);
+  const { t: workspaceCopy } = useLocale();
+
+  useEffect(() => {
+    if (!userPreferencesReady || userPreferencesHydratedRef.current) {
+      return;
+    }
+
+    userPreferencesHydratedRef.current = true;
+    setActingRoleAccessEnabled(userPreferences.actingRoleAccessEnabled);
+  }, [userPreferences.actingRoleAccessEnabled, userPreferencesReady]);
   const [readNotificationIdsByPersona, setReadNotificationIdsByPersona] = useState<Record<string, string[]>>(
     {}
   );
@@ -11997,8 +12016,6 @@ export function NexusPortal() {
             host: smtp.host,
             port: smtp.port,
             security: smtp.security,
-            fromName: smtp.fromName,
-            fromEmail: smtp.fromEmail,
             username: "",
             password: ""
           },
@@ -12396,6 +12413,7 @@ export function NexusPortal() {
 
   function selectTicket(ticketKey: string) {
     setSelectedTicketKey(ticketKey);
+    rememberTicket(ticketKey);
     setActiveModule("tickets");
     setActiveTab("Overview");
     setIsTicketDetailOpen(true);
@@ -12406,6 +12424,7 @@ export function NexusPortal() {
 
     if (ticket && !ticketUsesJira(config, ticket)) {
       setSelectedTicketKey(ticketKey);
+      rememberTicket(ticketKey);
       setActiveModule("tickets");
       setActiveTab("Overview");
       setIsTicketDetailOpen(true);
@@ -12413,6 +12432,7 @@ export function NexusPortal() {
     }
 
     setSelectedTicketKey(ticketKey);
+    rememberTicket(ticketKey);
     setActiveModule("jira");
     setActiveTab("Jira");
   }
@@ -12425,11 +12445,20 @@ export function NexusPortal() {
       return;
     }
 
-    const exactMatch = ticketListTickets.find((ticket) => ticket.key.toLowerCase() === normalizedSearch);
-    const fuzzyMatch = ticketListTickets.find((ticket) =>
-      getTicketSearchText(ticket, config).includes(normalizedSearch)
-    );
-    const matchingTicket = exactMatch ?? fuzzyMatch;
+    const searchable = ticketListTickets.map((ticket) => ({
+      key: ticket.key,
+      title: ticket.title,
+      product: ticket.product,
+      module: ticket.module,
+      site: ticket.site,
+      priority: ticket.priority,
+      typeLabel: getConfigTicketTypeLabel(config, ticket.typeId),
+      statusLabel: getTicketCurrentStatusLabel(ticket),
+      locationLabel: getTicketCurrentLocationLabel(ticket),
+      ticket
+    }));
+    const { exact, matches } = resolveWorkspaceTicketQuery(searchable, searchValue);
+    const matchingTicket = exact?.ticket ?? matches[0]?.ticket;
 
     if (matchingTicket) {
       selectTicket(matchingTicket.key);
@@ -12448,6 +12477,7 @@ export function NexusPortal() {
     const resolvedTab = resolvedModule === "tickets" && tab === "Jira" ? "Overview" : tab;
 
     setSelectedTicketKey(ticketKey);
+    rememberTicket(ticketKey);
     setActiveModule(resolvedModule);
 
     if (resolvedTab) {
@@ -12475,6 +12505,8 @@ export function NexusPortal() {
 
     setRole(moduleRole);
     setActiveModule(module);
+    rememberRecent(module);
+    focusMainContent();
 
     if (module === "tickets") {
       setIsTicketDetailOpen(false);
@@ -12482,11 +12514,24 @@ export function NexusPortal() {
     }
   }
 
+  const commandPaletteItems = useMemo(() => {
+    const moduleLabels = workspaceCopy.modules as Record<string, string>;
+
+    return visibleNavItems.map((item) => ({
+      id: item.key,
+      label: moduleLabels[item.key] ?? item.label,
+      group: "Modules",
+      iconName: item.iconName,
+      onSelect: () => openModule(item.key)
+    }));
+  }, [visibleNavItems, workspaceCopy.modules]);
+
   function changeActingRoleAccess(enabled: boolean) {
     const nextPersona = getSessionRolePersona(config, selectedBasePersona, enabled);
     const nextModuleRole = getPersonaRoleForModule(nextPersona, activeModule);
 
     setActingRoleAccessEnabled(enabled);
+    persistActingRoleAccess(enabled);
 
     if (nextModuleRole) {
       setRole(nextModuleRole);
@@ -14141,8 +14186,6 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
             host: smtp.host,
             port: smtp.port,
             security: smtp.security,
-            fromName: smtp.fromName,
-            fromEmail: smtp.fromEmail,
             username: "",
             password: ""
           },
@@ -14706,7 +14749,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       throw new Error("Complete required workflow gates before creating the Jira issue.");
     }
 
-    const localJiraToken = "platform-managed";
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localJiraToken) {
       throw new Error(
@@ -14864,7 +14907,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
     };
     assertJiraReleasePlanningIsValid(updatedDraft);
     const ticketForUpdate = { ...ticket, relatedJiraKey: jiraIssueKey, jiraDraft: updatedDraft };
-    const localJiraToken = "platform-managed";
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localJiraToken) {
       throw new Error(
@@ -15011,7 +15054,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       throw new Error("Write a Jira comment before sending.");
     }
 
-    const localJiraToken = "platform-managed";
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localJiraToken) {
       throw new Error(
@@ -15428,7 +15471,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         return;
       }
 
-      const localJiraToken = "platform-managed";
+      const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
       if (!localJiraToken) {
         if (!silent) {
@@ -15567,7 +15610,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
       return;
     }
 
-    const localJiraToken = "platform-managed";
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localJiraToken) {
       startupJiraSyncHandledRef.current = true;
@@ -16036,9 +16079,11 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
         selectedPersonaId={selectedBasePersona.id}
         ticketSearchOptions={ticketListTickets}
         ticketSearchQuery={query}
+        isSideMenuOpen={isSideMenuOpen}
         onActingRoleAccessChange={changeActingRoleAccess}
         onPersonaChange={changePersona}
         onOpenModule={openModule}
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         onOpenNotification={openNotificationItem}
         onOpenNotifications={() => setActiveModule("notifications")}
         onTicketSearchChange={setQuery}
@@ -16064,13 +16109,17 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
           items={visibleNavItems}
           isCompact={isSideNavCompact}
           isMounted={isTegelShellMounted}
+          workspaceLists={workspacePreferences}
           onClose={() => setIsSideMenuOpen(false)}
           onCollapse={() => setIsSideNavCompact(true)}
           onExpand={() => setIsSideNavCompact(false)}
           onSelectModule={openModule}
+          onToggleFavourite={(module) => toggleFavourite(module)}
+          onTogglePinned={(module) => togglePinned(module)}
         />
         <div className="workspace">
           <main className="workspace-main" id="main-content" tabIndex={-1}>
+            <Page>
             <ModuleHeader
               activeModule={activeModule}
               hasJiraProducts={hasJiraProductConfig}
@@ -16079,6 +16128,7 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               navItem={navItems.find((navItem) => navItem.key === activeModule) ?? navItems[0]}
               onNewTicket={() => setIsCreateTicketOpen(true)}
             />
+            <Content>
             {renderModule({
               activeModule,
               activeTab,
@@ -16134,9 +16184,16 @@ ${normalizedNote ? `<p><strong>GPO scope decision:</strong></p>${normalizedNote}
               focusTicketOnJira,
               selectTicket
             })}
+            </Content>
+            </Page>
           </main>
         </div>
       </div>
+      <CommandPaletteHost
+        items={commandPaletteItems}
+        open={isCommandPaletteOpen}
+        onOpenChange={setIsCommandPaletteOpen}
+      />
       {isCreateTicketOpen ? (
         <NewTicketModal
           config={config}
@@ -16161,9 +16218,11 @@ function TopBar({
   notificationCount,
   notifications,
   isMounted,
+  isSideMenuOpen,
   onActingRoleAccessChange,
   onPersonaChange,
   onOpenModule,
+  onOpenCommandPalette,
   onOpenNotification,
   onTicketSearchChange,
   onTicketSearchSubmit,
@@ -16182,9 +16241,11 @@ function TopBar({
   notificationCount: number;
   notifications: NotificationItem[];
   isMounted: boolean;
+  isSideMenuOpen: boolean;
   onActingRoleAccessChange: (enabled: boolean) => void;
   onPersonaChange: (personaId: string) => void;
   onOpenModule: (module: ModuleKey) => void;
+  onOpenCommandPalette: () => void;
   onOpenNotification: (notification: NotificationItem) => void;
   onTicketSearchChange: (query: string) => void;
   onTicketSearchSubmit: (query: string) => void;
@@ -16194,42 +16255,44 @@ function TopBar({
   const [isAttentionOpen, setIsAttentionOpen] = useState(false);
   const [isNotificationPopoverOpen, setIsNotificationPopoverOpen] = useState(false);
   const [isTicketSearchOpen, setIsTicketSearchOpen] = useState(false);
+  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [activeNotificationTab, setActiveNotificationTab] = useState<"attention" | "notifications">(
     "attention"
   );
   const [activeTicketSearchIndex, setActiveTicketSearchIndex] = useState(0);
   const ticketSearchListId = useId();
+  const mobileTicketSearchListId = useId();
+  const attentionTabId = useId();
+  const notificationsTabId = useId();
+  const attentionPanelId = useId();
+  const notificationsPanelId = useId();
   const profileTriggerRef = useRef<HTMLButtonElement>(null);
   const profilePopoverRef = useRef<HTMLElement>(null);
   const notificationTriggerRef = useRef<HTMLButtonElement>(null);
   const notificationPopoverRef = useRef<HTMLElement>(null);
+  const mobileSearchInputRef = useRef<HTMLInputElement>(null);
   const { locale, setLocale, t } = useLocale();
   const attentionTotal = attentionItems.reduce((total, item) => total + item.count, 0);
-  const headerNotificationBadgeCount = Math.max(attentionTotal, notificationCount);
+  const headerNotificationBadgeCount = attentionTotal + notificationCount;
   const actingRoleLabels = selectedPersona.actionRoles.map((roleKey) => getConfigRoleLabel(config, roleKey));
   const hasActingRoles = actingRoleLabels.length > 0;
   const normalizedTicketSearchQuery = ticketSearchQuery.trim().toLowerCase();
   const visibleTicketSearchOptions = useMemo(() => {
-    const source = normalizedTicketSearchQuery
-      ? ticketSearchOptions.filter((ticket) =>
-          [
-            ticket.key,
-            ticket.title,
-            ticket.product,
-            ticket.module,
-            ticket.site,
-            ticket.priority,
-            getTicketCurrentStatusLabel(ticket),
-            getTicketCurrentLocationLabel(ticket)
-          ]
-            .join(" ")
-            .toLowerCase()
-            .includes(normalizedTicketSearchQuery)
-        )
-      : ticketSearchOptions;
+    const searchable = ticketSearchOptions.map((ticket) => ({
+      key: ticket.key,
+      title: ticket.title,
+      product: ticket.product,
+      module: ticket.module,
+      site: ticket.site,
+      priority: ticket.priority,
+      typeLabel: getConfigTicketTypeLabel(config, ticket.typeId),
+      statusLabel: getTicketCurrentStatusLabel(ticket),
+      locationLabel: getTicketCurrentLocationLabel(ticket),
+      ticket
+    }));
 
-    return source.slice(0, 8);
-  }, [normalizedTicketSearchQuery, ticketSearchOptions]);
+    return searchWorkspaceTickets(searchable, ticketSearchQuery, 8).map((match) => match.item.ticket);
+  }, [config, ticketSearchOptions, ticketSearchQuery]);
   const shouldShowTicketSearchList = isTicketSearchOpen && visibleTicketSearchOptions.length > 0;
 
   useEffect(() => {
@@ -16239,8 +16302,32 @@ function TopBar({
   useEffect(() => {
     setIsAttentionOpen(false);
     setIsNotificationPopoverOpen(false);
+    setIsMobileSearchOpen(false);
     setActiveNotificationTab("attention");
   }, [selectedPersona.id]);
+
+  useEffect(() => {
+    if (!isMobileSearchOpen) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => mobileSearchInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [isMobileSearchOpen]);
+
+  useEffect(() => {
+    if (isSideMenuOpen) {
+      return;
+    }
+
+    // Restore focus to the mobile menu control after the drawer closes.
+    const mobileMenu = document.querySelector<HTMLButtonElement>(
+      '.mobile-tegel-header [aria-controls="workspace-primary-nav"]'
+    );
+    if (mobileMenu && document.activeElement === document.body) {
+      mobileMenu.focus();
+    }
+  }, [isSideMenuOpen]);
 
   useEffect(() => {
     if (!isAttentionOpen && !isNotificationPopoverOpen) {
@@ -16275,9 +16362,19 @@ function TopBar({
     }
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setIsAttentionOpen(false);
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      if (isNotificationPopoverOpen) {
         setIsNotificationPopoverOpen(false);
+        notificationTriggerRef.current?.focus();
+        return;
+      }
+
+      if (isAttentionOpen) {
+        setIsAttentionOpen(false);
+        profileTriggerRef.current?.focus();
       }
     }
 
@@ -16294,6 +16391,7 @@ function TopBar({
     setIsAttentionOpen(false);
     setIsNotificationPopoverOpen(false);
     setIsTicketSearchOpen(false);
+    setIsMobileSearchOpen(false);
     onTicketSearchChange(ticket.key);
     onTicketSearchSubmit(ticket.key);
   }
@@ -16301,12 +16399,14 @@ function TopBar({
   function openNotificationPopover() {
     setIsAttentionOpen(false);
     setIsTicketSearchOpen(false);
+    setIsMobileSearchOpen(false);
     setIsNotificationPopoverOpen((isOpen) => !isOpen);
   }
 
   function openProfilePopover() {
     setIsNotificationPopoverOpen(false);
     setIsTicketSearchOpen(false);
+    setIsMobileSearchOpen(false);
     setIsAttentionOpen((isOpen) => !isOpen);
   }
 
@@ -16326,13 +16426,15 @@ function TopBar({
 
   return (
     <div
-      className={`tegel-header-shell${isAttentionOpen || isNotificationPopoverOpen ? " is-mobile-popover-open" : ""}`}
+      className={`tegel-header-shell${isAttentionOpen || isNotificationPopoverOpen || isMobileSearchOpen ? " is-mobile-popover-open" : ""}`}
     >
       <div className="mobile-tegel-header" aria-label="Nexus-support portal mobile header">
         <button
           className="mobile-header-button"
           type="button"
-          aria-label="Open navigation"
+          aria-label={isSideMenuOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={isSideMenuOpen}
+          aria-controls="workspace-primary-nav"
           onClick={onToggleMenu}
         >
           <span className="mobile-menu-lines" aria-hidden="true" />
@@ -16354,12 +16456,25 @@ function TopBar({
         </div>
         <div className="mobile-header-actions">
           <button
+            className="mobile-header-button mobile-header-icon-button nx-workspace-search-trigger"
+            type="button"
+            aria-expanded={isMobileSearchOpen}
+            aria-label={isMobileSearchOpen ? "Close ticket search" : "Search tickets"}
+            onClick={() => {
+              setIsAttentionOpen(false);
+              setIsNotificationPopoverOpen(false);
+              setIsMobileSearchOpen((open) => !open);
+            }}
+          >
+            <TegelIcon name="search" size="20px" />
+          </button>
+          <button
             ref={notificationTriggerRef}
             className="mobile-header-button mobile-header-icon-button"
             type="button"
             aria-controls="header-notification-panel"
             aria-expanded={isNotificationPopoverOpen}
-            aria-label={`${headerNotificationBadgeCount} notifications`}
+            aria-label={`${headerNotificationBadgeCount} items in notifications and needs attention`}
             onClick={openNotificationPopover}
           >
             <TegelIcon name="notification" size="20px" />
@@ -16379,9 +16494,91 @@ function TopBar({
             {selectedPersona.initials}
           </button>
         </div>
+        {isMobileSearchOpen ? (
+          <div className="nx-workspace-mobile-search">
+            <form
+              className={`tegel-header-ticket-search ${shouldShowTicketSearchList || visibleTicketSearchOptions.length > 0 ? "is-open" : ""}`}
+              role="search"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setIsMobileSearchOpen(false);
+                onTicketSearchSubmit(ticketSearchQuery);
+              }}
+            >
+              <div className="tegel-header-ticket-search-control">
+                <TegelIcon name="search" size="16px" />
+                <label className="sr-only" htmlFor="header-ticket-search-mobile">
+                  {t.shell.searchTicket}
+                </label>
+                <input
+                  ref={mobileSearchInputRef}
+                  id="header-ticket-search-mobile"
+                  value={ticketSearchQuery}
+                  onChange={(event) => {
+                    onTicketSearchChange(event.target.value);
+                    setIsTicketSearchOpen(true);
+                  }}
+                  onKeyDown={(event) => {
+                    handleListNavigationKeyDown(event, {
+                      length: visibleTicketSearchOptions.length,
+                      activeIndex: activeTicketSearchIndex,
+                      onChange: setActiveTicketSearchIndex,
+                      onEscape: () => setIsMobileSearchOpen(false),
+                      onEnter: (index) => {
+                        const selectedTicket = visibleTicketSearchOptions[index];
+
+                        if (selectedTicket) {
+                          openTicketSearchResult(selectedTicket);
+                        }
+                      }
+                    });
+                  }}
+                  placeholder={t.shell.searchTicket}
+                  autoComplete="off"
+                  role="combobox"
+                  aria-expanded={visibleTicketSearchOptions.length > 0}
+                  aria-controls={mobileTicketSearchListId}
+                />
+                <button type="submit" title={t.shell.open} aria-label={t.shell.open}>
+                  {t.shell.open}
+                </button>
+              </div>
+              {visibleTicketSearchOptions.length > 0 ? (
+                <div className="tegel-header-ticket-search-list" id={mobileTicketSearchListId} role="listbox">
+                  {visibleTicketSearchOptions.map((ticket, index) => (
+                    <button
+                      id={`${mobileTicketSearchListId}-${ticket.key}`}
+                      className={`tegel-header-ticket-search-option ${
+                        index === activeTicketSearchIndex ? "is-active" : ""
+                      }`}
+                      key={ticket.key}
+                      type="button"
+                      role="option"
+                      aria-selected={index === activeTicketSearchIndex}
+                      onMouseEnter={() => setActiveTicketSearchIndex(index)}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        openTicketSearchResult(ticket);
+                      }}
+                    >
+                      <span className="tegel-header-ticket-search-option-main">
+                        <strong>{ticket.key}</strong>
+                        <span>{ticket.title}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </form>
+          </div>
+        ) : null}
       </div>
       <TdsHeader aria-label="Nexus-support portal header">
-        <TdsHeaderHamburger slot="hamburger" tdsAriaLabel="Open navigation" onClick={onToggleMenu} />
+        <TdsHeaderHamburger
+          slot="hamburger"
+          tdsAriaLabel={isSideMenuOpen ? "Close navigation" : "Open navigation"}
+          onClick={onToggleMenu}
+        />
         <TdsHeaderTitle slot="title">
           <span className="tegel-header-brand">
             <img
@@ -16425,34 +16622,26 @@ function TopBar({
                 }}
                 onFocus={() => setIsTicketSearchOpen(true)}
                 onKeyDown={(event) => {
-                  if (event.key === "ArrowDown") {
-                    event.preventDefault();
-                    setIsTicketSearchOpen(true);
-                    setActiveTicketSearchIndex((current) =>
-                      Math.min(current + 1, Math.max(visibleTicketSearchOptions.length - 1, 0))
-                    );
-                    return;
-                  }
+                  handleListNavigationKeyDown(event, {
+                    length: visibleTicketSearchOptions.length,
+                    activeIndex: activeTicketSearchIndex,
+                    onChange: (index) => {
+                      setIsTicketSearchOpen(true);
+                      setActiveTicketSearchIndex(index);
+                    },
+                    onEscape: () => setIsTicketSearchOpen(false),
+                    onEnter: (index) => {
+                      if (!shouldShowTicketSearchList) {
+                        return;
+                      }
 
-                  if (event.key === "ArrowUp") {
-                    event.preventDefault();
-                    setActiveTicketSearchIndex((current) => Math.max(current - 1, 0));
-                    return;
-                  }
+                      const selectedTicket = visibleTicketSearchOptions[index];
 
-                  if (event.key === "Escape") {
-                    setIsTicketSearchOpen(false);
-                    return;
-                  }
-
-                  if (event.key === "Enter" && shouldShowTicketSearchList) {
-                    const selectedTicket = visibleTicketSearchOptions[activeTicketSearchIndex];
-
-                    if (selectedTicket) {
-                      event.preventDefault();
-                      openTicketSearchResult(selectedTicket);
+                      if (selectedTicket) {
+                        openTicketSearchResult(selectedTicket);
+                      }
                     }
-                  }
+                  });
                 }}
                 placeholder={t.shell.searchTicket}
                 autoComplete="off"
@@ -16564,7 +16753,18 @@ function TopBar({
             ) : null}
           </button>
         </TdsHeaderItem>
-        <TdsHeaderLauncherButton slot="end" tdsAriaLabel="Application switcher" />
+        <TdsHeaderItem className="tegel-header-command-item" slot="end">
+          <button
+            type="button"
+            className="tegel-header-button nx-workspace-search-trigger"
+            aria-label="Open command palette"
+            title="Command palette (Ctrl+K)"
+            onClick={onOpenCommandPalette}
+          >
+            <TegelIcon name="search" />
+            <span className="nx-workspace-kbd-hint">Ctrl+K</span>
+          </button>
+        </TdsHeaderItem>
         <TdsHeaderItem className="tegel-header-user-item" slot="end">
           <button
             ref={profileTriggerRef}
@@ -16716,26 +16916,35 @@ function TopBar({
           </header>
           <div className="tegel-profile-tabs" role="tablist" aria-label="Notification sections">
             <button
+              id={attentionTabId}
               className={activeNotificationTab === "attention" ? "is-active" : ""}
               type="button"
               role="tab"
               aria-selected={activeNotificationTab === "attention"}
+              aria-controls={attentionPanelId}
               onClick={() => setActiveNotificationTab("attention")}
             >
               Needs attention
             </button>
             <button
+              id={notificationsTabId}
               className={activeNotificationTab === "notifications" ? "is-active" : ""}
               type="button"
               role="tab"
               aria-selected={activeNotificationTab === "notifications"}
+              aria-controls={notificationsPanelId}
               onClick={() => setActiveNotificationTab("notifications")}
             >
               Notifications
             </button>
           </div>
           {activeNotificationTab === "attention" ? (
-            <div className="tegel-profile-tab-panel" role="tabpanel">
+            <div
+              className="tegel-profile-tab-panel"
+              role="tabpanel"
+              id={attentionPanelId}
+              aria-labelledby={attentionTabId}
+            >
               <div className="tegel-profile-settings-header">
                 <strong>Needs attention</strong>
                 <small>
@@ -16765,7 +16974,12 @@ function TopBar({
               )}
             </div>
           ) : (
-            <div className="tegel-profile-tab-panel" role="tabpanel">
+            <div
+              className="tegel-profile-tab-panel"
+              role="tabpanel"
+              id={notificationsPanelId}
+              aria-labelledby={notificationsTabId}
+            >
               <section className="tegel-header-notification-section">
                 <div className="tegel-profile-settings-header">
                   <strong>Latest notifications</strong>
@@ -18443,6 +18657,7 @@ function renderModule({
         role={role}
         selectedPersona={selectedPersona}
         tickets={filteredTickets}
+        onOpenModule={onOpenModule}
         onOpenNotification={onOpenNotification}
         onOpenTicketModule={onOpenTicketModule}
       />
@@ -18480,6 +18695,13 @@ function renderModule({
         onSyncJiraActivity={onSyncJiraActivity}
       />
     );
+  }
+
+  if (activeModule === "knowledge") {
+    const canWriteKnowledge =
+      role === "admin" || (governanceRoles as readonly RoleKey[]).includes(role);
+
+    return <KnowledgeExperience canWrite={canWriteKnowledge} />;
   }
 
   if (activeModule === "approvals") {
@@ -18713,10 +18935,10 @@ function WorkspaceEmptyPanel() {
   const empty = getTicketsEmptyCopy(false, locale);
 
   return (
-    <section className="panel workspace-empty-panel">
+    <WorkspacePanel className="workspace-empty-panel">
       <PanelHeader title={empty.title} description={empty.body} iconName="folder" />
       <EmptyState title={empty.title} body={t.copy.ticketsEmptyBody} />
-    </section>
+    </WorkspacePanel>
   );
 }
 
@@ -18724,14 +18946,14 @@ function ClarificationsEmptyPanel() {
   const { t } = useLocale();
 
   return (
-    <section className="panel workspace-empty-panel">
+    <WorkspacePanel className="workspace-empty-panel">
       <PanelHeader
         title={t.modules.clarifications}
         description={t.copy.clarificationsEmpty}
         iconName="message"
       />
       <EmptyState title={t.modules.clarifications} body={t.copy.clarificationsEmpty} />
-    </section>
+    </WorkspacePanel>
   );
 }
 
@@ -18739,10 +18961,10 @@ function EscalationsEmptyPanel() {
   const { t } = useLocale();
 
   return (
-    <section className="panel workspace-empty-panel">
+    <WorkspacePanel className="workspace-empty-panel">
       <PanelHeader title={t.modules.escalations} description={t.copy.escalations} iconName="warning" />
       <EmptyState title={t.modules.escalations} body={t.copy.escalations} />
-    </section>
+    </WorkspacePanel>
   );
 }
 
@@ -18868,14 +19090,14 @@ function AccessRestrictedPanel({ activeModule, role }: { activeModule: ModuleKey
   const moduleLabel = navItems.find((item) => item.key === activeModule)?.label ?? activeModule;
 
   return (
-    <section className="panel access-restricted-panel">
+    <WorkspacePanel className="access-restricted-panel">
       <PanelHeader
         title="Role visibility"
         description={`${moduleLabel} is not visible for ${getAdminRoleLabel(role)}.`}
         iconName="privacy"
       />
-      <p>Switch to a role with access or use the visible modules in the sidebar.</p>
-    </section>
+      <p className="nx-body">Switch to a role with access or use the visible modules in the sidebar.</p>
+    </WorkspacePanel>
   );
 }
 
@@ -21268,7 +21490,7 @@ function useReleasePlanJiraMetadata(config: AdminConfig, tickets: Ticket[]): Rel
       return;
     }
 
-    const localToken = "platform-managed";
+    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localToken) {
       setJiraMetadata(getEmptyReleasePlanJiraMetadata());
@@ -21418,6 +21640,7 @@ function DashboardOverview({
   role,
   selectedPersona,
   tickets,
+  onOpenModule,
   onOpenNotification,
   onOpenTicketModule
 }: {
@@ -21426,13 +21649,13 @@ function DashboardOverview({
   role: RoleKey;
   selectedPersona: RolePersonaOption;
   tickets: Ticket[];
+  onOpenModule: (module: ModuleKey) => void;
   onOpenNotification: (notification: NotificationItem) => void;
   onOpenTicketModule: (ticketKey: string, module: ModuleKey, tab?: DetailTab) => void;
 }) {
-  const totalTickets = tickets.length;
-  const openTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) !== "done").length;
-  const doneTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) === "done").length;
-  const blockedTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) === "blocked").length;
+  const { preferences: workspacePreferences } = useWorkspacePreferences();
+  const openTickets = tickets.filter((ticket) => getTicketQueueBucket(ticket) !== "done");
+  const blockedTickets = openTickets.filter((ticket) => getTicketQueueBucket(ticket) === "blocked");
   const slaCounts = countDashboardTicketsBySlaState(tickets);
   const approvalItems = getApprovalQueueItems(tickets, config, selectedPersona).filter(
     (item) => item.actionable && item.step.status !== "blocked"
@@ -21450,7 +21673,6 @@ function DashboardOverview({
       ticketUsesJira(config, ticket) &&
       dashboardImportantJiraStatuses.has(getTicketJiraFollowUpStatus(ticket))
   );
-  const productRows = getDashboardTopProductRows(tickets);
   const versionDateLookup = useReleasePlanVersionDateLookup(config, tickets);
   const releaseRows = tickets
     .map((ticket) => getReleasePlanTicket(ticket, versionDateLookup, config))
@@ -21479,401 +21701,230 @@ function DashboardOverview({
       (left, right) =>
         left.sortDate - right.sortDate || left.releaseVersion.localeCompare(right.releaseVersion)
     )
-    .slice(0, 4);
-  const attentionRows: Array<{
-    id: string;
-    tone: "critical" | "warning" | "info";
-    title: string;
-    summary: string;
-    meta: string;
-    ticketKey: string;
-    module: ModuleKey;
-    tab?: DetailTab;
-  }> = (() => {
-    const candidates: Array<{
-      id: string;
-      tone: "critical" | "warning" | "info";
-      title: string;
-      summary: string;
-      meta: string;
-      ticketKey: string;
-      module: ModuleKey;
-      tab?: DetailTab;
-      priority: number;
-      sortTime: number;
-    }> = [
+    .slice(0, 5);
+
+  const criticalAlerts = (() => {
+    const candidates = [
       ...tickets
         .filter((ticket) => ticket.slaState === "breach")
         .map((ticket) => ({
           id: `sla-${ticket.key}`,
-          tone: "critical" as const,
-          title: "SLA breach",
+          title: `${ticket.key} · SLA breach`,
           summary: ticket.title,
           meta: ticket.slaLabel,
+          tone: "danger" as const,
           ticketKey: ticket.key,
           module: "tickets" as ModuleKey,
           tab: "Overview" as DetailTab,
           priority: 0,
           sortTime: parseTicketTimestamp(ticket.updatedAt)
         })),
-      ...clarificationItems.map(({ ticket, thread }) => ({
-        id: `clarification-${ticket.key}-${thread.id}`,
-        tone: "warning" as const,
-        title: "Clarification",
-        summary: thread.question,
-        meta: thread.assignedTo,
-        ticketKey: ticket.key,
-        module: "clarifications" as ModuleKey,
-        priority: 1,
-        sortTime: parseTicketTimestamp(ticket.updatedAt)
-      })),
-      ...approvalItems.map((item) => ({
-        id: `approval-${item.ticket.key}-${item.step.id}`,
-        tone: "info" as const,
-        title: "Approval",
-        summary: item.step.label,
-        meta: item.step.ownerName,
-        ticketKey: item.ticket.key,
-        module: "approvals" as ModuleKey,
-        priority: 2,
-        sortTime: parseTicketTimestamp(item.step.statusUpdatedAt ?? item.step.dueAt ?? item.ticket.updatedAt)
-      })),
-      ...importantJiraTickets.map((ticket) => {
-        const followUpStatus = getTicketJiraFollowUpStatus(ticket);
-        const isCriticalJiraStatus = getJiraFollowUpStatusTone(followUpStatus) === "critical";
-
-        return {
+      ...importantJiraTickets
+        .filter((ticket) => getJiraFollowUpStatusTone(getTicketJiraFollowUpStatus(ticket)) === "critical")
+        .map((ticket) => ({
           id: `jira-${ticket.key}`,
-          tone: isCriticalJiraStatus ? ("critical" as const) : ("warning" as const),
-          title: "Jira follow-up",
+          title: `${ticket.key} · Jira follow-up`,
           summary: ticket.title,
-          meta: getJiraFollowUpStatusLabel(followUpStatus),
+          meta: getJiraFollowUpStatusLabel(getTicketJiraFollowUpStatus(ticket)),
+          tone: "danger" as const,
           ticketKey: ticket.key,
           module: "jira" as ModuleKey,
-          priority: isCriticalJiraStatus ? 1 : 3,
+          tab: undefined as DetailTab | undefined,
+          priority: 1,
           sortTime: parseTicketTimestamp(ticket.jiraDraft.followUpUpdatedAt ?? ticket.updatedAt)
-        };
-      })
+        }))
     ];
 
-    const seenTicketKeys = new Set<string>();
+    const seen = new Set<string>();
 
     return candidates
       .sort((left, right) => left.priority - right.priority || right.sortTime - left.sortTime)
       .filter((item) => {
-        if (seenTicketKeys.has(item.ticketKey)) {
+        if (seen.has(item.ticketKey)) {
           return false;
         }
-
-        seenTicketKeys.add(item.ticketKey);
+        seen.add(item.ticketKey);
         return true;
       })
+      .slice(0, 8)
       .map((item) => ({
         id: item.id,
-        tone: item.tone,
         title: item.title,
         summary: item.summary,
         meta: item.meta,
-        ticketKey: item.ticketKey,
-        module: item.module,
-        tab: item.tab
+        tone: item.tone,
+        onSelect: () => onOpenTicketModule(item.ticketKey, item.module, item.tab)
       }));
   })();
-  const overviewMetrics = [
+
+  const recentTickets = resolveRecentTicketItems(workspacePreferences, openTickets, 5);
+  const continueWorkingSource = recentTickets.length > 0 ? recentTickets : [...openTickets]
+    .sort((left, right) => parseTicketTimestamp(right.updatedAt) - parseTicketTimestamp(left.updatedAt))
+    .slice(0, 5);
+  const continueWorking = continueWorkingSource.map((ticket) => ({
+      id: ticket.key,
+      title: ticket.key,
+      summary: ticket.title,
+      meta: getTicketCurrentStatusLabel(ticket),
+      onSelect: () => onOpenTicketModule(ticket.key, "tickets", "Overview")
+    }));
+
+  const assignedTickets = openTickets
+    .filter((ticket) => {
+      if (role === "requester") {
+        return ticketWasSubmittedByPersona(ticket, selectedPersona);
+      }
+
+      return (
+        personaTextMatchesCandidate(selectedPersona, getTicketResourceName(ticket)) ||
+        approvalItems.some((item) => item.ticket.key === ticket.key) ||
+        clarificationItems.some((item) => item.ticket.key === ticket.key)
+      );
+    })
+    .sort((left, right) => parseTicketTimestamp(right.updatedAt) - parseTicketTimestamp(left.updatedAt))
+    .slice(0, 8)
+    .map((ticket) => ({
+      id: `assigned-${ticket.key}`,
+      title: ticket.key,
+      summary: ticket.title,
+      meta: getTicketResourceName(ticket),
+      tone:
+        ticket.slaState === "breach"
+          ? ("danger" as const)
+          : ticket.slaState === "watch"
+            ? ("warning" as const)
+            : undefined,
+      onSelect: () => onOpenTicketModule(ticket.key, "tickets", "Overview")
+    }));
+
+  const canOpenEscalations = personaCanAccessModule(selectedPersona, "escalations");
+  const escalationCount = canOpenEscalations
+    ? tickets.reduce(
+        (count, ticket) =>
+          count + ticket.escalations.filter((escalation) => escalation.status !== "resolved").length,
+        0
+      )
+    : 0;
+
+  const queues = [
     {
-      label: role === "requester" ? "My tickets" : "Visible tickets",
-      value: formatCount(totalTickets),
-      detail: `${formatCount(openTickets)} open Â· ${formatCount(doneTickets)} done`,
-      state: "healthy" as SlaState,
-      iconName: "folder" as TegelIconName
-    },
-    {
-      label: "SLA health",
-      value: formatCount(slaCounts.breach),
-      detail:
-        slaCounts.breach > 0 ? "Breaches need action" : `${formatCount(slaCounts.watch)} watched Â· no breach`,
-      state:
-        slaCounts.breach > 0
-          ? ("breach" as SlaState)
-          : slaCounts.watch > 0
-            ? ("watch" as SlaState)
-            : ("healthy" as SlaState),
-      iconName: "warning" as TegelIconName
-    },
-    {
-      label: "Clarifications",
-      value: formatCount(clarificationItems.length),
-      detail: "Waiting for role answer",
-      state: clarificationItems.length > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
-      iconName: "message" as TegelIconName
-    },
-    {
-      label: "Notifications",
-      value: formatCount(unreadNotifications.length),
-      detail: "Unread role-visible updates",
-      state: unreadNotifications.length > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
-      iconName: "notification" as TegelIconName
-    },
-    {
+      id: "approvals",
       label: "Approvals",
-      value: formatCount(approvalItems.length),
-      detail: "Actionable gates",
-      state: approvalItems.length > 0 ? ("watch" as SlaState) : ("healthy" as SlaState),
-      iconName: "document_check" as TegelIconName
+      count: approvalItems.length,
+      description: "Actionable gates for your access",
+      tone: approvalItems.length > 0 ? ("warning" as const) : ("neutral" as const),
+      onSelect: () => onOpenModule("approvals")
     },
     {
+      id: "clarifications",
+      label: "Clarifications",
+      count: clarificationItems.length,
+      description: "Waiting for your role",
+      tone: clarificationItems.length > 0 ? ("warning" as const) : ("neutral" as const),
+      onSelect: () => onOpenModule("clarifications")
+    },
+    {
+      id: "jira",
+      label: "Jira follow-ups",
+      count: importantJiraTickets.length,
+      description: "Important engineering status",
+      tone: importantJiraTickets.length > 0 ? ("info" as const) : ("neutral" as const),
+      onSelect: () => onOpenModule("jira")
+    },
+    ...(canOpenEscalations
+      ? [
+          {
+            id: "escalations",
+            label: "Escalations",
+            count: escalationCount,
+            description: "Active escalations in scope",
+            tone: escalationCount > 0 ? ("danger" as const) : ("neutral" as const),
+            onSelect: () => onOpenModule("escalations")
+          }
+        ]
+      : [
+          {
+            id: "tickets",
+            label: "Open tickets",
+            count: openTickets.length,
+            description: "All open work in your scope",
+            tone: "neutral" as const,
+            onSelect: () => onOpenModule("tickets")
+          }
+        ])
+  ];
+
+  const activity = notifications.slice(0, 8).map((notification) => ({
+    id: notification.id,
+    title: notification.title,
+    summary: notification.body,
+    meta: notification.ticketKey,
+    tone: notification.unread ? ("info" as const) : ("neutral" as const),
+    onSelect: () => onOpenNotification(notification)
+  }));
+
+  const metrics = [
+    {
+      id: "open",
+      label: role === "requester" ? "My open tickets" : "Open tickets",
+      value: formatCount(openTickets.length),
+      hint: `${formatCount(blockedTickets.length)} blocked`,
+      tone: blockedTickets.length > 0 ? ("warning" as const) : ("neutral" as const),
+      onSelect: () => onOpenModule("tickets")
+    },
+    {
+      id: "breaches",
+      label: "SLA breaches",
+      value: formatCount(slaCounts.breach),
+      hint: slaCounts.breach > 0 ? "Needs immediate action" : `${formatCount(slaCounts.watch)} on watch`,
+      tone:
+        slaCounts.breach > 0
+          ? ("danger" as const)
+          : slaCounts.watch > 0
+            ? ("warning" as const)
+            : ("success" as const),
+      onSelect: () => onOpenModule("tickets")
+    },
+    {
+      id: "blocked",
       label: "Blocked work",
-      value: formatCount(blockedTickets),
-      detail: `${getDashboardPercent(blockedTickets, totalTickets)}% of visible work`,
-      state: blockedTickets > 0 ? ("breach" as SlaState) : ("healthy" as SlaState),
-      iconName: "route" as TegelIconName
+      value: formatCount(blockedTickets.length),
+      hint: `${getDashboardPercent(blockedTickets.length, tickets.length || 1)}% of visible work`,
+      tone: blockedTickets.length > 0 ? ("danger" as const) : ("success" as const),
+      onSelect: () => onOpenModule("tickets")
+    },
+    {
+      id: "unread",
+      label: "Unread notifications",
+      value: formatCount(unreadNotifications.length),
+      hint: "Role-visible updates",
+      tone: unreadNotifications.length > 0 ? ("info" as const) : ("neutral" as const),
+      onSelect: () => onOpenModule("notifications")
     }
   ];
 
+  const reportRows = releaseTimeline.map((release) => ({
+    id: release.releaseVersion,
+    primary: release.releaseVersion,
+    secondary: `${formatCount(release.tickets)} ticket${release.tickets === 1 ? "" : "s"}`,
+    meta: `Pre-prod ${formatReleasePlanDate(release.preprodDate)} · Prod ${formatReleasePlanDate(release.prodDate)}`
+  }));
+
   return (
-    <div className="dashboard-overview-layout">
-      <section className="dashboard-command-panel">
-        <div>
-          <span>Operational overview</span>
-          <h2>{role === "requester" ? "Your support portfolio at a glance" : "Role workload at a glance"}</h2>
-          <p>
-            SLA, clarifications, approvals, notifications, releases, and blocked work summarized for quick
-            review.
-          </p>
-        </div>
-        <div className="dashboard-command-actions">
-          <button
-            className="secondary-button"
-            disabled={!unreadNotifications[0]}
-            type="button"
-            onClick={() => unreadNotifications[0] && onOpenNotification(unreadNotifications[0])}
-          >
-            <TegelIcon name="notification" size="16px" />
-            Open latest notice
-          </button>
-          <button
-            className="primary-button"
-            disabled={!attentionRows[0]}
-            type="button"
-            onClick={() =>
-              attentionRows[0] &&
-              onOpenTicketModule(attentionRows[0].ticketKey, attentionRows[0].module, attentionRows[0].tab)
-            }
-          >
-            <TegelIcon name="route" size="16px" />
-            Open top action
-          </button>
-        </div>
-      </section>
-
-      <section className="dashboard-overview-metrics" aria-label="Dashboard overview metrics">
-        {overviewMetrics.map((item) => (
-          <article className={`dashboard-overview-metric state-${item.state}`} key={item.label}>
-            <div>
-              <span>{item.label}</span>
-              <TegelIcon name={item.iconName} size="18px" />
-            </div>
-            <strong>{item.value}</strong>
-            <p>{item.detail}</p>
-          </article>
-        ))}
-      </section>
-
-      <div className="dashboard-overview-grid">
-        <div className="dashboard-overview-column">
-          <section className="panel dashboard-health-panel">
-            <PanelHeader
-              title="Health overview"
-              description="SLA and workflow distribution across visible work."
-              iconName="dashboard"
-            />
-            <div className="dashboard-health-split">
-              <div className="dashboard-ring-card">
-                <div
-                  className="dashboard-ring"
-                  style={
-                    {
-                      "--done": `${getDashboardPercent(doneTickets, totalTickets) * 3.6}deg`,
-                      "--blocked": `${getDashboardPercent(blockedTickets, totalTickets) * 3.6}deg`
-                    } as CSSProperties
-                  }
-                  aria-label={`${getDashboardPercent(doneTickets, totalTickets)} percent done`}
-                >
-                  <strong>{getDashboardPercent(doneTickets, totalTickets)}%</strong>
-                  <span>done</span>
-                </div>
-                <p>{formatCount(openTickets)} open items remain in scope.</p>
-              </div>
-              <div className="dashboard-distribution-list">
-                {(["healthy", "watch", "breach", "paused"] as SlaState[]).map((state) => (
-                  <div className={`dashboard-distribution-row state-${state}`} key={state}>
-                    <div>
-                      <span>
-                        {state === "healthy"
-                          ? "Healthy"
-                          : state === "watch"
-                            ? "Watch"
-                            : state === "breach"
-                              ? "Breach"
-                              : "Paused"}
-                      </span>
-                      <strong>{formatCount(slaCounts[state])}</strong>
-                    </div>
-                    <div className="dashboard-distribution-track">
-                      <span style={{ width: `${getDashboardPercent(slaCounts[state], totalTickets)}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel dashboard-portfolio-panel">
-            <PanelHeader
-              title="Portfolio mix"
-              description="Where visible work is concentrated."
-              iconName="folder"
-            />
-            <div className="dashboard-product-list">
-              {productRows.length === 0 ? (
-                <EmptyState
-                  title="No portfolio data"
-                  body="Create or import tickets to populate product distribution."
-                />
-              ) : (
-                productRows.map((row) => (
-                  <div className="dashboard-product-row" key={row.label}>
-                    <div>
-                      <strong>{row.label}</strong>
-                      <span>
-                        {formatCount(row.count)} tickets Â· {formatCount(row.blocked)} blocked
-                      </span>
-                    </div>
-                    <div className="dashboard-product-track">
-                      <span style={{ width: `${getDashboardPercent(row.count, totalTickets)}%` }} />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-
-          <section className="panel dashboard-release-panel">
-            <PanelHeader
-              title="Release snapshot"
-              description="Upcoming release dates from planned tickets."
-              iconName="calendar"
-            />
-            {releaseTimeline.length === 0 ? (
-              <EmptyState
-                title="No release data"
-                body="Tickets with fix versions will appear in this release summary."
-              />
-            ) : (
-              <div className="dashboard-release-list">
-                {releaseTimeline.map((release) => (
-                  <div className="dashboard-release-row" key={release.releaseVersion}>
-                    <div>
-                      <strong>{release.releaseVersion}</strong>
-                      <span>
-                        {formatCount(release.tickets)} ticket{release.tickets === 1 ? "" : "s"}
-                      </span>
-                    </div>
-                    <div>
-                      <span>Pre-prod {formatReleasePlanDate(release.preprodDate)}</span>
-                      <span>Prod {formatReleasePlanDate(release.prodDate)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-
-        <div className="dashboard-overview-column">
-          <section className="panel dashboard-attention-panel">
-            <PanelHeader
-              title="Needs attention"
-              description="The highest-priority items to inspect first."
-              iconName="warning"
-            />
-            {attentionRows.length === 0 ? (
-              <EmptyState
-                title="No urgent actions"
-                body="SLA, clarifications, approvals, and Jira follow-up are currently clear."
-              />
-            ) : (
-              <div
-                className="dashboard-attention-table-scroll"
-                role="region"
-                aria-label="Needs attention items"
-              >
-                <table className="dashboard-attention-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">Type</th>
-                      <th scope="col">Ticket</th>
-                      <th scope="col">Owner / status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attentionRows.map((item) => (
-                      <tr className={`tone-${item.tone}`} key={item.id}>
-                        <td data-label="Type">
-                          <span className="dashboard-attention-type">{item.title}</span>
-                        </td>
-                        <td data-label="Ticket">
-                          <button
-                            className="dashboard-attention-ticket"
-                            type="button"
-                            onClick={() => onOpenTicketModule(item.ticketKey, item.module, item.tab)}
-                          >
-                            <strong>{item.ticketKey}</strong>
-                            <span>{item.summary}</span>
-                          </button>
-                        </td>
-                        <td data-label="Owner / status">
-                          <span className="dashboard-attention-meta">{item.meta || "-"}</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-
-          <section className="panel dashboard-notification-panel">
-            <PanelHeader
-              title="Latest notifications"
-              description="Recent unread and role-visible activity."
-              iconName="notification"
-            />
-            {notifications.length === 0 ? (
-              <EmptyState
-                title="No notifications"
-                body="Role-visible updates will appear here when workflow activity occurs."
-              />
-            ) : (
-              <div className="dashboard-notification-list">
-                {notifications.slice(0, 5).map((notification) => (
-                  <button
-                    className={notification.unread ? "is-unread" : ""}
-                    key={notification.id}
-                    onClick={() => onOpenNotification(notification)}
-                    type="button"
-                  >
-                    <span>{notification.title}</span>
-                    <strong>{notification.ticketKey}</strong>
-                    <small>{notification.body}</small>
-                  </button>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      </div>
-    </div>
+    <CommandCenter
+      continueWorking={continueWorking}
+      criticalAlerts={criticalAlerts}
+      assignedTickets={assignedTickets}
+      queues={queues}
+      activity={activity}
+      metrics={metrics}
+      reportRows={reportRows}
+      onOpenFirstCritical={
+        criticalAlerts.length > 0 ? () => criticalAlerts[0]?.onSelect?.() : undefined
+      }
+      onOpenNotifications={() => onOpenModule("notifications")}
+      onOpenReleasePlan={() => onOpenModule("releasePlan")}
+    />
   );
 }
 
@@ -23190,24 +23241,28 @@ function TicketListWorkspace({
 
   const filteredRows = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-    const matchesSearch = (row: TicketListRow) =>
-      [
-        row.ticket.key,
-        row.ticket.title,
-        row.ticket.product,
-        row.ticket.pru,
-        row.ticket.module,
-        row.typeLabel,
-        row.statusLabel,
-        row.submitter
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(normalizedSearch);
 
     return rows.filter((row) => {
-      if (normalizedSearch && !matchesSearch(row)) {
-        return false;
+      if (normalizedSearch) {
+        const haystack = [
+          getTicketSearchHaystack({
+            key: row.ticket.key,
+            title: row.ticket.title,
+            product: row.ticket.product,
+            module: row.ticket.module,
+            site: row.ticket.site,
+            typeLabel: row.typeLabel,
+            statusLabel: row.statusLabel
+          }),
+          row.ticket.pru,
+          row.submitter
+        ]
+          .join(" ")
+          .toLowerCase();
+
+        if (!haystack.includes(normalizedSearch)) {
+          return false;
+        }
       }
 
       if (statusFilter !== "all" && row.statusLabel !== statusFilter) {
@@ -23316,15 +23371,11 @@ function TicketListWorkspace({
   if (selectedTicket && isDetailOpen) {
     return (
       <div className="ticket-list-workspace ticket-list-detail-mode">
-        <div className="ticket-detail-toolbar">
-          <button className="secondary-button" type="button" onClick={() => onDetailOpenChange(false)}>
-            <TegelIcon name="arrow_left" size="16px" />
-            Back to ticket list
-          </button>
-          <span>
-            {selectedTicket.key} Â· {selectedTicket.title}
-          </span>
-        </div>
+        <WorkItemToolbar
+          onBack={() => onDetailOpenChange(false)}
+          backLabel="Back to ticket list"
+          context={`${selectedTicket.key} · ${selectedTicket.title}`}
+        />
         <TicketDetail
           activeTab={activeTab}
           config={config}
@@ -23353,101 +23404,71 @@ function TicketListWorkspace({
   }
 
   return (
-    <div className="ticket-list-workspace">
-      <section className="ticket-list-filter-card" aria-labelledby="ticket-list-filters-title">
-        <div className="ticket-list-filter-heading">
-          <h2 id="ticket-list-filters-title">Find tickets</h2>
-          <p>
-            {role === "requester"
+    <WorkItemList
+      aria-label="Support tickets"
+      filters={
+        <WorkItemFilters
+          title="Find tickets"
+          description={
+            role === "requester"
               ? "Dashboard shows your submitted tickets. This list lets you search across all support tickets."
-              : "Use filters to narrow the tickets visible to your current role."}
-          </p>
-        </div>
-        <div className="ticket-list-filters-grid">
-          <label className="ticket-list-field">
-            <span>Search</span>
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Ticket number, title, product, submitter"
-            />
-          </label>
-          <label className="ticket-list-field">
-            <span>Status</span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              {statusOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="ticket-list-field">
-            <span>Type</span>
-            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-              {typeOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="ticket-list-field">
-            <span>Priority</span>
-            <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}>
-              {priorityOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="ticket-list-field">
-            <span>Product</span>
-            <select value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
-              {productOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="ticket-list-field">
-            <span>Submitted by</span>
-            <select value={submitterFilter} onChange={(event) => setSubmitterFilter(event.target.value)}>
-              {submitterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="ticket-list-field ticket-list-sort-field">
-            <span>Sort by</span>
-            <select value={sortBy} onChange={(event) => setSortBy(event.target.value as TicketListSortKey)}>
-              <option value="updatedAt">Updated date</option>
-              <option value="createdAt">Created date</option>
-              <option value="ticketKey">Ticket number</option>
-              <option value="priority">Priority</option>
-              <option value="status">Status</option>
-            </select>
-          </label>
-        </div>
-        <div className="ticket-list-filter-actions">
-          <button
-            aria-pressed={mineOnly}
-            className={`secondary-button ${mineOnly ? "is-active" : ""}`}
-            type="button"
-            onClick={() => setMineOnly((isActive) => !isActive)}
-          >
-            {role === "requester" ? "Only my tickets" : "My raised tickets"}
-          </button>
-          <button className="secondary-button" type="button" onClick={resetFilters}>
-            Reset filters
-          </button>
-        </div>
-      </section>
-
+              : "Use filters to narrow the tickets visible to your current role."
+          }
+          query={search}
+          onQueryChange={setSearch}
+          queryPlaceholder="Ticket number, title, product, submitter"
+          facets={[
+            {
+              id: "status",
+              label: "Status",
+              value: statusFilter,
+              options: statusOptions,
+              onChange: setStatusFilter
+            },
+            {
+              id: "type",
+              label: "Type",
+              value: typeFilter,
+              options: typeOptions,
+              onChange: setTypeFilter
+            },
+            {
+              id: "priority",
+              label: "Priority",
+              value: priorityFilter,
+              options: priorityOptions,
+              onChange: setPriorityFilter
+            },
+            {
+              id: "product",
+              label: "Product",
+              value: productFilter,
+              options: productOptions,
+              onChange: setProductFilter
+            },
+            {
+              id: "submitter",
+              label: "Submitted by",
+              value: submitterFilter,
+              options: submitterOptions,
+              onChange: setSubmitterFilter
+            }
+          ]}
+          sortBy={sortBy}
+          sortOptions={[
+            { value: "updatedAt", label: "Updated" },
+            { value: "createdAt", label: "Created" },
+            { value: "priority", label: "Priority" },
+            { value: "ticketKey", label: "Ticket key" }
+          ]}
+          onSortChange={(value) => setSortBy(value as TicketListSortKey)}
+          mineOnly={mineOnly}
+          mineOnlyLabel={role === "requester" ? "Only my tickets" : "My raised tickets"}
+          onMineOnlyChange={setMineOnly}
+          onReset={resetFilters}
+        />
+      }
+    >
       <section className="ticket-list-table-card" aria-labelledby="ticket-list-table-title">
         <header className="ticket-list-table-header">
           <div>
@@ -23708,7 +23729,7 @@ function TicketListWorkspace({
           </div>
         )}
       </section>
-    </div>
+    </WorkItemList>
   );
 }
 
@@ -23917,82 +23938,71 @@ function TicketDetail({
   const effectiveActiveTab = ticketHasJiraTab || activeTab !== "Jira" ? activeTab : "Overview";
 
   return (
-    <section className="panel ticket-detail">
-      <div className="ticket-hero">
-        <div>
-          <span className="ticket-key">{ticket.key}</span>
-          <h2>{ticket.title}</h2>
-          <RichTextContent value={ticket.description} fallback="No description provided." compact />
-        </div>
-        <div className="ticket-hero-actions">
-          <div className="ticket-badges" aria-label="Ticket status">
-            <TegelTag text={currentStatusLabel} variant={getStatusColorVariant(config, currentStatusLabel)} />
-            <TegelTag
-              text={ticket.priority}
-              variant={
-                getPriorityToneClassName(ticket.priority) === "critical" ||
-                getPriorityToneClassName(ticket.priority) === "high"
-                  ? "error"
-                  : getPriorityToneClassName(ticket.priority) === "medium"
-                    ? "warning"
+    <WorkItemDetails
+      itemKey={ticket.key}
+      title={ticket.title}
+      summary={<RichTextContent value={ticket.description} fallback="No description provided." compact />}
+      badges={
+        <>
+          <TegelTag text={currentStatusLabel} variant={getStatusColorVariant(config, currentStatusLabel)} />
+          <TegelTag
+            text={ticket.priority}
+            variant={
+              getPriorityToneClassName(ticket.priority) === "critical" ||
+              getPriorityToneClassName(ticket.priority) === "high"
+                ? "error"
+                : getPriorityToneClassName(ticket.priority) === "medium"
+                  ? "warning"
+                  : "neutral"
+            }
+          />
+          <TegelTag
+            text={`${ticket.risk} risk`}
+            variant={
+              ticket.risk === "Critical" || ticket.risk === "High"
+                ? "error"
+                : ticket.risk === "Medium"
+                  ? "warning"
+                  : "success"
+            }
+          />
+          <TegelTag
+            text={ticket.slaLabel}
+            variant={
+              ticket.slaState === "breach"
+                ? "error"
+                : ticket.slaState === "watch"
+                  ? "warning"
+                  : ticket.slaState === "healthy"
+                    ? "success"
                     : "neutral"
-              }
-            />
-            <TegelTag
-              text={`${ticket.risk} risk`}
-              variant={
-                ticket.risk === "Critical" || ticket.risk === "High"
-                  ? "error"
-                  : ticket.risk === "Medium"
-                    ? "warning"
-                    : "success"
-              }
-            />
-            <TegelTag
-              text={ticket.slaLabel}
-              variant={
-                ticket.slaState === "breach"
-                  ? "error"
-                  : ticket.slaState === "watch"
-                    ? "warning"
-                    : ticket.slaState === "healthy"
-                      ? "success"
-                      : "neutral"
-              }
-            />
-            {ticketHasJiraTab && ticket.relatedJiraKey ? (
-              <JiraIssueLink
-                config={config}
-                jiraKey={ticket.relatedJiraKey}
-                className="jira-issue-link ticket-jira-link"
-              />
-            ) : null}
-          </div>
-          {canReopenTicket ? (
-            <TegelButton
-              className="ticket-reopen-button"
-              iconName="history"
-              text="Reopen ticket"
-              variant="secondary"
-              onClick={() => onReopenTicket(ticket.key)}
+            }
+          />
+          {ticketHasJiraTab && ticket.relatedJiraKey ? (
+            <JiraIssueLink
+              config={config}
+              jiraKey={ticket.relatedJiraKey}
+              className="jira-issue-link ticket-jira-link"
             />
           ) : null}
-        </div>
-      </div>
-      <div className="tabs" role="tablist" aria-label="Ticket detail sections">
-        {visibleTabItems.map((tab) => (
-          <button
-            className={effectiveActiveTab === tab ? "is-active" : ""}
-            key={tab}
-            onClick={() => onTabChange(tab)}
-            type="button"
-            role="tab"
-            aria-selected={effectiveActiveTab === tab}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
+        </>
+      }
+      actions={
+        canReopenTicket ? (
+          <TegelButton
+            className="ticket-reopen-button"
+            iconName="history"
+            text="Reopen ticket"
+            variant="secondary"
+            onClick={() => onReopenTicket(ticket.key)}
+          />
+        ) : null
+      }
+      tabs={visibleTabItems.map((tab) => ({ id: tab, label: tab }))}
+      activeTabId={effectiveActiveTab}
+      onTabChange={(tabId) => onTabChange(tabId as DetailTab)}
+      aria-label={`Ticket ${ticket.key}`}
+    >
       <p className="tab-helper">
         {effectiveActiveTab === "Comments" && !ticketHasJiraTab
           ? "Public, internal, architecture, and system comments visible to this role."
@@ -24083,7 +24093,7 @@ function TicketDetail({
           />
         ) : null}
       </div>
-    </section>
+    </WorkItemDetails>
   );
 }
 
@@ -24343,6 +24353,11 @@ function OverviewPanel({
 
   return (
     <div className="overview-grid">
+      <AssignmentPanel
+        title="Ownership"
+        owner={{ name: getTicketResourceName(ticket) }}
+        submitter={{ name: getTicketSubmitter(ticket) }}
+      />
       <div className="field-list">
         {[
           ["Type", getTicketTypeLabel(ticket.typeId)],
@@ -24387,26 +24402,18 @@ function OverviewPanel({
   );
 }
 
-function TicketLifecycleStrip({ ticket, config }: { ticket: Ticket; config: AdminConfig }) {
+function TicketLifecycleStrip({ ticket }: { ticket: Ticket; config?: AdminConfig }) {
   const steps = getTicketLifecycleSteps(ticket);
 
   return (
-    <div className="ticket-lifecycle-strip" aria-label="Ticket lifecycle progress">
-      {steps.map((step, index) => (
-        <div className={`ticket-lifecycle-step lifecycle-${step.state}`} key={step.label}>
-          <span className="ticket-lifecycle-index">{index + 1}</span>
-          <div className="ticket-lifecycle-copy">
-            <strong>{step.label}</strong>
-            <small>{step.detail}</small>
-          </div>
-          <span
-            className={`admin-pill tag-variant-${getStatusColorVariant(config, step.status)} lifecycle-pill lifecycle-pill-${step.state}`}
-          >
-            {step.status}
-          </span>
-        </div>
-      ))}
-    </div>
+    <StatusTimeline
+      steps={steps.map((step, index) => ({
+        id: `${step.label}-${index}`,
+        label: step.label,
+        detail: step.detail,
+        state: step.state
+      }))}
+    />
   );
 }
 
@@ -25562,7 +25569,7 @@ function JiraSyncPanel({
       return;
     }
 
-    const localToken = "platform-managed";
+    const localToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localToken) {
       setJiraFieldMetadata({
@@ -25780,6 +25787,7 @@ function JiraSyncPanel({
     setJiraCreateError("");
 
     try {
+      const localOpenAiKey = readLocalIntegrationSecrets().openAiApiKey?.trim() ?? "";
       const response = await fetch("/api/integrations/ai/generate-text", {
         method: "POST",
         headers: {
@@ -25844,6 +25852,8 @@ function JiraSyncPanel({
   }
 
   function getGitLabActionConfigForReview(): GitLabActionConfig {
+    const localGitLabToken = readLocalIntegrationSecrets().gitlabToken?.trim() ?? "";
+
     return buildGitLabActionConfigFromAdmin(config);
   }
 
@@ -25861,6 +25871,7 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: getGitLabActionConfigForReview(),
           query
         })
       });
@@ -25913,6 +25924,7 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: getGitLabActionConfigForReview(),
           projectId,
           search,
           ref:
@@ -25974,6 +25986,7 @@ function JiraSyncPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: getGitLabActionConfigForReview(),
           projectId: project.id,
           filePath,
           ref
@@ -26043,6 +26056,8 @@ function JiraSyncPanel({
       setGitLabReviewSuccess("");
       return;
     }
+
+    const localOpenAiKey = readLocalIntegrationSecrets().openAiApiKey?.trim() ?? "";
 
     setGitLabReviewState("reviewing");
     setGitLabReviewError("");
@@ -26212,7 +26227,7 @@ function JiraSyncPanel({
       return;
     }
 
-    const localJiraToken = "platform-managed";
+    const localJiraToken = readLocalIntegrationSecrets().jiraToken?.trim() ?? "";
 
     if (!localJiraToken) {
       setJiraStatusSyncError(
@@ -28229,6 +28244,7 @@ function EscalationPanel({
     }));
 
     try {
+      const localOpenAiKey = readLocalIntegrationSecrets().openAiApiKey?.trim() ?? "";
       const response = await fetch("/api/integrations/ai/generate-text", {
         method: "POST",
         headers: {
@@ -34224,6 +34240,22 @@ interface DatabaseQueryResult {
   statementType: string;
 }
 
+type LocalIntegrationSecrets = {
+  jiraToken?: string;
+  openAiApiKey?: string;
+  aiTestPrompt?: string;
+  gitlabToken?: string;
+  entraClientId?: string;
+  entraTenantId?: string;
+  entraRedirectUri?: string;
+  smtpUsername?: string;
+  smtpPassword?: string;
+  smtpTestRecipient?: string;
+  smtpTestSubject?: string;
+  smtpTestBody?: string;
+  updatedAt?: string;
+};
+
 type PruEditRef = {
   productId: string;
   pruId: string;
@@ -34800,6 +34832,21 @@ function getIntegrationActionErrorCode(error: unknown): string {
   const code = (error as { code?: unknown }).code;
 
   return typeof code === "string" ? code : "";
+}
+
+function readLocalIntegrationSecrets(): LocalIntegrationSecrets {
+  return {
+    jiraToken: "platform-managed",
+    openAiApiKey: "platform-managed",
+    gitlabToken: "platform-managed",
+    smtpUsername: "platform-managed",
+    smtpPassword: "platform-managed",
+    aiTestPrompt: defaultAiTestPrompt
+  };
+}
+
+function writeLocalIntegrationSecrets(secrets: LocalIntegrationSecrets): void {
+  void secrets;
 }
 
 function buildUserForm(config: AdminConfig, user?: AdminUser): UserFormState {
@@ -39214,36 +39261,39 @@ function AdminMasterDataManager({
     onDelete: () => void;
   }) {
     return (
-      <div className="admin-user-selection-toolbar" aria-label={ariaLabel}>
-        <div className="admin-user-selection-summary">
-          <strong>{selectedSummary}</strong>
-          <span>{helperText}</span>
-        </div>
-        <div className="admin-user-selection-actions">
-          <button className="primary-button" type="button" onClick={onAdd}>
-            <TegelIcon name="plus" size="16px" />
-            Add
-          </button>
-          <button
-            className={`secondary-button ${activeActionLabel === "Deactivate" ? "danger-button" : ""}`}
-            disabled={!hasSelection}
-            type="button"
-            onClick={onActiveChange}
-          >
-            <TegelIcon name={activeActionLabel === "Activate" ? "tick" : "cross"} size="16px" />
-            {activeActionLabel}
-          </button>
-          <button
-            className="secondary-button danger-button hard-delete-button"
-            disabled={!canDelete}
-            type="button"
-            onClick={onDelete}
-          >
-            <TegelIcon name="trash" size="16px" />
-            Delete
-          </button>
-        </div>
-      </div>
+      <BulkActionBar
+        aria-label={ariaLabel}
+        selectedCount={hasSelection ? 1 : 0}
+        summary={selectedSummary}
+        helperText={helperText}
+        actions={[
+          {
+            id: "add",
+            label: "Add",
+            tone: "primary",
+            icon: <TegelIcon name="plus" size="16px" />,
+            onSelect: onAdd
+          },
+          {
+            id: "active",
+            label: activeActionLabel,
+            tone: activeActionLabel === "Deactivate" ? "danger" : "secondary",
+            disabled: !hasSelection,
+            icon: (
+              <TegelIcon name={activeActionLabel === "Activate" ? "tick" : "cross"} size="16px" />
+            ),
+            onSelect: onActiveChange
+          },
+          {
+            id: "delete",
+            label: "Delete",
+            tone: "danger",
+            disabled: !canDelete,
+            icon: <TegelIcon name="trash" size="16px" />,
+            onSelect: onDelete
+          }
+        ]}
+      />
     );
   }
 
@@ -42533,6 +42583,7 @@ function IntegrationConfigurationPanel({
   const [gitlabProjectResults, setGitLabProjectResults] = useState<GitLabProjectResult[]>([]);
   const [gitlabCodeResults, setGitLabCodeResults] = useState<GitLabCodeSearchResult[]>([]);
   const [gitlabSourcePreview, setGitLabSourcePreview] = useState<GitLabRepositoryFileResult | null>(null);
+  const [localSecrets, setLocalSecrets] = useState<LocalIntegrationSecrets>({});
   const [isCreatingJiraTask, setIsCreatingJiraTask] = useState(false);
   const [isSyncingJiraData, setIsSyncingJiraData] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
@@ -42617,6 +42668,7 @@ function IntegrationConfigurationPanel({
   }, [config.integrations.smtp]);
 
   useEffect(() => {
+    setLocalSecrets({});
     setEntraForm(buildEntraConfigForm());
   }, []);
 
@@ -42640,7 +42692,13 @@ function IntegrationConfigurationPanel({
     setSmtpTestResult(null);
   }, [smtpForm]);
 
+  function updateLocalSecrets(patch: Partial<LocalIntegrationSecrets>) {
+    void patch;
+    setLocalSecrets({});
+  }
+
   function clearLocalJiraToken() {
+    updateLocalSecrets({ jiraToken: "" });
     setJiraForm((current) => ({ ...current, token: "" }));
     setJiraSuccessMessage("");
     setJiraTestResult({
@@ -42653,6 +42711,7 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalAiApiKey() {
+    updateLocalSecrets({ openAiApiKey: "" });
     setAiForm((current) => ({ ...current, apiKey: "" }));
     setAiSuccessMessage("");
     setAiTestResult({
@@ -42664,6 +42723,7 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalGitLabToken() {
+    updateLocalSecrets({ gitlabToken: "" });
     setGitLabForm((current) => ({ ...current, token: "" }));
     setGitLabSuccessMessage("");
     setGitLabTestResult({
@@ -42719,6 +42779,7 @@ function IntegrationConfigurationPanel({
       updatedAt: new Date().toISOString()
     };
 
+    updateLocalSecrets(nextEntraConfig);
     setEntraForm({
       clientId: nextEntraConfig.entraClientId,
       tenantId: nextEntraConfig.entraTenantId,
@@ -42777,6 +42838,7 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalEntraConfig() {
+    updateLocalSecrets({ entraClientId: "", entraTenantId: "", entraRedirectUri: "" });
     setEntraForm(buildEntraConfigForm());
     setEntraSuccessMessage("");
     setEntraError("");
@@ -42790,6 +42852,7 @@ function IntegrationConfigurationPanel({
   }
 
   function clearLocalSmtpCredentials() {
+    updateLocalSecrets({ smtpUsername: "", smtpPassword: "" });
     setSmtpForm((current) => ({ ...current, username: "", password: "" }));
     setSmtpSuccessMessage("");
     setSmtpTestResult({
@@ -43000,8 +43063,8 @@ function IntegrationConfigurationPanel({
       host,
       port,
       security: smtpForm.security,
-      fromName: smtpForm.fromName.trim() || "Nexus-support portal",
-      fromEmail,
+      fromName: config.integrations.smtp.fromName,
+      fromEmail: config.integrations.smtp.fromEmail,
       updatedAt: new Date().toISOString()
     };
 
@@ -43220,8 +43283,6 @@ function IntegrationConfigurationPanel({
       host: smtpForm.host.trim(),
       port: Number.parseInt(smtpForm.port, 10),
       security: smtpForm.security,
-      fromName: smtpForm.fromName.trim() || "Nexus-support portal",
-      fromEmail: smtpForm.fromEmail.trim(),
       username: "",
       password: ""
     };
@@ -43306,6 +43367,7 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: buildGitLabActionConfig(),
           query
         })
       });
@@ -43364,6 +43426,7 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: buildGitLabActionConfig(),
           query,
           groupId
         })
@@ -43513,6 +43576,7 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: buildGitLabActionConfig(),
           projectId,
           search,
           ref: gitlabForm.ref.trim() || gitlabForm.selectedProjectDefaultBranch || gitlabForm.defaultRef
@@ -43588,6 +43652,7 @@ function IntegrationConfigurationPanel({
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          config: buildGitLabActionConfig(),
           projectId,
           filePath,
           ref
@@ -44134,8 +44199,8 @@ function IntegrationConfigurationPanel({
                 <label className="form-field"><span>SMTP host</span><input value={smtpForm.host} onChange={(event) => { setSmtpForm({ ...smtpForm, host: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="smtp.company.example" /></label>
                 <label className="form-field"><span>SMTP port</span><input min="1" max="65535" type="number" value={smtpForm.port} onChange={(event) => { setSmtpForm({ ...smtpForm, port: event.target.value }); setSmtpSuccessMessage(""); }} /></label>
                 <label className="form-field"><span>Security</span><select value={smtpForm.security} onChange={(event) => { setSmtpForm({ ...smtpForm, security: event.target.value as SmtpConfig["security"] }); setSmtpSuccessMessage(""); }}>{smtpSecurityOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}</select></label>
-                <label className="form-field"><span>Sender name</span><input value={smtpForm.fromName} onChange={(event) => { setSmtpForm({ ...smtpForm, fromName: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="Nexus-support portal" /></label>
-                <label className="form-field"><span>Sender email</span><input type="email" value={smtpForm.fromEmail} onChange={(event) => { setSmtpForm({ ...smtpForm, fromEmail: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="noreply@scania.com" /></label>
+                <label className="form-field"><span>Sender name</span><input value={smtpForm.fromName} readOnly placeholder="Managed by Scania SES" /></label>
+                <label className="form-field"><span>Sender email</span><input type="email" value={smtpForm.fromEmail} readOnly placeholder="Managed by Scania SES" /></label>
                 <label className="form-field"><span>Test recipient</span><input type="email" value={smtpForm.testRecipient} onChange={(event) => { setSmtpForm({ ...smtpForm, testRecipient: event.target.value }); setSmtpSuccessMessage(""); }} placeholder="you@scania.com" /></label>
                 <div className="integration-action-row">
                   <button className="secondary-button" type="button" disabled={isSendingTestEmail} onClick={sendTestEmail}><TegelIcon name="send" size="16px" />{isSendingTestEmail ? "Sending..." : "Send test email"}</button>
@@ -45735,13 +45800,13 @@ function LeadTimeReport({ config, tickets }: { config: AdminConfig; tickets: Tic
       label: "Business",
       value: Math.round(metrics.reduce((sum, metric) => sum + metric.businessHours, 0)),
       percentage: 0,
-      color: "#15803d"
+      color: "var(--chart-3)"
     },
     {
       label: "IT",
       value: Math.round(metrics.reduce((sum, metric) => sum + metric.itHours, 0)),
       percentage: 0,
-      color: "#1d4ed8"
+      color: "var(--chart-1)"
     },
     {
       label: "Process only",
@@ -45749,13 +45814,13 @@ function LeadTimeReport({ config, tickets }: { config: AdminConfig; tickets: Tic
         metrics.reduce((sum, metric) => sum + metric.processHours - metric.businessHours - metric.itHours, 0)
       ),
       percentage: 0,
-      color: "#7c5f17"
+      color: "var(--chart-4)"
     },
     {
       label: "Unclassified",
       value: Math.round(totalUnclassifiedHours),
       percentage: 0,
-      color: "#dc2626"
+      color: "var(--chart-5)"
     }
   ];
   const ownershipTotal = ownershipBuckets.reduce((sum, bucket) => sum + bucket.value, 0);
@@ -45981,13 +46046,7 @@ function getJiraInsightHighPriorityTickets(tickets: Ticket[]): Ticket[] {
 }
 
 function getJiraInsightReleaseRows(tickets: Ticket[]) {
-  return buildJiraInsightBuckets(tickets, getReleasePlanVersion, [
-    "#3b82f6",
-    "#60a5fa",
-    "#22c55e",
-    "#f59e0b",
-    "#ef4444"
-  ])
+  return buildJiraInsightBuckets(tickets, getReleasePlanVersion, [...chartColorVars])
     .filter((bucket) => bucket.label !== releasePlanUnplannedLabel)
     .slice(0, 8);
 }
@@ -46015,25 +46074,16 @@ function JiraInsightsReport({ config, tickets: reportTickets }: { config: AdminC
   ).length;
   const trendSeries = useMemo(() => buildJiraInsightTrendSeries(tickets), [tickets]);
   const statusBuckets = useMemo(
-    () =>
-      buildJiraInsightBuckets(tickets, getJiraInsightStatusLabel, [
-        "#3b82f6",
-        "#60a5fa",
-        "#22c55e",
-        "#ef4444",
-        "#f59e0b"
-      ]),
+    () => buildJiraInsightBuckets(tickets, getJiraInsightStatusLabel, [...chartColorVars]),
     [tickets]
   );
   const priorityBuckets = useMemo(
     () =>
-      buildJiraInsightBuckets(tickets, (ticket) => getReportValue(ticket.priority, "Unassigned priority"), [
-        "#ef4444",
-        "#f97316",
-        "#eab308",
-        "#22c55e",
-        "#94a3b8"
-      ]),
+      buildJiraInsightBuckets(
+        tickets,
+        (ticket) => getReportValue(ticket.priority, "Unassigned priority"),
+        [...priorityChartColorVars]
+      ),
     [tickets]
   );
   const slaBuckets = useMemo(
@@ -46044,13 +46094,13 @@ function JiraInsightsReport({ config, tickets: reportTickets }: { config: AdminC
         percentage: tickets.length
           ? (tickets.filter((ticket) => ticket.slaState !== "breach").length / tickets.length) * 100
           : 0,
-        color: "#22c55e"
+        color: "var(--chart-3)"
       },
       {
         label: "Breached",
         value: slaBreaches.length,
         percentage: tickets.length ? (slaBreaches.length / tickets.length) * 100 : 0,
-        color: "#ef4444"
+        color: "var(--chart-5)"
       }
     ],
     [slaBreaches.length, tickets]
@@ -46857,3 +46907,4 @@ function CommentPanel({
     </section>
   );
 }
+

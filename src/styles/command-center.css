@@ -1,0 +1,173 @@
+/**
+ * Command Center patterns — Phase 3
+ * No fixed heights. No gradients / glass. Token-only surfaces.
+ */
+
+.nx-command-center {
+  width: 100%;
+  min-width: 0;
+}
+
+.nx-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.nx-metric-grid__item {
+  min-width: 0;
+}
+
+.nx-attention-panel__panel,
+.nx-continue-working__panel,
+.nx-activity-feed__panel,
+.nx-assigned-tickets__panel,
+.nx-report-section__panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.nx-attention-panel__list,
+.nx-continue-working__list,
+.nx-activity-feed__list,
+.nx-assigned-tickets__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nx-command-center-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-3) var(--space-4);
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-muted);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.nx-command-center-row:last-child {
+  border-bottom: 0;
+}
+
+button.nx-command-center-row:hover,
+button.nx-command-center-row:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+button.nx-command-center-row:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.nx-command-center-row.is-unread .nx-command-center-row__title {
+  font-weight: var(--font-weight-medium);
+}
+
+.nx-command-center-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nx-command-center-row__title,
+.nx-command-center-row__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nx-command-center-row__aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+  max-width: 40%;
+  text-align: right;
+}
+
+.nx-queue-overview__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.nx-queue-overview__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--touch-target);
+  padding: var(--space-inset-md);
+  color: inherit;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-top: 3px solid var(--nx-tone, var(--border-strong));
+  border-radius: var(--radius);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.nx-queue-overview__item:hover,
+.nx-queue-overview__item:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.nx-queue-overview__item:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.nx-queue-overview__item:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.nx-queue-overview__count {
+  font-size: var(--type-h2-size);
+  line-height: var(--type-h2-line);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+}
+
+.nx-attention-panel .nx-alert {
+  margin-bottom: var(--space-3);
+}
+
+@media (max-width: 1199px) {
+  .nx-metric-grid,
+  .nx-queue-overview__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .nx-metric-grid,
+  .nx-queue-overview__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nx-command-center-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nx-command-center-row__aside {
+    align-items: flex-start;
+    max-width: none;
+    text-align: left;
+  }
+}

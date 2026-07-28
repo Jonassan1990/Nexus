@@ -1,0 +1,252 @@
+/**
+ * Nexus Support — Layout primitives (Phase 1)
+ * Standard page structure: Page → PageHeader → Toolbar → Content → Section → Panel
+ * Visual behaviour matches existing enterprise chrome; no feature redesign.
+ */
+
+.nx-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-lg);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.nx-page-header {
+  /* Composes with .module-header for visual continuity */
+  width: 100%;
+}
+
+.nx-page-header__main {
+  min-width: 0;
+}
+
+.nx-page-header__title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.nx-page-header__eyebrow {
+  display: block;
+  margin: 0 0 var(--space-1);
+  color: var(--primary-hover);
+}
+
+.nx-page-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.nx-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-stack-sm);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-inset-sm) 0;
+}
+
+.nx-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-lg);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.nx-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-md);
+  width: 100%;
+  min-width: 0;
+  padding-block: 0;
+}
+
+.nx-section__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.nx-section__copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.nx-section__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.nx-panel {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-none);
+}
+
+.nx-sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-stack-sm);
+  min-width: 0;
+  padding: var(--space-inset-sm);
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+}
+
+/* Stack / Cluster gap variants (8px grid + density) */
+.nx-stack--xs {
+  gap: var(--space-stack-xs);
+}
+
+.nx-stack--sm {
+  gap: var(--space-stack-sm);
+}
+
+.nx-stack--md {
+  gap: var(--space-stack-md);
+}
+
+.nx-stack--lg {
+  gap: var(--space-stack-lg);
+}
+
+.nx-stack--xl {
+  gap: var(--space-stack-xl);
+}
+
+.nx-cluster--xs {
+  gap: var(--space-stack-xs);
+}
+
+.nx-cluster--sm {
+  gap: var(--space-stack-sm);
+}
+
+.nx-cluster--md {
+  gap: var(--space-stack-md);
+}
+
+.nx-cluster--lg {
+  gap: var(--space-stack-lg);
+}
+
+.nx-cluster--align-start {
+  align-items: flex-start;
+}
+
+.nx-cluster--align-center {
+  align-items: center;
+}
+
+.nx-cluster--align-end {
+  align-items: flex-end;
+}
+
+.nx-cluster--align-stretch {
+  align-items: stretch;
+}
+
+/* Alignment helpers */
+.nx-align-start {
+  align-items: flex-start;
+}
+
+.nx-align-center {
+  align-items: center;
+}
+
+.nx-align-end {
+  align-items: flex-end;
+}
+
+.nx-justify-between {
+  justify-content: space-between;
+}
+
+.nx-justify-end {
+  justify-content: flex-end;
+}
+
+.nx-full-width {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Vertical rhythm */
+.nx-rhythm > * + * {
+  margin-top: var(--space-stack-md);
+}
+
+.nx-rhythm-sm > * + * {
+  margin-top: var(--space-stack-sm);
+}
+
+.nx-rhythm-lg > * + * {
+  margin-top: var(--space-stack-lg);
+}
+
+/* Responsive spacing — tighten on small screens */
+@media (max-width: 767px) {
+  .nx-page,
+  .nx-content {
+    gap: var(--space-stack-md);
+  }
+
+  .nx-toolbar {
+    gap: var(--space-stack-sm);
+  }
+
+  .nx-page-header__actions,
+  .nx-section__actions {
+    width: 100%;
+  }
+
+  .nx-page-header__actions > *,
+  .nx-section__actions > * {
+    flex: 1 1 auto;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .nx-page,
+  .nx-content {
+    gap: var(--space-stack-md);
+  }
+}
+
+/* Local density overrides on a page subtree */
+.nx-density-compact {
+  --space-stack-sm: var(--space-1);
+  --space-stack-md: var(--space-2);
+  --space-stack-lg: var(--space-3);
+  --space-inset-sm: var(--space-1);
+  --space-inset-md: var(--space-2);
+}
+
+.nx-density-relaxed {
+  --space-stack-sm: var(--space-3);
+  --space-stack-md: var(--space-4);
+  --space-stack-lg: var(--space-6);
+  --space-inset-sm: var(--space-3);
+  --space-inset-md: var(--space-4);
+}

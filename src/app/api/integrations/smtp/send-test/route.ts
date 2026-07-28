@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand } from "@aws-sdk/client-ses";
 import { requireAdminPrincipal } from "@/lib/auth/api-auth";
 import { isValidEmail, type SmtpActionConfig } from "@/lib/integration-actions";
+import {
+  buildScaniaSesSendEmailInput,
+  createScaniaSesClient,
+  getScaniaSesIdentity,
+  normalizeSmtpSenderForScania
+} from "@/lib/scania-ses";
 
 export const runtime = "nodejs";
 
@@ -40,10 +46,6 @@ function validatePayload(payload: SendTestEmailPayload): string[] {
     errors.push("Outbound email delivery must be enabled before sending a test email.");
   }
 
-  if (!config.fromEmail.trim() || !isValidEmail(config.fromEmail.trim())) {
-    errors.push("A valid sender email address is required.");
-  }
-
   if (!message?.to?.trim() || !isValidEmail(message.to.trim())) {
     errors.push("A valid test recipient email address is required.");
   }
@@ -78,39 +80,30 @@ export async function POST(request: NextRequest) {
     return errorResponse("validation_failed", "SMTP test email request failed validation.", errors);
   }
 
-  const config = payload.config as SmtpActionConfig;
   const message = payload.message as Required<NonNullable<SendTestEmailPayload["message"]>>;
-  const sesClient = new SESClient({});
+  const sender = normalizeSmtpSenderForScania();
+  const identity = getScaniaSesIdentity();
+  const sesClient = createScaniaSesClient();
 
   console.info(
     JSON.stringify({
       event: "smtp_test_email_attempt",
-      fromEmail: config.fromEmail,
+      region: identity.region,
+      fromEmail: sender.fromEmail,
+      sourceArn: identity.sourceArn,
       recipientCount: 1
     })
   );
 
   try {
     const result = await sesClient.send(
-      new SendEmailCommand({
-        Source: `${config.fromName.trim() || "Nexus-support portal"} <${config.fromEmail.trim()}>`,
-        Destination: {
-          ToAddresses: [message.to.trim()]
-        },
-        Message: {
-          Subject: {
-            Data: message.subject.trim(),
-            Charset: "UTF-8"
-          },
-          Body: {
-            Text: {
-              Data: message.body.trim(),
-              Charset: "UTF-8"
-            }
-          }
-        },
-        ReplyToAddresses: [config.fromEmail.trim()]
-      })
+      new SendEmailCommand(
+        buildScaniaSesSendEmailInput({
+          toAddresses: [message.to.trim()],
+          subject: message.subject.trim(),
+          textBody: message.body.trim()
+        })
+      )
     );
 
     console.info(
@@ -127,7 +120,10 @@ export async function POST(request: NextRequest) {
         messageId: result.MessageId ?? "",
         accepted: [message.to.trim()],
         rejected: [],
-        response: "Sent through AWS SES."
+        response: "Sent through AWS SES.",
+        region: identity.region,
+        sender: sender.fromEmail,
+        sourceArn: identity.sourceArn
       }
     });
   } catch (error) {

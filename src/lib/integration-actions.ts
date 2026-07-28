@@ -24,8 +24,8 @@ export type SmtpActionConfig = {
   host: string;
   port: number;
   security: SmtpConfig["security"];
-  fromName: string;
-  fromEmail: string;
+  fromName?: string;
+  fromEmail?: string;
   username?: string;
   password?: string;
 };

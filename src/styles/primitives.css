@@ -1,0 +1,413 @@
+/**
+ * Nexus Support — Enterprise primitives (Phase 1.5)
+ * All colours/spacing/type via semantic tokens. Radius = 0.
+ */
+
+.nx-tone-neutral {
+  --nx-tone: var(--text-secondary);
+  --nx-tone-soft: var(--surface-muted);
+  --nx-tone-text: var(--text-primary);
+}
+
+.nx-tone-info,
+.nx-tone-primary {
+  --nx-tone: var(--info);
+  --nx-tone-soft: var(--info-soft);
+  --nx-tone-text: var(--primary);
+}
+
+.nx-tone-success {
+  --nx-tone: var(--success);
+  --nx-tone-soft: var(--success-soft);
+  --nx-tone-text: var(--success);
+}
+
+.nx-tone-warning {
+  --nx-tone: var(--warning);
+  --nx-tone-soft: var(--warning-soft);
+  --nx-tone-text: var(--warning);
+}
+
+.nx-tone-danger {
+  --nx-tone: var(--danger);
+  --nx-tone-soft: var(--danger-soft);
+  --nx-tone-text: var(--danger);
+}
+
+.nx-card {
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-none);
+  padding: var(--space-inset-md);
+}
+
+.nx-card--interactive {
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease);
+}
+
+.nx-card--interactive:hover,
+.nx-card--interactive:focus-visible {
+  border-color: color-mix(in srgb, var(--primary-hover) 28%, var(--border-default));
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.nx-card--interactive:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.nx-metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-inset-md);
+  text-align: left;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-top: 3px solid var(--nx-tone, var(--primary-hover));
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-none);
+  text-decoration: none;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease);
+}
+
+button.nx-metric-card {
+  cursor: pointer;
+  font: inherit;
+}
+
+.nx-metric-card:hover,
+.nx-metric-card:focus-visible {
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--primary-hover) 30%, var(--border-default));
+  outline: none;
+}
+
+.nx-metric-card:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.nx-metric-card__topline {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--nx-tone, var(--primary-hover));
+}
+
+.nx-metric-card__value {
+  font-family: var(--font-display);
+  font-size: var(--type-h1-size);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--type-h1-line);
+  color: var(--text-primary);
+}
+
+.nx-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.nx-stat__value {
+  font-family: var(--font-display);
+  font-size: var(--type-h2-size);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+}
+
+.nx-stat__label,
+.nx-stat__trend {
+  color: var(--text-muted);
+}
+
+.nx-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: calc(var(--touch-target) * 0.7);
+  padding: var(--space-1) var(--space-2);
+  color: var(--status-text, var(--nx-tone-text, var(--text-primary)));
+  background: var(--status-soft, var(--nx-tone-soft, var(--surface-muted)));
+  border: 1px solid color-mix(in srgb, var(--status-color, var(--nx-tone, var(--border-default))) 24%, transparent);
+  border-radius: var(--radius);
+  font-size: var(--type-caption-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--type-caption-line);
+  white-space: nowrap;
+}
+
+.nx-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-inset-md);
+  background: var(--nx-tone-soft, var(--surface-muted));
+  border: 1px solid color-mix(in srgb, var(--nx-tone, var(--border-default)) 28%, var(--border-default));
+  border-left: 4px solid var(--nx-tone, var(--info));
+  border-radius: var(--radius);
+}
+
+.nx-alert__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.nx-alert__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.nx-empty-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-inset-md);
+}
+
+.nx-empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.nx-loading-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  color: var(--text-secondary);
+}
+
+.nx-skeleton {
+  display: inline-block;
+  background: color-mix(in srgb, var(--surface-muted) 70%, var(--border-default));
+  border-radius: var(--radius);
+  animation: nx-skeleton-pulse var(--motion-slow) ease-in-out infinite alternate;
+}
+
+.nx-skeleton--text {
+  width: 100%;
+  height: 0.875rem;
+}
+
+.nx-skeleton--title {
+  width: 60%;
+  height: 1.25rem;
+}
+
+.nx-skeleton--block {
+  width: 100%;
+  height: 4.5rem;
+}
+
+.nx-skeleton--circle {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+  border-radius: var(--radius-circle);
+}
+
+@keyframes nx-skeleton-pulse {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-skeleton {
+    animation: none;
+  }
+}
+
+.nx-search-box {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+}
+
+.nx-search-box:focus-within {
+  box-shadow: var(--focus-ring);
+  border-color: var(--primary-hover);
+}
+
+.nx-search-box__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--touch-target);
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--type-body-size);
+}
+
+.nx-search-box__input:focus {
+  outline: none;
+}
+
+.nx-filter-bar {
+  width: 100%;
+}
+
+.nx-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  padding: 0 var(--space-3);
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: var(--type-small-size);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease);
+}
+
+.nx-filter-chip:hover,
+.nx-filter-chip:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.nx-filter-chip:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.nx-filter-chip.is-active {
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.nx-filter-chip.is-active strong {
+  color: var(--on-primary);
+}
+
+.nx-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: 100%;
+  padding-block: var(--space-stack-sm);
+}
+
+.nx-action-bar--start {
+  justify-content: flex-start;
+}
+
+.nx-action-bar--center {
+  justify-content: center;
+}
+
+.nx-action-bar--end {
+  justify-content: flex-end;
+}
+
+.nx-action-bar--between {
+  justify-content: space-between;
+}
+
+.nx-data-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.nx-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--type-body-size);
+}
+
+.nx-data-table th,
+.nx-data-table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border-muted);
+  vertical-align: top;
+}
+
+.nx-data-table th {
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.nx-data-table--sticky thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.nx-data-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.nx-data-table__row--interactive {
+  cursor: pointer;
+}
+
+.nx-data-table__row--interactive:focus-visible {
+  outline: none;
+  box-shadow: inset var(--focus-ring);
+}
+
+.nx-align-text-start {
+  text-align: start;
+}
+
+.nx-align-text-center {
+  text-align: center;
+}
+
+.nx-align-text-end {
+  text-align: end;
+}
+
+@media (max-width: 767px) {
+  .nx-empty-state {
+    grid-template-columns: 1fr;
+  }
+
+  .nx-action-bar > * {
+    flex: 1 1 auto;
+  }
+
+  .nx-metric-card__value {
+    font-size: var(--type-h2-size);
+  }
+}

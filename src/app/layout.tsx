@@ -42,7 +42,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html className="scania" lang="en" suppressHydrationWarning>
+    <html className="scania" lang="en" data-density="comfortable" suppressHydrationWarning>
       <body className="tds-mode-light" suppressHydrationWarning>
         <a className="skip-link" href="#main-content">
           Skip to main content

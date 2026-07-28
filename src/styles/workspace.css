@@ -1,0 +1,240 @@
+/**
+ * Workspace shell — Phase 2
+ * Sidebar personalization, command palette, focus chrome.
+ * No gradients / glass. Scania navy rail preserved.
+ */
+
+.nx-workspace-side .tegel-side-menu {
+  gap: var(--space-1);
+}
+
+.nx-workspace-nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-inverse) 12%, transparent);
+}
+
+.nx-workspace-nav-section--all {
+  border-bottom: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.nx-workspace-nav-section__title {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--side-rail-text-muted);
+  font-size: var(--type-caption-size);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.04em;
+  line-height: var(--type-caption-line);
+  text-transform: uppercase;
+}
+
+.nx-workspace-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nx-workspace-side.is-compact .nx-workspace-nav-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.nx-workspace-nav-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0.72;
+}
+
+.nx-workspace-nav-row:hover .nx-workspace-nav-actions,
+.nx-workspace-nav-row:focus-within .nx-workspace-nav-actions {
+  opacity: 1;
+}
+
+.nx-workspace-nav-action {
+  display: grid;
+  place-items: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  color: var(--side-rail-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.nx-workspace-nav-action:hover,
+.nx-workspace-nav-action:focus-visible {
+  color: var(--side-rail-text);
+  background: var(--side-rail-bg-hover);
+  outline: none;
+}
+
+.nx-workspace-nav-action:focus-visible {
+  box-shadow: 0 0 0 2px var(--side-rail-marker);
+}
+
+.nx-workspace-nav-action.is-active {
+  color: var(--side-rail-text);
+  background: var(--side-rail-bg-selected);
+}
+
+/* Command palette */
+.nx-command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: start center;
+  padding: 12vh var(--space-4) var(--space-4);
+}
+
+.nx-command-palette__scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: var(--overlay-scrim);
+  cursor: pointer;
+}
+
+.nx-command-palette__dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: min(100%, 560px);
+  max-height: min(70vh, 640px);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  box-shadow: var(--elevation-modal);
+}
+
+.nx-command-palette__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  background: var(--surface);
+}
+
+.nx-command-palette__empty {
+  padding: var(--space-3);
+}
+
+.nx-command-palette__option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-primary);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nx-command-palette__option:last-child {
+  border-bottom: 0;
+}
+
+.nx-command-palette__option.is-active,
+.nx-command-palette__option:hover,
+.nx-command-palette__option:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.nx-command-palette__option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nx-workspace-search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+}
+
+.nx-workspace-mobile-search {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .nx-workspace-mobile-search {
+    display: block;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 40;
+    padding: var(--space-2);
+    background: var(--accent);
+    border-bottom: 1px solid color-mix(in srgb, var(--text-inverse) 12%, transparent);
+  }
+
+  .nx-workspace-mobile-search .tegel-header-ticket-search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .nx-workspace-mobile-search .tegel-header-ticket-search-control {
+    width: 100%;
+  }
+
+  .nx-workspace-mobile-search .tegel-header-ticket-search-list {
+    position: absolute;
+    left: var(--space-2);
+    right: var(--space-2);
+    width: auto;
+  }
+}
+
+.tegel-notification-count--attention {
+  right: auto;
+  left: -2px;
+  background: var(--warning);
+  color: var(--text-inverse);
+}
+
+.tegel-header-notifications {
+  position: relative;
+}
+
+.tegel-header-shell .nx-workspace-kbd-hint {
+  display: none;
+  margin-left: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--type-caption-size);
+}
+
+@media (min-width: 1100px) {
+  .tegel-header-shell .nx-workspace-kbd-hint {
+    display: inline;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tegel-side-shell {
+    transition: none;
+  }
+}

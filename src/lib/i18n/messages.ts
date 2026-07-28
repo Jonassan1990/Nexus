@@ -23,6 +23,7 @@ type MessageTree = {
   modules: {
     dashboard: string;
     tickets: string;
+    knowledge: string;
     approvals: string;
     globalization: string;
     clarifications: string;
@@ -140,8 +141,9 @@ export const messages: Record<AppLocale, MessageTree> = {
       signedInAs: "Signed in as"
     },
     modules: {
-      dashboard: "Dashboard",
+      dashboard: "Command Center",
       tickets: "Ticket List",
+      knowledge: "Knowledge",
       approvals: "Approvals",
       globalization: "Globalization",
       clarifications: "Clarifications",
@@ -158,9 +160,9 @@ export const messages: Record<AppLocale, MessageTree> = {
     },
     copy: {
       dashboardRequester:
-        "Overview of tickets in your product scope, SLA health, clarifications, and planned releases.",
+        "Command Center for your requests — continue work, critical alerts, and what changed in your scope.",
       dashboardRole:
-        "Overview of work in your product, PRU, and responsibility scope — SLA, approvals, clarifications, and releases.",
+        "Operational Command Center — continue work, critical alerts, assigned tickets, queues, and activity in your scope.",
       ticketsRequester:
         "Tickets in your product scope. Use My raised tickets to limit the list to requests you submitted.",
       ticketsRole: "Tickets visible in your current role and product / PRU / site scope.",
@@ -264,8 +266,9 @@ export const messages: Record<AppLocale, MessageTree> = {
       signedInAs: "Inloggad som"
     },
     modules: {
-      dashboard: "Instrumentpanel",
+      dashboard: "Kommandocenter",
       tickets: "Ärendelista",
+      knowledge: "Kunskap",
       approvals: "Godkännanden",
       globalization: "Globalisering",
       clarifications: "Förtydliganden",
@@ -282,9 +285,9 @@ export const messages: Record<AppLocale, MessageTree> = {
     },
     copy: {
       dashboardRequester:
-        "Översikt över ärenden i din produktomfattning, SLA-hälsa, förtydliganden och planerade releaser.",
+        "Kommandocenter för dina ärenden — fortsätt arbete, kritiska larm och vad som ändrats i din omfattning.",
       dashboardRole:
-        "Översikt över arbete i din produkt-, PRU- och ansvarsomfattning — SLA, godkännanden, förtydliganden och releaser.",
+        "Operativt kommandocenter — fortsätt arbete, kritiska larm, tilldelade ärenden, köer och aktivitet i din omfattning.",
       ticketsRequester:
         "Ärenden i din produktomfattning. Använd Mina skapade ärenden för att bara se det du skickat in.",
       ticketsRole: "Ärenden som syns för din nuvarande roll och produkt-/PRU-/platsomfattning.",

@@ -1,0 +1,419 @@
+/**
+ * Nexus Support — Design Tokens (Phase 0–1)
+ * Source of truth for color, type, space, motion, elevation, icons, radius.
+ * Brand: Scania Tegel. Structural radius remains 0. No decorative chrome.
+ *
+ * Layering: Primitive → Semantic → Domain → Legacy aliases
+ * Components must consume semantic / domain tokens only.
+ * Hex / rgb values are allowed ONLY in this file (and mirrored email primitives).
+ */
+
+:root {
+  /* ------------------------------------------------------------------ */
+  /* Primitive — Scania / system (fallback when Tegel vars absent)       */
+  /* ------------------------------------------------------------------ */
+  --primitive-navy-900: #041e42;
+  --primitive-navy-700: #16417f;
+  --primitive-navy-500: #2a6ecf;
+  --primitive-navy-100: #dce5f0;
+  --primitive-slate-950: #0b1220;
+  --primitive-slate-900: #111827;
+  --primitive-slate-700: #445468;
+  --primitive-slate-600: #5a6b80;
+  --primitive-slate-550: #65758c;
+  --primitive-slate-500: #6b7a90;
+  --primitive-slate-300: #93a2b7;
+  --primitive-slate-200: #d3dbe6;
+  --primitive-slate-150: #d7dfec;
+  --primitive-slate-125: #e6ebf2;
+  --primitive-slate-100: #e8edf4;
+  --primitive-grey-50: #eef2f7;
+  --primitive-grey-60: #eaf0f7;
+  --primitive-grey-70: #f6f8fb;
+  --primitive-grey-72: #f7f9fc;
+  --primitive-grey-74: #f8fbff;
+  --primitive-grey-75: #f4f7fb;
+  --primitive-grey-100: #e6ecf4;
+  --primitive-white: #ffffff;
+  --primitive-black: #000000;
+  --primitive-sky-300: #93bae9;
+  --primitive-rose-200: #f5b7bf;
+  --primitive-orange-600: #ea580c;
+  --primitive-amber-700: #b45309;
+  --primitive-amber-800: #6f4e00;
+  --primitive-blue-700: #1d4ed8;
+  --primitive-red-600: #dc2626;
+  --primitive-green-700: #15803d;
+  --primitive-teal-800: #0a4452;
+  --primitive-teal-700: #0e5a6e;
+  --primitive-teal-100: #d7eef3;
+  --primitive-copper-800: #5c2208;
+  --primitive-copper-700: #7a2e0b;
+  --primitive-copper-100: #f6e4d8;
+  --primitive-success: var(--system-success-strong, var(--color-system-success-strong, #0a382e));
+  --primitive-success-soft: var(--system-success-discrete, var(--color-system-success-discrete, #d3eee7));
+  --primitive-warning: var(--system-warning-strong, var(--color-system-warning-strong, #4d260a));
+  --primitive-warning-soft: var(--system-warning-subtle, var(--color-system-warning-discrete, #f9eec3));
+  --primitive-danger: var(--system-danger-strong, var(--color-system-danger-strong, #480008));
+  --primitive-danger-soft: var(--system-danger-subtle-02, var(--color-system-danger-discrete, #ffdfe3));
+  --primitive-info: var(--primitive-navy-700);
+  --primitive-info-soft: var(--primitive-navy-100);
+
+  /* ------------------------------------------------------------------ */
+  /* Semantic surfaces                                                   */
+  /* ------------------------------------------------------------------ */
+  --background: var(--primitive-grey-50);
+  --surface: var(--primitive-white);
+  --surface-elevated: var(--primitive-white);
+  --surface-muted: var(--primitive-grey-100);
+  --surface-hover: var(--primitive-grey-75);
+  --surface-strong: var(--primitive-grey-75);
+  --surface-subtle: var(--primitive-grey-72);
+
+  /* ------------------------------------------------------------------ */
+  /* Semantic text                                                       */
+  /* ------------------------------------------------------------------ */
+  --text-primary: var(--primitive-slate-950);
+  --text-secondary: var(--primitive-slate-700);
+  --text-muted: var(--primitive-slate-600);
+  --text-inverse: var(--primitive-white);
+
+  /* Chrome (navy shell) */
+  --chrome-marker: var(--primitive-navy-500);
+  --chrome-divider: color-mix(in srgb, var(--text-inverse) 12%, transparent);
+  --chrome-text-muted: color-mix(in srgb, var(--text-inverse) 72%, transparent);
+
+  /* ------------------------------------------------------------------ */
+  /* Semantic borders                                                    */
+  /* ------------------------------------------------------------------ */
+  --border-default: var(--primitive-slate-200);
+  --border-muted: color-mix(in srgb, var(--primitive-slate-200) 70%, var(--primitive-white));
+  --border-strong: var(--primitive-slate-300);
+
+  /* ------------------------------------------------------------------ */
+  /* Semantic actions / status                                           */
+  /* ------------------------------------------------------------------ */
+  --primary: var(--scania-blue-800, var(--scania-color-blue-800, var(--primitive-navy-900)));
+  --primary-hover: var(--scania-blue-600, var(--scania-color-blue-600, var(--primitive-navy-700)));
+  --primary-soft: var(--primitive-navy-100);
+  --on-primary: var(--primitive-white);
+
+  --success: var(--primitive-success);
+  --success-soft: var(--primitive-success-soft);
+  --warning: var(--primitive-warning);
+  --warning-soft: var(--primitive-warning-soft);
+  --danger: var(--primitive-danger);
+  --danger-soft: var(--primitive-danger-soft);
+  --info: var(--primitive-info);
+  --info-soft: var(--primitive-info-soft);
+
+  --neutral: var(--text-secondary);
+  --neutral-soft: var(--surface-strong);
+
+  /* ------------------------------------------------------------------ */
+  /* Domain — ticket lifecycle                                           */
+  /* ------------------------------------------------------------------ */
+  --ticket-open: var(--primary-hover);
+  --ticket-open-soft: var(--primary-soft);
+  --ticket-open-text: var(--primary);
+
+  --ticket-in-progress: var(--primitive-teal-700);
+  --ticket-in-progress-soft: var(--primitive-teal-100);
+  --ticket-in-progress-text: var(--primitive-teal-800);
+
+  --ticket-waiting: var(--warning);
+  --ticket-waiting-soft: var(--warning-soft);
+  --ticket-waiting-text: var(--warning);
+
+  --ticket-blocked: var(--danger);
+  --ticket-blocked-soft: var(--danger-soft);
+  --ticket-blocked-text: var(--danger);
+
+  --ticket-escalated: var(--primitive-copper-700);
+  --ticket-escalated-soft: var(--primitive-copper-100);
+  --ticket-escalated-text: var(--primitive-copper-800);
+
+  --ticket-resolved: var(--success);
+  --ticket-resolved-soft: var(--success-soft);
+  --ticket-resolved-text: var(--success);
+
+  --ticket-closed: var(--text-secondary);
+  --ticket-closed-soft: var(--surface-muted);
+  --ticket-closed-text: var(--text-secondary);
+
+  /* ------------------------------------------------------------------ */
+  /* Focus / elevation (structural only)                                 */
+  /* ------------------------------------------------------------------ */
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--primary-hover);
+  --elevation-none: none;
+  --elevation-border: 0 0 0 1px var(--border-default);
+  --elevation-popover: 0 8px 24px color-mix(in srgb, var(--primitive-navy-900) 14%, transparent);
+  --elevation-modal: 0 12px 32px color-mix(in srgb, var(--primitive-navy-900) 18%, transparent);
+  --elevation-sticky: 0 -8px 20px color-mix(in srgb, var(--primitive-navy-900) 8%, transparent);
+  --overlay-scrim: color-mix(in srgb, var(--primitive-slate-950) 48%, transparent);
+
+  /* ------------------------------------------------------------------ */
+  /* Motion — 150–250ms only                                             */
+  /* ------------------------------------------------------------------ */
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --motion-slow: 250ms;
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ------------------------------------------------------------------ */
+  /* Radius — Scania square (structural). Circle only for geometry.      */
+  /* ------------------------------------------------------------------ */
+  --radius: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-pill: 0;
+  --radius-circle: 50%;
+
+  /* ------------------------------------------------------------------ */
+  /* Spacing — 8px grid (comfortable default)                            */
+  /* ------------------------------------------------------------------ */
+  --space-unit: 8px;
+  --space-0: 0;
+  --space-1: calc(var(--space-unit) * 0.5); /* 4 */
+  --space-2: var(--space-unit); /* 8 */
+  --space-3: calc(var(--space-unit) * 1.5); /* 12 */
+  --space-4: calc(var(--space-unit) * 2); /* 16 */
+  --space-5: calc(var(--space-unit) * 2.5); /* 20 */
+  --space-6: calc(var(--space-unit) * 3); /* 24 */
+  --space-8: calc(var(--space-unit) * 4); /* 32 */
+  --space-10: calc(var(--space-unit) * 5); /* 40 */
+  --space-12: calc(var(--space-unit) * 6); /* 48 */
+  --space-16: calc(var(--space-unit) * 8); /* 64 */
+
+  --space-inset-xs: var(--space-1);
+  --space-inset-sm: var(--space-2);
+  --space-inset-md: var(--space-3);
+  --space-inset-lg: var(--space-4);
+  --space-stack-xs: var(--space-1);
+  --space-stack-sm: var(--space-2);
+  --space-stack-md: var(--space-3);
+  --space-stack-lg: var(--space-4);
+  --space-stack-xl: var(--space-6);
+  --control-height: 40px;
+  --control-height-sm: 32px;
+  --touch-target: 44px;
+
+  /* ------------------------------------------------------------------ */
+  /* Typography — Scania Sans / Headline                                 */
+  /* ------------------------------------------------------------------ */
+  --font-sans: var(--type-body-02-font-family, var(--scania-font-family-default, "Scania Sans")),
+    "Segoe UI", Arial, sans-serif;
+  --font-display: var(--type-headline-01-font-family, var(--scania-font-family-display, "Scania Sans Headline")),
+    var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+
+  --type-display-xl-size: clamp(2rem, 1.6rem + 1.2vw, 2.5rem);
+  --type-display-xl-line: 1.15;
+  --type-display-size: clamp(1.75rem, 1.5rem + 0.8vw, 2rem);
+  --type-display-line: 1.2;
+  --type-h1-size: 1.5rem; /* 24 */
+  --type-h1-line: 1.25;
+  --type-h2-size: 1.25rem; /* 20 */
+  --type-h2-line: 1.3;
+  --type-h3-size: 1.125rem; /* 18 */
+  --type-h3-line: 1.35;
+  --type-title-size: 1rem; /* 16 */
+  --type-title-line: 1.4;
+  --type-body-lg-size: 1rem;
+  --type-body-lg-line: 1.5;
+  --type-body-size: 0.875rem; /* 14 */
+  --type-body-line: 1.5;
+  --type-small-size: 0.8125rem; /* 13 */
+  --type-small-line: 1.45;
+  --type-caption-size: 0.75rem; /* 12 */
+  --type-caption-line: 1.4;
+  --type-label-size: 0.75rem;
+  --type-label-line: 1.3;
+  --type-mono-size: 0.8125rem;
+  --type-mono-line: 1.45;
+
+  /* ------------------------------------------------------------------ */
+  /* Icons                                                               */
+  /* ------------------------------------------------------------------ */
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+  --icon-xl: 32px;
+
+  /* ------------------------------------------------------------------ */
+  /* Layout chrome                                                       */
+  /* ------------------------------------------------------------------ */
+  --sidebar-width: 272px;
+  --sidebar-compact-width: 56px;
+  --topbar-height: 56px;
+  --content-max-width: 1440px;
+
+  /* ------------------------------------------------------------------ */
+  /* Charts — consume from CSS, never hex in TSX                         */
+  /* ------------------------------------------------------------------ */
+  --chart-1: var(--primary-hover);
+  --chart-2: var(--ticket-in-progress);
+  --chart-3: var(--success);
+  --chart-4: var(--warning);
+  --chart-5: var(--danger);
+  --chart-muted: var(--text-muted);
+
+  /* ------------------------------------------------------------------ */
+  /* Legacy aliases — migration bridge only                              */
+  /* ------------------------------------------------------------------ */
+  --bg: var(--background);
+  --text: var(--text-primary);
+  --text-subtle: var(--text-muted);
+  --border: var(--border-default);
+  --accent: var(--primary);
+  --accent-2: var(--primary-hover);
+  --accent-soft: var(--primary-soft);
+  --shadow-xs: var(--elevation-none);
+  --shadow-sm: var(--elevation-none);
+  --shadow-md: var(--elevation-border);
+  --shadow-lg: var(--elevation-popover);
+  --shadow-popover: var(--elevation-popover);
+  --space-xs: 2px; /* transitional; prefer --space-1 */
+  --space-sm: var(--space-1);
+  --space-md: var(--space-2);
+  --space-lg: var(--space-3);
+  --space-xl: var(--space-4);
+  --space-2xl: var(--space-6);
+  --space-3xl: var(--space-8);
+}
+
+/* Density modes — set data-density on <html> or .app-frame */
+:root,
+[data-density="comfortable"] {
+  --space-unit: 8px;
+  --control-height: 40px;
+  --space-inset-md: var(--space-3);
+  --space-stack-md: var(--space-3);
+}
+
+[data-density="compact"] {
+  --space-unit: 8px;
+  --control-height: 32px;
+  --control-height-sm: 28px;
+  --space-inset-xs: 2px;
+  --space-inset-sm: var(--space-1);
+  --space-inset-md: var(--space-2);
+  --space-inset-lg: var(--space-3);
+  --space-stack-xs: 2px;
+  --space-stack-sm: var(--space-1);
+  --space-stack-md: var(--space-2);
+  --space-stack-lg: var(--space-3);
+  --space-stack-xl: var(--space-4);
+  --type-body-size: 0.8125rem;
+  --type-small-size: 0.75rem;
+}
+
+[data-density="relaxed"] {
+  --space-unit: 8px;
+  --control-height: 44px;
+  --space-inset-sm: var(--space-3);
+  --space-inset-md: var(--space-4);
+  --space-inset-lg: var(--space-5);
+  --space-stack-sm: var(--space-3);
+  --space-stack-md: var(--space-4);
+  --space-stack-lg: var(--space-6);
+  --space-stack-xl: var(--space-8);
+  --type-body-size: 0.9375rem;
+  --type-body-lg-size: 1.0625rem;
+}
+
+/* Domain helpers — apply via class, never hardcode status colors in TSX */
+.ticket-status-open {
+  --status-color: var(--ticket-open);
+  --status-soft: var(--ticket-open-soft);
+  --status-text: var(--ticket-open-text);
+}
+
+.ticket-status-in-progress {
+  --status-color: var(--ticket-in-progress);
+  --status-soft: var(--ticket-in-progress-soft);
+  --status-text: var(--ticket-in-progress-text);
+}
+
+.ticket-status-waiting {
+  --status-color: var(--ticket-waiting);
+  --status-soft: var(--ticket-waiting-soft);
+  --status-text: var(--ticket-waiting-text);
+}
+
+.ticket-status-blocked {
+  --status-color: var(--ticket-blocked);
+  --status-soft: var(--ticket-blocked-soft);
+  --status-text: var(--ticket-blocked-text);
+}
+
+.ticket-status-escalated {
+  --status-color: var(--ticket-escalated);
+  --status-soft: var(--ticket-escalated-soft);
+  --status-text: var(--ticket-escalated-text);
+}
+
+.ticket-status-resolved {
+  --status-color: var(--ticket-resolved);
+  --status-soft: var(--ticket-resolved-soft);
+  --status-text: var(--ticket-resolved-text);
+}
+
+.ticket-status-closed {
+  --status-color: var(--ticket-closed);
+  --status-soft: var(--ticket-closed-soft);
+  --status-text: var(--ticket-closed-text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Dark mode — opt-in via data-theme="dark" or .tds-mode-dark           */
+/* Hex allowed here only (token definitions).                          */
+/* ------------------------------------------------------------------ */
+[data-theme="dark"],
+.tds-mode-dark {
+  color-scheme: dark;
+
+  --background: #0b1220;
+  --surface: #121a29;
+  --surface-elevated: #182234;
+  --surface-muted: #1a2436;
+  --surface-hover: #1f2b40;
+  --surface-strong: #1a2436;
+  --surface-subtle: #162033;
+
+  --text-primary: #f4f7fb;
+  --text-secondary: #c5d0de;
+  --text-muted: #93a2b7;
+  --text-inverse: #041e42;
+
+  --border-default: #2a3a52;
+  --border-muted: #223148;
+  --border-strong: #445468;
+
+  --primary-soft: #1a2f4f;
+  --info-soft: #1a2f4f;
+  --success-soft: #0f2a24;
+  --warning-soft: #2f220f;
+  --danger-soft: #321018;
+
+  --ticket-in-progress-soft: #12343c;
+  --ticket-escalated-soft: #332016;
+  --ticket-closed-soft: var(--surface-muted);
+
+  --overlay-scrim: color-mix(in srgb, #000000 62%, transparent);
+  --elevation-popover: 0 8px 24px color-mix(in srgb, #000000 45%, transparent);
+  --elevation-modal: 0 12px 32px color-mix(in srgb, #000000 55%, transparent);
+  --elevation-sticky: 0 -8px 20px color-mix(in srgb, #000000 35%, transparent);
+
+  --bg: var(--background);
+  --text: var(--text-primary);
+  --text-subtle: var(--text-muted);
+  --border: var(--border-default);
+  --accent-soft: var(--primary-soft);
+  --neutral-soft: var(--surface-strong);
+}

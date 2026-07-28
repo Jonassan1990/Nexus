@@ -1423,7 +1423,7 @@ export const smtpConfig: SmtpConfig = {
   port: 587,
   security: "starttls",
   fromName: "Nexus-support portal",
-  fromEmail: "noreply@scania.com",
+  fromEmail: "",
   updatedAt
 };
 

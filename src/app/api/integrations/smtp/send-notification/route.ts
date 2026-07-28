@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import { SendEmailCommand } from "@aws-sdk/client-ses";
 import { requireAdminPrincipal } from "@/lib/auth/api-auth";
 import { isValidEmail, type SmtpActionConfig } from "@/lib/integration-actions";
 import {
@@ -8,6 +8,12 @@ import {
   markNotificationDeliveryFailed,
   markNotificationDeliverySent
 } from "@/lib/database";
+import {
+  buildScaniaSesSendEmailInput,
+  createScaniaSesClient,
+  getScaniaSesIdentity,
+  normalizeSmtpSenderForScania
+} from "@/lib/scania-ses";
 
 export const runtime = "nodejs";
 
@@ -51,10 +57,6 @@ function validatePayload(payload: SendNotificationEmailPayload): string[] {
 
   if (!config.enabled) {
     errors.push("Outbound email delivery must be enabled before sending notification email.");
-  }
-
-  if (!config.fromEmail.trim() || !isValidEmail(config.fromEmail.trim())) {
-    errors.push("A valid sender email address is required.");
   }
 
   const recipients = message?.to ?? [];
@@ -113,6 +115,8 @@ export async function POST(request: NextRequest) {
 
   const config = payload.config as SmtpActionConfig;
   const message = payload.message as Required<NonNullable<SendNotificationEmailPayload["message"]>>;
+  const sender = normalizeSmtpSenderForScania();
+  const identity = getScaniaSesIdentity();
   const recipients = message.to
     .map((recipient) => ({
       name: recipient.name?.trim() || recipient.email?.trim() || "Recipient",
@@ -132,8 +136,8 @@ export async function POST(request: NextRequest) {
           host: config.host,
           port: config.port,
           security: config.security,
-          fromName: config.fromName,
-          fromEmail: config.fromEmail
+          fromName: sender.fromName,
+          fromEmail: sender.fromEmail
         },
         message: {
           to: message.to,
@@ -207,45 +211,28 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const sesClient = new SESClient({});
+  const sesClient = createScaniaSesClient();
 
   console.info(
     JSON.stringify({
       event: "smtp_notification_email_attempt",
       recipientCount: recipients.length,
-      fromEmail: config.fromEmail
+      region: identity.region,
+      fromEmail: sender.fromEmail,
+      sourceArn: identity.sourceArn
     })
   );
 
   try {
     const result = await sesClient.send(
-      new SendEmailCommand({
-        Source: `${config.fromName.trim() || "Nexus-support portal"} <${config.fromEmail.trim()}>`,
-        Destination: {
-          ToAddresses: recipients.map((recipient) => recipient.address)
-        },
-        Message: {
-          Subject: {
-            Data: message.subject.trim(),
-            Charset: "UTF-8"
-          },
-          Body: {
-            Text: {
-              Data: message.body.trim(),
-              Charset: "UTF-8"
-            },
-            ...(message.htmlBody?.trim()
-              ? {
-                  Html: {
-                    Data: message.htmlBody.trim(),
-                    Charset: "UTF-8"
-                  }
-                }
-              : {})
-          }
-        },
-        ReplyToAddresses: [config.fromEmail.trim()]
-      })
+      new SendEmailCommand(
+        buildScaniaSesSendEmailInput({
+          toAddresses: recipients.map((recipient) => recipient.address),
+          subject: message.subject.trim(),
+          textBody: message.body.trim(),
+          htmlBody: message.htmlBody?.trim() || undefined
+        })
+      )
     );
 
     if (idempotencyKey) {
@@ -282,7 +269,10 @@ export async function POST(request: NextRequest) {
         messageId: result.MessageId ?? "",
         accepted: recipients.map((recipient) => recipient.address),
         rejected: [],
-        response: "Sent through AWS SES."
+        response: "Sent through AWS SES.",
+        region: identity.region,
+        sender: sender.fromEmail,
+        sourceArn: identity.sourceArn
       }
     });
   } catch (error) {

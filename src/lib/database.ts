@@ -24,6 +24,7 @@ import { adminConfig } from "@/lib/admin-config";
 import { buildDemoTickets } from "@/lib/demo-tickets";
 import { createOutboxJobId, type OutboxEnqueueInput, type OutboxJob, type OutboxJobStatus } from "@/lib/outbox";
 import { getAuroraConnectionConfig, hasAuroraConnectionConfig } from "@/lib/platform-secrets";
+import { normalizeAdminConfigForScaniaSes } from "@/lib/scania-ses";
 import {
   deleteAttachmentObject,
   parseAttachmentDataUrl,
@@ -1338,19 +1339,30 @@ export async function clearLocalTicketsForDevelopment(
 }
 
 export async function readAdminConfig(): Promise<AdminConfig> {
+  const normalize = (config: AdminConfig): AdminConfig => normalizeAdminConfigForScaniaSes(config);
+
   if (!isAurora()) {
-    return Promise.resolve(readAdminConfigSqlite());
+    return Promise.resolve(normalize(readAdminConfigSqlite()));
   }
 
-  return readAuroraAdminConfig();
+  const config = await readAuroraAdminConfig();
+  const normalizedConfig = normalize(config);
+
+  if (JSON.stringify(config) !== JSON.stringify(normalizedConfig)) {
+    await saveAuroraAdminConfig(normalizedConfig);
+  }
+
+  return normalizedConfig;
 }
 
 export async function saveAdminConfig(config: AdminConfig): Promise<void> {
+  const normalizedConfig = normalizeAdminConfigForScaniaSes(config);
+
   if (!isAurora()) {
-    return Promise.resolve(saveAdminConfigSqlite(config));
+    return Promise.resolve(saveAdminConfigSqlite(normalizedConfig));
   }
 
-  return saveAuroraAdminConfig(config);
+  return saveAuroraAdminConfig(normalizedConfig);
 }
 
 export async function claimNotificationDelivery(

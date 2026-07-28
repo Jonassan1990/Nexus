@@ -1,5 +1,6 @@
 "use client";
 
+import { PageHeader } from "@/design-system/layout";
 import { useLocale } from "@/lib/i18n/LocaleProvider";
 import { getScopedModuleHeaderDescription, getScopedModuleHeaderTitle } from "@/lib/portal-copy";
 import type { RoleKey, Ticket } from "@/lib/types";
@@ -48,31 +49,22 @@ export function ModuleHeader({
 
   if (activeModule === "tickets") {
     return (
-      <section className="module-header ticket-list-header">
-        <div>
-          <span className="module-eyebrow">{t.modules.tickets}</span>
-          <h1>{title}</h1>
-          <p>{description}</p>
-        </div>
-        <div className="module-actions">
-          <TegelButton iconName="plus" text={t.shell.createTicket} onClick={onNewTicket} />
-        </div>
-      </section>
+      <PageHeader
+        className="ticket-list-header"
+        eyebrow={t.modules.tickets}
+        title={title}
+        description={description}
+        actions={<TegelButton iconName="plus" text={t.shell.createTicket} onClick={onNewTicket} />}
+      />
     );
   }
 
   return (
-    <section className="module-header">
-      <div>
-        <div className="module-title-row">
-          <TegelIcon name={navItem.iconName} size="26px" />
-          <h1>{title}</h1>
-        </div>
-        <p>{description}</p>
-      </div>
-      <div className="module-actions">
-        <TegelButton iconName="support" text={t.shell.newTicket} onClick={onNewTicket} />
-      </div>
-    </section>
+    <PageHeader
+      title={title}
+      description={description}
+      icon={<TegelIcon name={navItem.iconName} size="26px" />}
+      actions={<TegelButton iconName="support" text={t.shell.newTicket} onClick={onNewTicket} />}
+    />
   );
 }

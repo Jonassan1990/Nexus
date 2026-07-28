@@ -36,6 +36,7 @@ import { extractJiraProjectKey, normalizeJiraBaseUrl } from "./integration-actio
 import { buildDemoTickets } from "./demo-tickets";
 import { workflowTemplates } from "./nexus-data";
 import { createOutboxJobId, type OutboxEnqueueInput, type OutboxJob, type OutboxJobStatus } from "./outbox";
+import { normalizeAdminConfigForScaniaSes } from "./scania-ses";
 import type { Attachment, Ticket } from "./types";
 
 type ConfigRow = {
@@ -967,7 +968,7 @@ function seedDefaults(db: DatabaseSync) {
   if (!existingConfig) {
     db.prepare("INSERT INTO app_config (key, payload, updated_at) VALUES (?, ?, ?)").run(
       adminConfigKey,
-      serializeJson(adminConfig),
+      serializeJson(normalizeAdminConfigForScaniaSes(adminConfig)),
       nowIso()
     );
   } else {
@@ -975,7 +976,7 @@ function seedDefaults(db: DatabaseSync) {
 
     if (isEmptyShellConfig(storedConfig)) {
       db.prepare("UPDATE app_config SET payload = ?, updated_at = ? WHERE key = ?").run(
-        serializeJson(normalizeStoredAdminConfig(adminConfig)),
+        serializeJson(normalizeAdminConfigForScaniaSes(normalizeStoredAdminConfig(adminConfig))),
         nowIso(),
         adminConfigKey
       );
@@ -1135,14 +1136,24 @@ export function readAdminConfig(): AdminConfig {
     ConfigRow | undefined;
 
   if (!row) {
-    saveAdminConfig(adminConfig);
-    return normalizeStoredAdminConfig(adminConfig);
+    const normalizedConfig = normalizeAdminConfigForScaniaSes(adminConfig);
+    saveAdminConfig(normalizedConfig);
+    return normalizeStoredAdminConfig(normalizedConfig);
   }
 
-  return normalizeStoredAdminConfig(parseJson<AdminConfig>(row.payload, "admin-config"));
+  const storedConfig = normalizeStoredAdminConfig(parseJson<AdminConfig>(row.payload, "admin-config"));
+  const normalizedConfig = normalizeAdminConfigForScaniaSes(storedConfig);
+
+  if (JSON.stringify(storedConfig) !== JSON.stringify(normalizedConfig)) {
+    saveAdminConfig(normalizedConfig);
+  }
+
+  return normalizedConfig;
 }
 
 export function saveAdminConfig(config: AdminConfig): void {
+  const normalizedConfig = normalizeAdminConfigForScaniaSes(config);
+
   getDatabase()
     .prepare(
       `
@@ -1153,7 +1164,7 @@ export function saveAdminConfig(config: AdminConfig): void {
           updated_at = excluded.updated_at
       `
     )
-    .run(adminConfigKey, serializeJson(config), nowIso());
+    .run(adminConfigKey, serializeJson(normalizedConfig), nowIso());
 }
 
 function mapDuplicateNotificationDelivery(row: NotificationDeliveryRow): NotificationDeliveryClaim {
